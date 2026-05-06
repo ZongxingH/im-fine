@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imfine Task Graph",
+  "type": "object",
+  "required": ["run_id", "strategy", "tasks"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "strategy": { "enum": ["parallel", "serial", "conflict_resolution"] },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "type", "depends_on", "read_scope", "write_scope", "acceptance", "dev_plan", "test_plan", "review_plan", "verification", "commit"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "type": { "type": "string" },
+          "depends_on": { "type": "array", "items": { "type": "string" } },
+          "read_scope": { "type": "array", "items": { "type": "string" } },
+          "write_scope": { "type": "array", "items": { "type": "string" } },
+          "acceptance": { "type": "array", "items": { "type": "string" } },
+          "dev_plan": { "type": "array", "items": { "type": "string" } },
+          "test_plan": { "type": "array", "items": { "type": "string" } },
+          "review_plan": { "type": "array", "items": { "type": "string" } },
+          "verification": { "type": "array", "items": { "type": "string" } },
+          "commit": {
+            "type": "object",
+            "required": ["mode", "message"],
+            "properties": {
+              "mode": { "enum": ["task", "integration"] },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

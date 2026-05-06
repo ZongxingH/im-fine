@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imfine Agent Handoff",
+  "type": "object",
+  "required": ["run_id", "from", "to", "status", "summary", "next_state"],
+  "properties": {
+    "run_id": { "type": "string" },
+    "task_id": { "type": "string" },
+    "from": { "type": "string" },
+    "to": { "type": "string" },
+    "status": { "type": "string" },
+    "summary": { "type": "string" },
+    "inputs": { "type": "array", "items": { "type": "string" } },
+    "expected_outputs": { "type": "array", "items": { "type": "string" } },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "commands": { "type": "array", "items": { "type": "string" } },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "findings": { "type": "array" },
+    "next_state": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,30 @@
+{
+  "name": "imfine",
+  "version": "0.1.0",
+  "description": "Project-level autonomous multi-agent harness for Codex and Claude.",
+  "type": "module",
+  "bin": {
+    "imfine": "./dist/cli/imfine.js",
+    "imfine-runtime": "./dist/cli/imfine-runtime.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "npm run build",
+    "prepare": "npm run build",
+    "test": "npm run build && node test/smoke.mjs && node test/plan-validation.mjs && node test/reliability.mjs",
+    "start": "node dist/cli/imfine.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "library",
+    "package.json",
+    "README.md"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
