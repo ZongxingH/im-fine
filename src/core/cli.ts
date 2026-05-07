@@ -98,10 +98,6 @@ function parseMaxIterations(value: string | undefined): number {
   return parsed;
 }
 
-function isNpmInvocation(): boolean {
-  return Boolean(process.env.npm_execpath || process.env.npm_config_user_agent);
-}
-
 function print(value: unknown, json: boolean, textFormatter: () => string): void {
   if (json) {
     console.log(JSON.stringify(value, null, 2));
@@ -123,9 +119,6 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     }
 
     if (command === "install") {
-      if (!isNpmInvocation()) {
-        throw new Error("Install must be invoked through npx github:<owner>/<repo> install [--target codex|claude|all] [--lang zh|en]. Direct `imfine install` is not supported.");
-      }
       const result = install(readStringFlag(args, "target"), readStringFlag(args, "lang"), readBooleanFlag(args, "dryRun"));
       print(result, json, () => formatInstall(result));
       return;

@@ -894,16 +894,18 @@ assert.equal(generatedBranch, `imfine/${delivered.runId}`);
 const generatedReport = run(["report", delivered.runId], newProject);
 assert.match(generatedReport, /push status: push_blocked_no_remote/);
 
-const directInstallError = runExpectFail(["install", "--target", "all", "--dry-run"], root, {
-  npm_execpath: "",
-  npm_config_user_agent: ""
-});
-assert.match(directInstallError, /npx github:<owner>\/<repo> install/);
-
 const npmEnv = {
   npm_execpath: "/usr/local/bin/npm",
   npm_config_user_agent: "npm/10 npx"
 };
+
+const directInstall = JSON.parse(run(["install", "--target", "all", "--dry-run", "--json"], root, {
+  npm_execpath: "",
+  npm_config_user_agent: ""
+}));
+assert.equal(directInstall.target, "all");
+assert.equal(directInstall.language, "zh");
+assert.equal(directInstall.dryRun, true);
 
 const install = JSON.parse(run(["install", "--target", "all", "--dry-run", "--json"], root, npmEnv));
 assert.equal(install.target, "all");
