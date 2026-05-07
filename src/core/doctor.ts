@@ -123,18 +123,16 @@ function targetChecks(): DoctorCheck[] {
   const claudeCommand = path.join(process.env.HOME || "", ".claude", "commands", "imfine.md");
   const codexInstalled = fs.existsSync(codexSkill);
   const claudeInstalled = fs.existsSync(claudeCommand);
-  const executorConfigured = Boolean(process.env.IMFINE_AGENT_EXECUTOR);
   checks.push(check("target.codex", "Codex /imfine skill", codexInstalled ? "pass" : "warn", codexInstalled ? codexSkill : "Codex skill is not installed"));
   checks.push(check("target.claude", "Claude /imfine command", claudeInstalled ? "pass" : "warn", claudeInstalled ? claudeCommand : "Claude command is not installed"));
-  checks.push(check("provider.model_executor", "model executor bridge", executorConfigured ? "pass" : "warn", executorConfigured ? "IMFINE_AGENT_EXECUTOR is configured" : "IMFINE_AGENT_EXECUTOR is not configured; autonomous model agent execution will wait for provider configuration"));
-  checks.push(check("provider.codex.bridge", "Codex provider bridge", codexInstalled ? "pass" : "warn", codexInstalled ? "Codex /imfine entry can dispatch imfine model packages through the configured executor" : "Codex provider bridge is unavailable until /imfine is installed"));
-  checks.push(check("provider.claude.bridge", "Claude provider bridge", claudeInstalled ? "pass" : "warn", claudeInstalled ? "Claude /imfine command can dispatch imfine model packages through the configured executor" : "Claude provider bridge is unavailable until /imfine is installed"));
+  checks.push(check("provider.codex.bridge", "Codex provider bridge", codexInstalled ? "pass" : "warn", codexInstalled ? "Codex /imfine entry lets the current Codex session orchestrate imfine agent packages" : "Codex provider bridge is unavailable until /imfine is installed"));
+  checks.push(check("provider.claude.bridge", "Claude provider bridge", claudeInstalled ? "pass" : "warn", claudeInstalled ? "Claude /imfine command lets the current Claude session orchestrate imfine agent packages" : "Claude provider bridge is unavailable until /imfine is installed"));
   checks.push(check("provider.codex.entry_installed", "Codex provider entry installed", codexInstalled ? "pass" : "warn", codexInstalled ? `entry_installed=true path=${codexSkill}` : "entry_installed=false"));
-  checks.push(check("provider.codex.executor_configured", "Codex model executor configured", executorConfigured ? "pass" : "warn", executorConfigured ? "executor_configured=true" : "executor_configured=false"));
-  checks.push(check("provider.codex.subagent_supported", "Codex subagent support", "warn", "subagent_supported=unknown; imfine will wait for model execution configuration instead of silently degrading"));
+  checks.push(check("provider.codex.session_orchestrator", "Codex session orchestrator", codexInstalled ? "pass" : "warn", codexInstalled ? "session_orchestrator=true; current Codex session executes or dispatches model Agent work" : "session_orchestrator=false"));
+  checks.push(check("provider.codex.subagent_supported", "Codex subagent support", "warn", "subagent_supported=unknown; current session must preserve Agent boundaries and execute ready packages deliberately"));
   checks.push(check("provider.claude.entry_installed", "Claude provider entry installed", claudeInstalled ? "pass" : "warn", claudeInstalled ? `entry_installed=true path=${claudeCommand}` : "entry_installed=false"));
-  checks.push(check("provider.claude.executor_configured", "Claude model executor configured", executorConfigured ? "pass" : "warn", executorConfigured ? "executor_configured=true" : "executor_configured=false"));
-  checks.push(check("provider.claude.subagent_supported", "Claude subagent support", "warn", "subagent_supported=unknown; imfine will wait for model execution configuration instead of silently degrading"));
+  checks.push(check("provider.claude.session_orchestrator", "Claude session orchestrator", claudeInstalled ? "pass" : "warn", claudeInstalled ? "session_orchestrator=true; current Claude session executes or dispatches model Agent work" : "session_orchestrator=false"));
+  checks.push(check("provider.claude.subagent_supported", "Claude subagent support", "warn", "subagent_supported=unknown; current session must preserve Agent boundaries and execute ready packages deliberately"));
   return checks;
 }
 

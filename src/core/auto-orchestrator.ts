@@ -430,7 +430,7 @@ export function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrc
       }
 
       if (action.kind === "agent") {
-        const executor = options.executor || process.env.IMFINE_AGENT_EXECUTOR || "";
+        const executor = options.executor || "";
         if (options.dryRun || !executor) {
           const executed = executeAgentBatch(cwd, runId, { dryRun: true, limit: undefined });
           const step = {
@@ -438,7 +438,7 @@ export function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrc
             actionId: action.id,
             kind: action.kind,
             status: "waiting_for_model" as const,
-            detail: options.dryRun ? "dry-run model dispatch prepared" : "model executor is not configured",
+            detail: options.dryRun ? "dry-run model dispatch prepared" : "agent execution packages prepared for the current model session",
             artifacts: [executed.dispatch]
           };
           steps.push(step);

@@ -389,7 +389,7 @@ imfine-runtime library sync
 当前实现中，`/imfine run "需求"` 已是默认自主交付入口：
 
 - 用户不需要传 `--auto`。
-- 用户不需要传 `--executor`；有 `IMFINE_AGENT_EXECUTOR` 时自动执行模型 Agent，无模型执行能力时进入 `waiting_for_model` 并生成模型执行包和 dispatch。
+- 用户不需要传 `--executor`；`/imfine` 运行在 Codex / Claude 大模型会话中，由当前主会话读取模型执行包并执行或分发 Agent 工作。`--executor` 只作为非交互 runner 的内部/测试桥接。
 - 用户不需要手动执行 `agents execute`、`orchestrate` 或 `commit resolved`。
 - `--plan-only` 作为内部调试/明确停在计划阶段的能力保留。
 - deterministic new-project vertical slice 只作为内部 debug/test 路径保留，不作为用户主入口。
@@ -458,7 +458,7 @@ push 策略采用 `doctor` 前置检查：不是无条件盲目 push，而是在
 - 依赖安装由 Orchestrator 在需要时自动插入内部 `runtime-dependency-install` action。
 - 支持 npm / pnpm / yarn / pip requirements / mvn 等项目内安装命令记录；依赖安装使用长时任务友好的超时窗口，当前为 2 分钟，并把命令、stdout、stderr、exit code 和失败原因写入 `.imfine/runs/<run-id>/evidence/dependency-install.md`。
 - pip 安装要求项目本地 `.venv`；系统级安装、shell 环境修改、数据库、云资源和外部服务不会自动执行。
-- `doctor` 同时检查 Codex / Claude 入口和 provider bridge / model executor 能力，并按 `entry_installed`、`executor_configured`、`subagent_supported` 分级记录 provider capability；当前无法证明真实子 Agent 能力时记录 `subagent_supported=unknown`，run 保持等待模型配置或进入明确 blocked 状态，不静默降级为单 Agent 全流程。
+- `doctor` 同时检查 Codex / Claude 入口和 provider bridge 能力，并按 `entry_installed`、`session_orchestrator`、`subagent_supported` 分级记录 provider capability；当前无法证明真实子 Agent 能力时记录 `subagent_supported=unknown`，由当前大模型会话保持角色边界执行 ready Agent 工作，或让 run 保持 `waiting_for_model`。
 
 ## 8. Delivery Run 生命周期
 
@@ -1084,7 +1084,7 @@ Archive Agent 需要确认：
 - 安装入口只允许 `npx github:<owner>/<repo> install ...`，不支持用户直接 `imfine install ...`。
 - 默认安装 `--target all --lang zh`，支持 Codex skill 和 Claude command 两套产物。
 - `/imfine init` 支持空项目和已有项目；已有项目会生成 `.imfine/project/architecture/` 草稿和 Architect Agent 输入。
-- `doctor` 已覆盖 git、remote、branch、push probe、包管理器、lockfile、测试脚本、Codex / Claude 入口和 provider bridge，并按 `entry_installed`、`executor_configured`、`subagent_supported` 记录 provider capability。
+- `doctor` 已覆盖 git、remote、branch、push probe、包管理器、lockfile、测试脚本、Codex / Claude 入口和 provider bridge，并按 `entry_installed`、`session_orchestrator`、`subagent_supported` 记录 provider capability。
 
 ### 阶段 2：源码级 Agent / Skill 库
 
@@ -1278,8 +1278,8 @@ Archive Agent 需要确认：
 当前已落地：
 
 - 新项目 `/imfine run "需求"` 默认进入 Architect / Task Planner 模型规划路径。
-- 无模型执行能力时生成 Architect / Task Planner 执行包并进入 `waiting_for_model`。
-- 有模型执行器时可自动完成 stack decision、task graph、worktree、实现、QA、Review、commit、push blocked 记录和 archive。
+- 当前大模型会话尚未执行 Architect / Task Planner 时，runtime 生成执行包并进入 `waiting_for_model`。
+- 当前大模型会话执行并写回 Agent 产物后，可继续完成 stack decision、task graph、worktree、实现、QA、Review、commit、push blocked 记录和 archive。
 - deterministic Node.js vertical slice 仅作为内部 debug/test 路径保留。
 
 ## 19. 已确认实现决策

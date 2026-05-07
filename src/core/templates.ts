@@ -38,10 +38,8 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
 - \`/imfine run <requirement text|requirement-file>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <requirement text|requirement-file>\` from the project root. In an empty new-project directory this completes the first delivery run.
 - \`/imfine run <requirement text|requirement-file> --plan-only\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <requirement text|requirement-file> --plan-only\` when the Agent intentionally wants to stop at planning.
 - \`/imfine resume <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js resume <run-id>\` to infer next actions, persist queue state, and route ready Agent work.
-- \`/imfine agents prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` to generate model execution packages from ready Agent runs and their skills.
-- \`/imfine agents execute <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents execute <run-id> --executor "<model runner>"\` when an external model runner is configured. Use \`--dry-run\` to only validate dispatch.
-- \`/imfine orchestrate <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id> --executor "<model runner>"\` to let runtime progress deterministic actions while model agents handle intelligent work.
-- \`/imfine run <requirement text|requirement-file> --auto\`: use with \`--executor "<model runner>"\` for existing-project automatic delivery.
+- \`/imfine agents prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` to generate model execution packages; then the current ${toolName} session must execute or dispatch the listed Agent work using native model/subagent capability and write the required handoff and artifacts.
+- \`/imfine orchestrate <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id>\` to let runtime progress deterministic actions after this session has completed model Agent work.
 - \`/imfine plan <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js plan <run-id>\` from the project root.
 - \`/imfine worktree prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js worktree prepare <run-id>\` from the project root.
 - \`/imfine patch collect <run-id> <task-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js patch collect <run-id> <task-id>\`.
@@ -99,17 +97,19 @@ Required core agents: Orchestrator, Intake, Architect, Task Planner, Dev, QA, Re
 
 Each package includes the Agent contract, skill bundle, model input prompt, boundaries, required outputs, and handoff expectations. The model must make architecture, implementation, QA, Review, conflict, and archive judgments; runtime only materializes the prompt package and records execution evidence.
 
-\`/imfine agents execute <run-id>\` can run ready packages through a configured model runner. The command can be supplied with \`--executor "<command>"\` or \`IMFINE_AGENT_EXECUTOR\`. Runtime passes the prompt on stdin and sets \`IMFINE_RUN_ID\`, \`IMFINE_AGENT_ID\`, \`IMFINE_AGENT_ROLE\`, \`IMFINE_AGENT_PROMPT\`, and \`IMFINE_AGENT_OUTPUT_DIR\`.
+\`/imfine agents prepare <run-id>\` is the normal provider path. After it generates execution packages, the current ${toolName} session acts as Orchestrator: read the package prompts, execute or dispatch the Agent roles, make the model judgments, modify task worktrees when assigned, and write the required handoff files and artifacts.
 
-If no provider bridge or model executor is available, the run must remain waiting for model configuration or enter a clear blocked state. Do not silently complete the whole workflow as one undifferentiated Agent.
+\`imfine-runtime agents execute <run-id> --executor "<command>"\` exists only as an internal/testing bridge for non-interactive runners. It is not required for normal \`/imfine\` use inside Codex or Claude.
+
+If native provider subagents are unavailable, the current session should still preserve role boundaries and execute the ready Agent work deliberately, or leave the run in \`waiting_for_model\` with the generated packages. Do not silently complete the whole workflow as one undifferentiated Agent.
 
 ## Existing-Project Auto Orchestration
 
-\`/imfine run ... --auto --executor "<model runner>"\` and \`/imfine orchestrate <run-id> --executor "<model runner>"\` run the autonomous delivery loop for existing projects.
+\`/imfine run ...\` and \`/imfine orchestrate <run-id>\` run the autonomous delivery loop for existing projects from inside the current ${toolName} model session.
 
 The loop only performs deterministic runtime actions itself: prepare worktrees, collect patches after Dev/Writer agents edit their worktrees, record QA/Review decisions from model handoffs, commit approved patches, push the run branch when possible, and archive verified evidence. Product, architecture, implementation, QA, Review, and conflict decisions remain model Agent responsibilities.
 
-For new projects, \`/imfine run ... --auto --executor "<model runner>"\` first runs Architect and Task Planner model packages. Architect must write \`.imfine/runs/<run-id>/design/stack-decision.json\`; Task Planner must write the task graph and execution plan. Runtime validates those model outputs before preparing worktrees.
+For new projects, the current ${toolName} session first performs Architect and Task Planner model work from the generated packages. Architect must write \`.imfine/runs/<run-id>/design/stack-decision.json\`; Task Planner must write the task graph and execution plan. Runtime validates those model outputs before preparing worktrees.
 
 ## Phase 3 Run Boundary
 
@@ -211,10 +211,8 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
 - \`/imfine run <需求文本|需求文件>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <需求文本|需求文件>\`。在新的空项目目录中会默认完成首个 delivery run。
 - \`/imfine run <需求文本|需求文件> --plan-only\`：当 Agent 明确只希望停在规划阶段时，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <需求文本|需求文件> --plan-only\`。
 - \`/imfine resume <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js resume <run-id>\`，推断下一步、持久化 queue，并路由可执行的 Agent 工作。
-- \`/imfine agents prepare <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\`，基于 ready Agent run 和 skill 生成模型执行包。
-- \`/imfine agents execute <run-id>\`：配置外部模型 runner 后执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents execute <run-id> --executor "<model runner>"\`。使用 \`--dry-run\` 只校验调度。
-- \`/imfine orchestrate <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id> --executor "<model runner>"\`，由 runtime 推进确定性动作，由模型 Agent 完成智能工作。
-- \`/imfine run <需求文本|需求文件> --auto\`：配合 \`--executor "<model runner>"\` 用于已有项目自动交付。
+- \`/imfine agents prepare <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` 生成模型执行包；然后当前 ${toolName} 会话必须使用原生模型/子 Agent 能力执行或分发对应 Agent 工作，并写回 required handoff 和产物。
+- \`/imfine orchestrate <run-id>\`：当前会话完成模型 Agent 工作后，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id>\`，由 runtime 推进确定性动作。
 - \`/imfine plan <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js plan <run-id>\`。
 - \`/imfine worktree prepare <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js worktree prepare <run-id>\`。
 - \`/imfine patch collect <run-id> <task-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js patch collect <run-id> <task-id>\`。
@@ -272,17 +270,19 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js library sync
 
 每个执行包包含 Agent 契约、skill bundle、模型输入 prompt、边界、必需输出和 handoff 要求。架构、实现、QA、Review、冲突处理和归档判断必须由模型完成；runtime 只负责生成执行包和记录执行证据。
 
-\`/imfine agents execute <run-id>\` 可以用配置好的模型 runner 执行 ready 包。命令可通过 \`--executor "<command>"\` 或 \`IMFINE_AGENT_EXECUTOR\` 提供。Runtime 会把 prompt 传给 stdin，并设置 \`IMFINE_RUN_ID\`、\`IMFINE_AGENT_ID\`、\`IMFINE_AGENT_ROLE\`、\`IMFINE_AGENT_PROMPT\`、\`IMFINE_AGENT_OUTPUT_DIR\`。
+\`/imfine agents prepare <run-id>\` 是正常 provider 路径。它生成执行包后，当前 ${toolName} 会话就是 Orchestrator：读取 package prompt，执行或分发各角色 Agent，完成模型判断，按任务边界修改 worktree，并写回 handoff 和产物。
 
-如果当前 provider bridge 或模型 executor 不可用，run 必须保持等待模型配置，或进入明确 blocked 状态。不要静默降级成一个单 Agent 完成全流程。
+\`imfine-runtime agents execute <run-id> --executor "<command>"\` 只作为非交互 runner 的内部/测试桥接，不是 Codex 或 Claude 中正常使用 \`/imfine\` 的前提。
+
+如果当前 provider 没有可用子 Agent 能力，当前会话仍必须保持角色边界，有意识地顺序执行 ready Agent 工作，或者让 run 保持 \`waiting_for_model\` 并保留执行包。不要静默降级成一个无边界的单 Agent 全流程。
 
 ## 已有项目自动编排
 
-\`/imfine run ... --auto --executor "<model runner>"\` 和 \`/imfine orchestrate <run-id> --executor "<model runner>"\` 会对已有项目执行自主交付 loop。
+\`/imfine run ...\` 和 \`/imfine orchestrate <run-id>\` 在当前 ${toolName} 大模型会话中对已有项目执行自主交付 loop。
 
 这个 loop 只自己执行确定性 runtime 动作：准备 worktree、在 Dev/Writer Agent 修改 worktree 后收集 patch、根据模型 handoff 记录 QA/Review、提交已批准 patch、可行时 push run 分支、归档已验证证据。产品、架构、实现、QA、Review 和冲突处理判断仍然由模型 Agent 负责。
 
-对于新项目，\`/imfine run ... --auto --executor "<model runner>"\` 会先执行 Architect 和 Task Planner 模型执行包。Architect 必须写入 \`.imfine/runs/<run-id>/design/stack-decision.json\`；Task Planner 必须写入 task graph 和 execution plan。Runtime 只在这些模型产物校验通过后准备 worktree。
+对于新项目，当前 ${toolName} 会话会先根据生成的执行包完成 Architect 和 Task Planner 模型工作。Architect 必须写入 \`.imfine/runs/<run-id>/design/stack-decision.json\`；Task Planner 必须写入 task graph 和 execution plan。Runtime 只在这些模型产物校验通过后准备 worktree。
 
 ## 阶段 3 Run 边界
 

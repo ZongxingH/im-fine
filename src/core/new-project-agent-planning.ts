@@ -159,7 +159,7 @@ function validateStackDecision(file: string): string[] {
 }
 
 export function runNewProjectAgentPlanning(cwd: string, run: DeliveryRunResult, options: Options): NewProjectAgentPlanningResult {
-  const executor = options.executor || process.env.IMFINE_AGENT_EXECUTOR || "";
+  const executor = options.executor || "";
   const stackDecision = path.join(run.runDir, "design", "stack-decision.json");
   const taskGraph = path.join(run.runDir, "planning", "task-graph.json");
   const report = path.join(run.runDir, "orchestration", "new-project-agent-planning.md");
@@ -167,7 +167,7 @@ export function runNewProjectAgentPlanning(cwd: string, run: DeliveryRunResult, 
   const packages: NewProjectAgentPlanningResult["packages"] = [];
 
   if (!options.dryRun && !executor) {
-    errors.push("Missing model executor for new-project agent planning");
+    errors.push("New-project Architect and Task Planner packages are waiting for the current model session");
     packages.push(executePackage(cwd, run, "architect", "", true));
     packages.push(executePackage(cwd, run, "task-planner", "", true));
     writeText(report, `# New Project Agent Planning\n\n- status: waiting_for_model\n- error: ${errors[0]}\n`);

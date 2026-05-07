@@ -30,14 +30,13 @@ function runExpectFail(args, cwd = tmp, extraEnv = {}) {
 const doctor = JSON.parse(run(["doctor", "--json"]));
 assert.equal(fs.realpathSync(doctor.cwd), realTmp);
 assert.ok(Array.isArray(doctor.checks));
-assert.ok(doctor.checks.some((item) => item.id === "provider.model_executor"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.codex.bridge"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.bridge"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.codex.entry_installed"));
-assert.ok(doctor.checks.some((item) => item.id === "provider.codex.executor_configured"));
+assert.ok(doctor.checks.some((item) => item.id === "provider.codex.session_orchestrator"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.codex.subagent_supported" && item.detail.includes("subagent_supported=unknown")));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.entry_installed"));
-assert.ok(doctor.checks.some((item) => item.id === "provider.claude.executor_configured"));
+assert.ok(doctor.checks.some((item) => item.id === "provider.claude.session_orchestrator"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.subagent_supported" && item.detail.includes("subagent_supported=unknown")));
 
 const init = JSON.parse(run(["init", "--json"]));
@@ -523,7 +522,7 @@ fs.writeFileSync(path.join(autoProject, "src", "index.js"), "export const value 
 autoGit(["add", "."]);
 autoGit(["commit", "-m", "initial"]);
 const fakeExecutorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fakeExecutor)}`;
-const autoRun = JSON.parse(run(["run", "Change value and document it", "--max-iterations", "30", "--json"], autoProject, { IMFINE_AGENT_EXECUTOR: fakeExecutorCommand }));
+const autoRun = JSON.parse(run(["run", "Change value and document it", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], autoProject));
 assert.equal(autoRun.status, "completed");
 assert.ok(autoRun.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
 assert.ok(autoRun.steps.some((step) => step.actionId === "agent-risk-reviewer" && step.detail.includes("Risk Reviewer handoff")));
@@ -558,7 +557,7 @@ fs.mkdirSync(path.join(dependencyProject, "src"));
 fs.writeFileSync(path.join(dependencyProject, "src", "index.js"), "export const value = 1;\n");
 dependencyGit(["add", "."]);
 dependencyGit(["commit", "-m", "initial"]);
-const dependencyRun = JSON.parse(run(["run", "Change dependency project value", "--max-iterations", "30", "--json"], dependencyProject, { IMFINE_AGENT_EXECUTOR: fakeExecutorCommand }));
+const dependencyRun = JSON.parse(run(["run", "Change dependency project value", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], dependencyProject));
 assert.equal(dependencyRun.status, "completed");
 assert.ok(dependencyRun.steps.some((step) => step.actionId === "runtime-dependency-install"));
 const dependencyEvidence = path.join(dependencyProject, ".imfine", "runs", dependencyRun.runId, "evidence", "dependency-install.md");
@@ -566,7 +565,7 @@ assert.ok(fs.existsSync(dependencyEvidence));
 assert.match(fs.readFileSync(dependencyEvidence, "utf8"), /status: installed/);
 
 const autoNewProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-auto-new-"));
-const autoNewRun = JSON.parse(run(["run", "Create a model selected utility", "--max-iterations", "40", "--json"], autoNewProject, { IMFINE_AGENT_EXECUTOR: fakeExecutorCommand }));
+const autoNewRun = JSON.parse(run(["run", "Create a model selected utility", "--executor", fakeExecutorCommand, "--max-iterations", "40", "--json"], autoNewProject));
 assert.equal(autoNewRun.status, "completed");
 const autoNewRunDir = path.join(autoNewProject, ".imfine", "runs", autoNewRun.runId);
 assert.ok(fs.existsSync(path.join(autoNewRunDir, "design", "stack-decision.json")));
@@ -655,7 +654,7 @@ assert.ok(fs.existsSync(path.join(conflictRun.runDir, "agents", "conflict-resolv
 assert.ok(fs.existsSync(path.join(conflictRun.runDir, "evidence", "conflicts.md")));
 const conflictResume = JSON.parse(run(["resume", conflictRun.runId, "--json"], conflictProject));
 assert.ok(conflictResume.nextActions.some((action) => action.id === "agent-conflict-resolver"));
-const conflictAuto = JSON.parse(run(["orchestrate", conflictRun.runId, "--max-iterations", "10", "--json"], conflictProject, { IMFINE_AGENT_EXECUTOR: fakeExecutorCommand }));
+const conflictAuto = JSON.parse(run(["orchestrate", conflictRun.runId, "--executor", fakeExecutorCommand, "--max-iterations", "10", "--json"], conflictProject));
 assert.equal(conflictAuto.status, "completed");
 assert.ok(conflictAuto.steps.some((step) => step.detail.includes("resolved conflict verified")));
 const conflictAutoStatus = JSON.parse(run(["status", "--json"], conflictProject));

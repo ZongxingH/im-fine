@@ -71,18 +71,17 @@ Orchestrator recovery adds:
 Model agent execution adds:
 
 - `imfine agents prepare <run-id>` to generate agent/skill-backed model execution packages
-- `imfine agents execute <run-id> --executor "<command>"` to run ready agents through a configured model executor
-- `imfine agents execute <run-id> --dry-run` to validate dispatch without invoking a model
+- the current Codex or Claude `/imfine` session executes or dispatches prepared Agent packages and writes the required handoff/artifacts
+- `imfine agents execute <run-id> --executor "<command>"` remains an internal/testing bridge for non-interactive runners
 
 Existing-project automatic orchestration adds:
 
-- `imfine run <requirement text|requirement-file> --auto --executor "<command>"`
-- `imfine orchestrate <run-id> --executor "<command>"`
-- model-driven agent execution with deterministic runtime progression through worktree preparation, patch collection, QA evidence, Review evidence, commit, push evidence, and archive
+- `/imfine run <requirement text|requirement-file>` inside Codex or Claude
+- runtime progression through worktree preparation, patch collection, QA evidence, Review evidence, commit, push evidence, and archive while the current model session performs Agent judgment/work
 
 New-project automatic orchestration adds:
 
-- `imfine run <requirement text|requirement-file> --auto --executor "<command>"`
+- `/imfine run <requirement text|requirement-file>` inside Codex or Claude for empty project directories
 - Architect Agent stack decision output at `.imfine/runs/<run-id>/design/stack-decision.json`
 - Task Planner Agent task graph output before runtime prepares worktrees
 - runtime validation of the model-selected stack decision and task graph before delivery proceeds

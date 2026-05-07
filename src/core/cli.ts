@@ -62,7 +62,7 @@ Phase 7 adds task/integration commits and push evidence for origin imfine/<run-i
 Phase 8 adds Archive Agent confirmation, run archive reports, user reports, and long-term project knowledge updates.
 Phase 9 adds new-project full delivery through the internal --deliver debug path. Use --plan-only to stop at planning.
 Orchestrator recovery adds resume <run-id>, queue persistence, infrastructure gate persistence, agent run registry, parallel plan, and Conflict Resolver routing.
-Model agent execution adds agents prepare/execute to create skill-backed prompts and run a configured model executor without hardcoded implementation decisions. /imfine run defaults to autonomous Orchestrator delivery and uses IMFINE_AGENT_EXECUTOR when an external model runner is configured.
+Model agent execution adds agents prepare to create skill-backed prompts for the current Codex/Claude session to execute or dispatch. agents execute --executor remains an internal/testing bridge for non-interactive runners, not a normal /imfine prerequisite.
 Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables Chinese /imfine entries for both Codex and Claude.
 `;
 }

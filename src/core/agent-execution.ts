@@ -244,11 +244,11 @@ export function executeAgentBatch(cwd: string, runId: string, options: ExecuteOp
   const prepared = prepareAgentExecutions(cwd, runId);
   const ready = prepared.packages.filter((item) => item.status === "ready");
   const selected = typeof options.limit === "number" && options.limit >= 0 ? ready.slice(0, options.limit) : ready;
-  const executor = options.executor || process.env.IMFINE_AGENT_EXECUTOR || "";
+  const executor = options.executor || "";
   const results: AgentExecutionResult[] = [];
 
   if (!options.dryRun && !executor) {
-    throw new Error("Missing model executor. Set IMFINE_AGENT_EXECUTOR or pass --executor. Use --dry-run to only prepare model prompts.");
+    throw new Error("Missing internal executor. Pass --executor for non-interactive testing, or use --dry-run to only prepare model prompts.");
   }
 
   for (const item of selected) {
