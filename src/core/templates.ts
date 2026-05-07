@@ -351,7 +351,13 @@ QA 或 Review 连续失败时，应继续生成有边界的 fix task，由 Orche
 }
 
 export function codexSkillTemplate(language: InstallLanguage): string {
-  return language === "zh" ? chineseBody("Codex") : englishBody("Codex");
+  const body = language === "zh" ? chineseBody("Codex") : englishBody("Codex");
+  return `---
+name: imfine
+description: Use when running the imfine project-level autonomous multi-agent harness from Codex.
+---
+
+${body}`;
 }
 
 export function claudeCommandTemplate(language: InstallLanguage): string {

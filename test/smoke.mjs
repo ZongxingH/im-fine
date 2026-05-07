@@ -931,6 +931,7 @@ assert.equal(realInstall.language, "en");
 assert.ok(fs.existsSync(path.join(tempHome, ".imfine", "runtime")));
 assert.ok(fs.existsSync(path.join(tempHome, ".codex", "skills", "imfine", "SKILL.md")));
 assert.ok(fs.existsSync(path.join(tempHome, ".claude", "commands", "imfine.md")));
+assert.match(fs.readFileSync(path.join(tempHome, ".codex", "skills", "imfine", "SKILL.md"), "utf8"), /^---\nname: imfine\ndescription: /);
 assert.match(fs.readFileSync(path.join(tempHome, ".codex", "skills", "imfine", "SKILL.md"), "utf8"), /Use imfine/);
 assert.match(fs.readFileSync(path.join(tempHome, ".claude", "commands", "imfine.md"), "utf8"), /Claude Code session/);
 
