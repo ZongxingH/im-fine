@@ -141,6 +141,18 @@ function firstReadyAction(cwd: string, runId: string, orchestration: Orchestrato
     || orchestration.nextActions.find((action) => action.status === "ready" && !isActionCompleted(cwd, runId, action.id) && dependenciesCompleted(cwd, runId, orchestration, action));
 }
 
+function readyActionBatch(cwd: string, runId: string, orchestration: OrchestratorResult, seed: OrchestrationAction): OrchestrationAction[] {
+  if (seed.status === "blocked" || seed.kind === "gate") return [seed];
+  if (seed.kind !== "agent") return [seed];
+  return orchestration.nextActions.filter((action) =>
+    action.kind === "agent"
+    && (action.parallelGroup === seed.parallelGroup || !action.taskId)
+    && action.status === "ready"
+    && !isActionCompleted(cwd, runId, action.id)
+    && dependenciesCompleted(cwd, runId, orchestration, action)
+  );
+}
+
 function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationAction): AutoOrchestratorStep {
   if (action.id === "runtime-plan") {
     const result = planRun(cwd, runId);
@@ -356,7 +368,7 @@ function writeAutoTimeline(cwd: string, runId: string, steps: AutoOrchestratorSt
   return file;
 }
 
-export function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrchestratorOptions): AutoOrchestratorResult {
+export async function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrchestratorOptions): Promise<AutoOrchestratorResult> {
   const steps: AutoOrchestratorStep[] = [];
   let last = resumeRun(cwd, runId);
   const runLock = acquireLock(cwd, runId, "run");
@@ -398,6 +410,7 @@ export function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrc
         return { runId, status, iterations: iteration - 1, steps, lastOrchestration: last, timeline };
       }
 
+      const batch = readyActionBatch(cwd, runId, last, action);
       if (action.status === "blocked" || action.kind === "gate") {
         const step = { iteration, actionId: action.id, kind: action.kind, status: "blocked" as const, detail: action.reason, artifacts: action.outputs };
         steps.push(step);
@@ -432,13 +445,19 @@ export function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrc
       if (action.kind === "agent") {
         const executor = options.executor || "";
         if (options.dryRun || !executor) {
-          const executed = executeAgentBatch(cwd, runId, { dryRun: true, limit: undefined });
+          const executed = await executeAgentBatch(cwd, runId, {
+            dryRun: true,
+            limit: undefined,
+            actionIds: batch.map((item) => item.id)
+          });
           const step = {
             iteration,
             actionId: action.id,
             kind: action.kind,
             status: "waiting_for_model" as const,
-            detail: options.dryRun ? "dry-run model dispatch prepared" : "agent execution packages prepared for the current model session",
+            detail: options.dryRun
+              ? `dry-run model dispatch prepared for ${batch.length} agent(s)`
+              : `agent execution packages prepared for ${batch.length} agent(s) in ${action.parallelGroup}`,
             artifacts: [executed.dispatch]
           };
           steps.push(step);
@@ -447,10 +466,22 @@ export function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrc
           return { runId, status: "waiting_for_model", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
         }
 
-        const executed = executeAgentBatch(cwd, runId, { dryRun: false, executor, limit: undefined });
+        const executed = await executeAgentBatch(cwd, runId, {
+          dryRun: false,
+          executor,
+          limit: undefined,
+          actionIds: batch.map((item) => item.id)
+        });
         const batchStatus = executed.results.every((result) => result.status === "executed") ? "completed" : "failed";
-        steps.push({ iteration, actionId: action.id, kind: action.kind, status: batchStatus, detail: `model batch results: ${executed.results.length}`, artifacts: [executed.dispatch] });
-        writeCheckpoint(cwd, runId, action.id, "after", batchStatus, `model batch results: ${executed.results.length}`, [executed.dispatch]);
+        steps.push({
+          iteration,
+          actionId: action.id,
+          kind: action.kind,
+          status: batchStatus,
+          detail: `model batch results: ${executed.results.length} agent(s) in ${action.parallelGroup}`,
+          artifacts: [executed.dispatch]
+        });
+        writeCheckpoint(cwd, runId, action.id, "after", batchStatus, `model batch results: ${executed.results.length} agent(s) in ${action.parallelGroup}`, [executed.dispatch]);
         if (batchStatus === "failed") {
           updateRunStatus(cwd, runId, "blocked", { auto_failed_at: new Date().toISOString(), auto_failed_reason: "one or more model agents failed" });
           const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");

@@ -3,9 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph, type TaskGraphTask } from "./plan.js";
 import { runCommand } from "./shell.js";
-import { transitionRunState, transitionTaskState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState, transitionTaskState } from "./state-machine.js";
 
 export interface WorktreeTask {
   task_id: string;
@@ -149,10 +150,10 @@ export function prepareWorktrees(cwd: string, runId: string): WorktreePrepareRes
       status: "ready_for_dev"
     };
     tasks.push(item);
-    transitionTaskState(cwd, runId, task.id, "ready_for_dev", {
+    assertTransitionAccepted(transitionTaskState(cwd, runId, task.id, "ready_for_dev", {
       worktree: taskPath,
       branch
-    });
+    }), `prepare worktree for ${task.id}`);
   }
 
   const index: WorktreeIndex = {
@@ -163,14 +164,15 @@ export function prepareWorktrees(cwd: string, runId: string): WorktreePrepareRes
   };
   writeText(indexFile(cwd, runId), `${JSON.stringify(index, null, 2)}\n`);
 
-  transitionRunState(cwd, runId, "branch_prepared", {
+  assertTransitionAccepted(transitionRunState(cwd, runId, "branch_prepared", {
     run_branch: runBranch,
     branch_prepared_at: new Date().toISOString()
-  });
-  transitionRunState(cwd, runId, "implementing", {
+  }), `prepare run branch for ${runId}`);
+  assertTransitionAccepted(transitionRunState(cwd, runId, "implementing", {
     implementation_prepared_at: new Date().toISOString(),
     run_branch: runBranch
-  });
+  }), `mark implementation prepared for ${runId}`);
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,
@@ -194,15 +196,14 @@ function worktreeForTask(cwd: string, runId: string, taskId: string): WorktreeTa
   return task;
 }
 
-function normalizeScope(scope: string): string {
-  return scope.replace(/\/\*\*$/, "").replace(/\/\*$/, "");
-}
-
 function matchesScope(file: string, scope: string): boolean {
   if (scope === "**" || scope === "**/*") return true;
   if (!scope.includes("*")) return file === scope;
-  const base = normalizeScope(scope);
-  return file === base || file.startsWith(`${base}/`);
+  const escaped = scope.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const pattern = escaped
+    .replace(/\*\*/g, ".*")
+    .replace(/\*/g, "[^/]*");
+  return new RegExp(`^${pattern}$`).test(file);
 }
 
 function isLockfile(file: string): boolean {
@@ -313,14 +314,15 @@ export function collectPatch(cwd: string, runId: string, taskId: string): PatchC
   writeText(patchFile, patch ? `${patch}\n` : "");
   writeText(commandsFile, `# Commands\n\n- git add -N .\n- git diff --binary HEAD\n- git diff --name-only HEAD\n\n# Test Evidence\n\nRuntime did not execute task verification in phase 5. Dev Agent must record verification commands before later QA phases.\n`);
   writeText(evidenceFile, `# Evidence\n\n## Patch\n\n${patchFile}\n\n## Changed Files\n\n${validation.changedFiles.length > 0 ? validation.changedFiles.map((file) => `- ${file}`).join("\n") : "- none"}\n\n## Patch Validation\n\n- passed: ${validation.passed}\n${validation.errors.map((error) => `- ${error}`).join("\n")}\n\n## Patch Risks\n\n${validation.risks.length > 0 ? validation.risks.map((risk) => `- ${risk.level}: ${risk.file} - ${risk.reason}`).join("\n") : "- none"}\n\n## Test Evidence\n\n- Pending Dev Agent command evidence; phase 5 only collects and validates patch boundaries.\n`);
+  assertTransitionAccepted(transitionTaskState(cwd, runId, taskId, validation.passed ? "patch_validated" : "patch_invalid", {
+    validation
+  }), `collect patch for ${taskId}`);
   writeText(path.join(agentDir, "status.json"), `${JSON.stringify({
     task_id: taskId,
     status: validation.passed ? "patch_validated" : "patch_invalid",
     validation
   }, null, 2)}\n`);
-  transitionTaskState(cwd, runId, taskId, validation.passed ? "patch_validated" : "patch_invalid", {
-    validation
-  });
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,

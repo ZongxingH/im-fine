@@ -102,6 +102,11 @@ export interface StateTransitionResult {
   blocker?: string;
 }
 
+export function assertTransitionAccepted(result: StateTransitionResult, label: string): void {
+  if (result.accepted) return;
+  throw new Error(`${label} rejected state transition ${result.from} -> ${result.to}: ${result.reason || "unknown reason"}${result.blocker ? ` (${result.blocker})` : ""}`);
+}
+
 export function isRunState(value: string): value is RunState {
   return RUN_STATES.has(value as RunState);
 }
@@ -157,6 +162,7 @@ function recordBlocker(cwd: string, runId: string, blocker: Record<string, unkno
 function isLegalRunTransition(from: RunState, to: RunState): boolean {
   if (from === to) return true;
   if (from === "archived") return to === "archived";
+  if (to === "archiving") return true;
   if (isRecoverableRunState(to)) return true;
 
   const allowed: Record<RunState, RunState[]> = {
@@ -194,10 +200,10 @@ function isLegalTaskTransition(from: TaskState, to: TaskState): boolean {
 
   const allowed: Record<TaskState, TaskState[]> = {
     planned: ["waiting", "ready", "ready_for_dev", "implementing", "implementation_blocked_by_design"],
-    waiting: ["ready", "ready_for_dev"],
-    ready: ["ready_for_dev", "implementing", "patch_validated", "patch_invalid"],
-    ready_for_dev: ["implementing", "patch_validated", "patch_invalid"],
-    implementing: ["patch_validated", "patch_invalid"],
+    waiting: ["ready", "ready_for_dev", "implementation_blocked_by_design"],
+    ready: ["ready_for_dev", "implementing", "patch_validated", "patch_invalid", "implementation_blocked_by_design"],
+    ready_for_dev: ["implementing", "patch_validated", "patch_invalid", "implementation_blocked_by_design"],
+    implementing: ["patch_validated", "patch_invalid", "implementation_blocked_by_design"],
     patch_invalid: ["ready_for_dev", "implementing"],
     patch_validated: ["qa_passed", "qa_failed", "qa_blocked"],
     qa_failed: ["ready_for_dev", "implementing"],

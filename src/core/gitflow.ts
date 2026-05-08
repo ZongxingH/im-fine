@@ -1,12 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph, type TaskGraphTask } from "./plan.js";
 import { runCommand, runShellCommand } from "./shell.js";
-import { transitionRunState, transitionTaskState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState, transitionTaskState } from "./state-machine.js";
 
 export type CommitMode = "task" | "integration";
-export type PushStatus = "pushed" | "push_blocked_no_remote" | "push_blocked_permission" | "push_blocked_branch_conflict" | "push_blocked_network" | "push_blocked_failed";
+export type PushStatus = "pushed" | "push_blocked_no_remote" | "push_blocked_auth" | "push_blocked_branch_conflict" | "push_blocked_network" | "push_blocked_failed";
 
 export interface CommitRecord {
   taskIds: string[];
@@ -51,6 +52,10 @@ interface AgentStatus {
   validation?: {
     passed?: boolean;
   };
+}
+
+interface RunMetadata {
+  project_kind?: "new_project" | "existing_project";
 }
 
 interface RuntimeVerification {
@@ -116,11 +121,11 @@ function taskById(graph: TaskGraph, taskId: string): TaskGraphTask {
 }
 
 function updateRun(cwd: string, runId: string, status: string, extra: Record<string, unknown>): void {
-  transitionRunState(cwd, runId, status, extra);
+  assertTransitionAccepted(transitionRunState(cwd, runId, status, extra), `update run ${runId}`);
 }
 
 function updateTask(cwd: string, runId: string, taskId: string, status: string, extra: Record<string, unknown>): void {
-  transitionTaskState(cwd, runId, taskId, status, extra);
+  assertTransitionAccepted(transitionTaskState(cwd, runId, taskId, status, extra), `update task ${taskId}`);
 }
 
 function appendEvidence(file: string, title: string, section: string): void {
@@ -223,6 +228,21 @@ function executableVerificationCommands(task: TaskGraphTask): string[] {
   });
 }
 
+function matchesScope(file: string, scope: string): boolean {
+  const escaped = scope.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const pattern = escaped.replaceAll("**", ":::DOUBLE_STAR:::").replaceAll("*", "[^/]*").replaceAll(":::DOUBLE_STAR:::", ".*");
+  return new RegExp(`^${pattern}$`).test(file);
+}
+
+function validateResolvedRunScope(runWorktree: string, tasks: TaskGraphTask[]): string[] {
+  const changed = runGit(runWorktree, ["diff", "--cached", "--name-only", "HEAD"])
+    .split("\n")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const allowedScopes = tasks.flatMap((task) => task.write_scope);
+  return changed.filter((file) => !allowedScopes.some((scope) => matchesScope(file, scope)));
+}
+
 function commitMessage(runId: string, tasks: TaskGraphTask[], mode: CommitMode, runtimeVerification: RuntimeVerification[]): string {
   const subject = mode === "task" && tasks.length === 1
     ? tasks[0].commit.message
@@ -257,6 +277,51 @@ function ensureCleanRunWorktree(runWorktree: string): void {
   if (status.trim()) {
     throw new Error(`Run worktree has uncommitted changes: ${runWorktree}`);
   }
+}
+
+function runMetadata(cwd: string, runId: string): RunMetadata {
+  return readJson<RunMetadata>(path.join(runDir(cwd, runId), "run.json"));
+}
+
+function syncDirectory(source: string, target: string, preserve: Set<string>): void {
+  const sourceEntries = new Set(fs.readdirSync(source, { withFileTypes: true }).map((entry) => entry.name));
+
+  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
+    if (preserve.has(entry.name)) continue;
+    if (!sourceEntries.has(entry.name)) {
+      fs.rmSync(path.join(target, entry.name), { recursive: true, force: true });
+    }
+  }
+
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (preserve.has(entry.name)) continue;
+    const sourcePath = path.join(source, entry.name);
+    const targetPath = path.join(target, entry.name);
+    if (entry.isDirectory()) {
+      fs.mkdirSync(targetPath, { recursive: true });
+      syncDirectory(sourcePath, targetPath, new Set());
+      continue;
+    }
+    if (entry.isSymbolicLink()) {
+      fs.rmSync(targetPath, { recursive: true, force: true });
+      fs.symlinkSync(fs.readlinkSync(sourcePath), targetPath);
+      continue;
+    }
+    fs.copyFileSync(sourcePath, targetPath);
+  }
+}
+
+function finalizeWorkspaceIfNeeded(cwd: string, runId: string, runBranch: string, runWorktree: string): void {
+  const metadata = runMetadata(cwd, runId);
+  if (metadata.project_kind !== "new_project") return;
+
+  syncDirectory(runWorktree, cwd, new Set([".git", ".imfine"]));
+  updateRun(cwd, runId, "committing", {
+    finalized_at: new Date().toISOString(),
+    finalized_branch: runBranch,
+    finalized_from_worktree: runWorktree,
+    finalized_to_cwd: cwd
+  });
 }
 
 function applyPatch(runWorktree: string, patch: string, taskId: string): void {
@@ -403,6 +468,8 @@ export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?
     run_worktree: runWorktree,
     commit_hashes: commits.map((commit) => commit.hash)
   });
+  finalizeWorkspaceIfNeeded(cwd, runId, runBranch, runWorktree);
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,
@@ -428,6 +495,15 @@ export function commitResolvedRun(cwd: string, runId: string, taskIds?: string[]
   }
 
   runGit(runWorktree, ["add", "-A"]);
+  const scopeViolations = validateResolvedRunScope(runWorktree, tasks);
+  if (scopeViolations.length > 0) {
+    updateRun(cwd, runId, "blocked", {
+      commit_blocked_at: new Date().toISOString(),
+      commit_blocked_reason: "conflict_resolution_outside_write_scope",
+      commit_blocked_files: scopeViolations
+    });
+    throw new Error(`Conflict Resolver changed files outside write_scope: ${scopeViolations.join(", ")}`);
+  }
   const evidence = evidenceFile(cwd, runId, "commits.md");
   const runtimeVerification = runPreCommitVerification(cwd, runId, runWorktree, tasks, evidence);
   const message = commitMessage(runId, tasks, "integration", runtimeVerification);
@@ -444,6 +520,8 @@ export function commitResolvedRun(cwd: string, runId: string, taskIds?: string[]
     commit_hashes: [hash],
     conflict_resolved_at: new Date().toISOString()
   });
+  finalizeWorkspaceIfNeeded(cwd, runId, runBranch, runWorktree);
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,
@@ -459,7 +537,7 @@ export function commitResolvedRun(cwd: string, runId: string, taskIds?: string[]
 function classifyPushFailure(output: string): PushStatus {
   const lower = output.toLowerCase();
   if (lower.includes("permission denied") || lower.includes("authentication") || lower.includes("access denied")) {
-    return "push_blocked_permission";
+    return "push_blocked_auth";
   }
   if (lower.includes("non-fast-forward") || lower.includes("fetch first") || lower.includes("stale info") || lower.includes("rejected")) {
     return "push_blocked_branch_conflict";
@@ -472,7 +550,7 @@ function classifyPushFailure(output: string): PushStatus {
 
 function userActionForPush(status: PushStatus, runBranch: string): string {
   if (status === "push_blocked_no_remote") return "Configure origin remote, then resume imfine so runtime can push the run branch.";
-  if (status === "push_blocked_permission") return "Fix git credentials or repository permissions, then resume imfine.";
+  if (status === "push_blocked_auth") return "Fix git credentials or repository permissions, then resume imfine.";
   if (status === "push_blocked_branch_conflict") return `Let Orchestrator choose rebase, rename, or block for ${runBranch}; do not manually overwrite remote history.`;
   if (status === "push_blocked_network") return "Retry when network access is available; runtime already used limited retry.";
   if (status === "push_blocked_failed") return "Inspect push evidence and let Orchestrator decide whether retry, rename, or credentials repair is needed.";
@@ -490,6 +568,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
     const output = remoteProbe.stderr || "origin remote is not configured";
     appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: ${status}\n- remote: origin\n- local commit: ${localHead}\n- user action: ${userActionForPush(status, runBranch)}\n- output: ${output}`);
     updateRun(cwd, runId, "blocked", { push_status: status, push_blocked_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_user_action: userActionForPush(status, runBranch), push_local_commit: localHead });
+    refreshOrchestrationSnapshot(cwd, runId);
     return { runId, runBranch, runWorktree, remote: "origin", status, evidence, output };
   }
 
@@ -498,6 +577,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
   if (pushed.code === 0) {
     appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: pushed\n- remote: ${remoteProbe.stdout}\n- local commit: ${localHead}\n- output: ${output || "ok"}`);
     updateRun(cwd, runId, "pushing", { push_status: "pushed", pushed_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree });
+    refreshOrchestrationSnapshot(cwd, runId);
     return { runId, runBranch, runWorktree, remote: remoteProbe.stdout, status: "pushed", evidence, output };
   }
 
@@ -510,6 +590,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
       if (pushed.code === 0) {
         appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: pushed\n- remote: ${remoteProbe.stdout}\n- local commit: ${localHead}\n- retries: ${attempt - 1}\n- output: ${finalOutput || "ok"}`);
         updateRun(cwd, runId, "pushing", { push_status: "pushed", pushed_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree });
+        refreshOrchestrationSnapshot(cwd, runId);
         return { runId, runBranch, runWorktree, remote: remoteProbe.stdout, status: "pushed", evidence, output: finalOutput };
       }
       status = classifyPushFailure([pushed.stdout, pushed.stderr, pushed.error].filter(Boolean).join("\n"));
@@ -518,5 +599,6 @@ export function pushRun(cwd: string, runId: string): PushResult {
   }
   appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: ${status}\n- remote: ${remoteProbe.stdout}\n- local commit: ${localHead}\n- user action: ${userActionForPush(status, runBranch)}\n- output: ${finalOutput || "push failed"}`);
   updateRun(cwd, runId, "blocked", { push_status: status, push_blocked_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_user_action: userActionForPush(status, runBranch), push_local_commit: localHead });
+  refreshOrchestrationSnapshot(cwd, runId);
   return { runId, runBranch, runWorktree, remote: remoteProbe.stdout, status, evidence, output: finalOutput };
 }

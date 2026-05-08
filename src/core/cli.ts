@@ -151,7 +151,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
           return;
         }
         ensureGitRepository(cwd);
-        const auto = runAutoOrchestrator(cwd, result.runId, {
+        const auto = await runAutoOrchestrator(cwd, result.runId, {
           executor: readStringFlag(args, "executor"),
           dryRun: readBooleanFlag(args, "dryRun"),
           maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
@@ -159,7 +159,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
         print(auto, json, () => formatAutoOrchestrator(auto));
         return;
       }
-      const auto = runAutoOrchestrator(cwd, result.runId, {
+      const auto = await runAutoOrchestrator(cwd, result.runId, {
         executor: readStringFlag(args, "executor"),
         dryRun: readBooleanFlag(args, "dryRun"),
         maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
@@ -171,7 +171,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     if (command === "orchestrate") {
       const runId = args.positional[1];
       if (!runId) throw new Error("Expected orchestrate <run-id>.");
-      const result = runAutoOrchestrator(cwd, runId, {
+      const result = await runAutoOrchestrator(cwd, runId, {
         executor: readStringFlag(args, "executor"),
         dryRun: readBooleanFlag(args, "dryRun"),
         maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
@@ -335,7 +335,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       if (command === "agents" && action === "execute") {
         const runId = args.positional[2];
         if (!runId) throw new Error("Expected agents execute <run-id>.");
-        const result = executeAgentBatch(cwd, runId, {
+        const result = await executeAgentBatch(cwd, runId, {
           dryRun: readBooleanFlag(args, "dryRun"),
           executor: readStringFlag(args, "executor"),
           limit: parseLimit(readStringFlag(args, "limit"))

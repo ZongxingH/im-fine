@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeText } from "./fs.js";
-import { transitionRunState, transitionTaskState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState, transitionTaskState } from "./state-machine.js";
 
 export interface TaskGraphTask {
   id: string;
@@ -258,7 +258,7 @@ function writeTaskPlans(cwd: string, runDir: string, graph: TaskGraph, artifacts
       writeText(file, body);
       artifacts.push(file);
     }
-    transitionTaskState(cwd, graph.run_id, task.id, "planned");
+    assertTransitionAccepted(transitionTaskState(cwd, graph.run_id, task.id, "planned"), `plan task ${task.id}`);
     artifacts.push(path.join(taskDir, "status.json"));
   }
 }
@@ -297,7 +297,7 @@ export function planRun(cwd: string, runId: string): PlanResult {
 
   writeTaskPlans(cwd, runDir, graph, artifacts);
 
-  transitionRunState(cwd, runId, "planned", { planned_at: new Date().toISOString() });
+  assertTransitionAccepted(transitionRunState(cwd, runId, "planned", { planned_at: new Date().toISOString() }), `plan run ${runId}`);
 
   return {
     runId,

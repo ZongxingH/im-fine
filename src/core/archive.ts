@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
-import { transitionRunState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 
 export type ArchiveStatus = "archived" | "blocked";
 
@@ -154,7 +155,7 @@ function outcomeChecks(cwd: string, runId: string): ArchiveCheck[] {
 }
 
 function updateRun(cwd: string, runId: string, status: ArchiveStatus, extra: Record<string, unknown>): void {
-  transitionRunState(cwd, runId, status, extra);
+  assertTransitionAccepted(transitionRunState(cwd, runId, status, extra), `archive run ${runId}`);
 }
 
 function appendProjectSection(file: string, title: string, body: string): void {
@@ -174,6 +175,24 @@ function taskLines(graph: TaskGraph | null, cwd: string, runId: string): string[
     const status = fs.existsSync(statusFile) ? readJson<TaskStatus>(statusFile) : {};
     return `- ${task.id}: ${task.title} (${status.status || "unknown"}${status.commit_hash ? `, ${status.commit_hash}` : ""})`;
   });
+}
+
+function qaStatusLines(graph: TaskGraph | null, cwd: string, runId: string): string {
+  if (!graph) return "missing";
+  return graph.tasks.map((task) => {
+    const file = qaStatusFile(cwd, runId, task.id);
+    const qa = fs.existsSync(file) ? readJson<{ status?: string }>(file) : {};
+    return `${task.id}=${qa.status || "missing"}`;
+  }).join(", ");
+}
+
+function reviewStatusLines(graph: TaskGraph | null, cwd: string, runId: string): string {
+  if (!graph) return "missing";
+  return graph.tasks.map((task) => {
+    const file = reviewStatusFile(cwd, runId, task.id);
+    const review = fs.existsSync(file) ? readJson<{ status?: string }>(file) : {};
+    return `${task.id}=${review.status || "missing"}`;
+  }).join(", ");
 }
 
 function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, checks: ArchiveCheck[], blockedItems: string[], projectUpdateFiles: string[]): string {
@@ -217,26 +236,26 @@ ${taskLines(graph, cwd, runId).join("\n")}
 ## Verification Evidence
 
 - test results: ${path.join(dir, "evidence", "test-results.md")}
-- QA status: ${graph ? graph.tasks.map((task) => `${task.id}=pass`).join(", ") : "missing"}
+- QA status: ${qaStatusLines(graph, cwd, runId)}
 
 ## Review Evidence
 
 - review evidence: ${path.join(dir, "evidence", "review.md")}
-- Review status: ${graph ? graph.tasks.map((task) => `${task.id}=approved`).join(", ") : "missing"}
+- Review status: ${reviewStatusLines(graph, cwd, runId)}
 
 ## Commit and Push
 
 - commit evidence: ${commits ? path.join(dir, "evidence", "commits.md") : "missing"}
-- commit hashes: ${run.commit_hashes?.length ? run.commit_hashes.join(", ") : "unknown"}
+- commit hashes: ${run.commit_hashes?.length ? run.commit_hashes.join(", ") : "missing"}
 - commit blocker: ${run.commit_blocked_reason || "none"}
 - push evidence: ${push ? path.join(dir, "evidence", "push.md") : "missing"}
-- push status: ${run.push_status || "unknown"}
-- push local commit: ${run.push_local_commit || run.commit_hashes?.at(-1) || "unknown"}
+- push status: ${run.push_status || "missing"}
+- push local commit: ${run.push_local_commit || run.commit_hashes?.at(-1) || "missing"}
 - push user action: ${run.push_user_action || "none"}
 
 ## Project Knowledge Updates
 
-${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).join("\n") : "- none"}
+${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).join("\n") : status === "blocked" ? "- blocked: archive did not update long-term project knowledge because required evidence is incomplete" : "- none"}
 
 ## Archive Confirmation
 
@@ -317,7 +336,7 @@ ${specDeltaFiles.length > 0 ? specDeltaFiles.map((file) => `- ${file}`).join("\n
 
 export function archiveRun(cwd: string, runId: string): ArchiveResult {
   const dir = runDir(cwd, runId);
-  transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString() });
+  assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString() }), `start archive for ${runId}`);
   const graph = readTaskGraph(cwd, runId);
   const archiveDir = path.join(dir, "archive");
   const agentDir = path.join(dir, "agents", "archive");
@@ -396,6 +415,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
     archive_report: archiveReport,
     user_report: userReport
   });
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,

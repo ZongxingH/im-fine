@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
@@ -50,6 +50,7 @@ interface ExecuteOptions {
   dryRun: boolean;
   executor?: string;
   limit?: number;
+  actionIds?: string[];
 }
 
 function readTextIfExists(file: string): string {
@@ -240,57 +241,25 @@ export function prepareAgentExecutions(cwd: string, runId: string): AgentPrepare
   };
 }
 
-export function executeAgentBatch(cwd: string, runId: string, options: ExecuteOptions): AgentExecuteResult {
-  const prepared = prepareAgentExecutions(cwd, runId);
-  const ready = prepared.packages.filter((item) => item.status === "ready");
-  const selected = typeof options.limit === "number" && options.limit >= 0 ? ready.slice(0, options.limit) : ready;
-  const executor = options.executor || "";
-  const results: AgentExecutionResult[] = [];
+async function executeOneAgent(cwd: string, runId: string, executor: string, item: AgentExecutionPackage): Promise<AgentExecutionResult> {
+  const executionStatusFile = path.join(item.outputDir, "execution-status.json");
+  const startedAt = new Date().toISOString();
+  writeText(executionStatusFile, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    agent_id: item.id,
+    status: "started",
+    executor,
+    prompt: item.prompt,
+    output_dir: item.outputDir,
+    started_at: startedAt,
+    updated_at: startedAt
+  }, null, 2)}\n`);
 
-  if (!options.dryRun && !executor) {
-    throw new Error("Missing internal executor. Pass --executor for non-interactive testing, or use --dry-run to only prepare model prompts.");
-  }
-
-  for (const item of selected) {
-    const lock = acquireLock(cwd, runId, "action", `agent-run-${item.id}`);
-    if (!lock.acquired) {
-      results.push({
-        id: item.id,
-        role: item.role,
-        taskId: item.taskId,
-        status: "failed",
-        prompt: item.prompt,
-        outputDir: item.outputDir,
-        stderr: lock.reason || "agent-run lock is held"
-      });
-      writeCheckpoint(cwd, runId, `agent-run-${item.id}`, "after", "blocked", lock.reason || "agent-run lock is held", [lock.file]);
-      continue;
-    }
-
-    try {
-      writeCheckpoint(cwd, runId, `agent-run-${item.id}`, "before", "started", `prepare model execution for ${item.id}`, [item.prompt]);
-    if (options.dryRun) {
-      const statusFile = path.join(item.outputDir, "execution-status.json");
-      writeText(statusFile, `${JSON.stringify({
-        schema_version: 1,
-        run_id: runId,
-        agent_id: item.id,
-        status: "dry_run",
-        prompt: item.prompt,
-        updated_at: new Date().toISOString()
-      }, null, 2)}\n`);
-      results.push({ id: item.id, role: item.role, taskId: item.taskId, status: "dry_run", prompt: item.prompt, outputDir: item.outputDir });
-      writeCheckpoint(cwd, runId, `agent-run-${item.id}`, "after", "waiting_for_model", "dry-run model dispatch prepared", [statusFile]);
-      continue;
-    }
-
-    const prompt = fs.readFileSync(item.prompt, "utf8");
-    const executed = spawnSync(executor, {
+  return await new Promise<AgentExecutionResult>((resolve) => {
+    const child = spawn(executor, {
       cwd,
       shell: true,
-      input: prompt,
-      encoding: "utf8",
-      timeout: 30 * 60 * 1000,
       env: {
         ...process.env,
         IMFINE_RUN_ID: runId,
@@ -300,45 +269,143 @@ export function executeAgentBatch(cwd: string, runId: string, options: ExecuteOp
         IMFINE_AGENT_OUTPUT_DIR: item.outputDir
       }
     });
-    const stdout = executed.stdout || "";
-    const stderr = executed.stderr || executed.error?.message || "";
-    writeText(path.join(item.outputDir, "stdout.md"), stdout);
-    writeText(path.join(item.outputDir, "stderr.md"), stderr);
-    writeText(path.join(item.outputDir, "execution-status.json"), `${JSON.stringify({
-      schema_version: 1,
-      run_id: runId,
-      agent_id: item.id,
-      status: executed.status === 0 ? "executed" : "failed",
-      exit_code: executed.status,
-      executor,
-      stdout: path.join(item.outputDir, "stdout.md"),
-      stderr: path.join(item.outputDir, "stderr.md"),
-      updated_at: new Date().toISOString()
-    }, null, 2)}\n`);
-    results.push({
-      id: item.id,
-      role: item.role,
-      taskId: item.taskId,
-      status: executed.status === 0 ? "executed" : "failed",
-      prompt: item.prompt,
-      outputDir: item.outputDir,
-      exitCode: executed.status,
-      stdout,
-      stderr
+
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const finish = (status: AgentExecutionResult["status"], exitCode: number | null, errorMessage = "") => {
+      if (settled) return;
+      settled = true;
+      const completedAt = new Date().toISOString();
+      if (errorMessage && !stderr) stderr = errorMessage;
+      writeText(path.join(item.outputDir, "stdout.md"), stdout);
+      writeText(path.join(item.outputDir, "stderr.md"), stderr);
+      writeText(executionStatusFile, `${JSON.stringify({
+        schema_version: 1,
+        run_id: runId,
+        agent_id: item.id,
+        status,
+        exit_code: exitCode,
+        executor,
+        prompt: item.prompt,
+        output_dir: item.outputDir,
+        started_at: startedAt,
+        completed_at: completedAt,
+        stdout: path.join(item.outputDir, "stdout.md"),
+        stderr: path.join(item.outputDir, "stderr.md"),
+        updated_at: completedAt
+      }, null, 2)}\n`);
+      resolve({
+        id: item.id,
+        role: item.role,
+        taskId: item.taskId,
+        status,
+        prompt: item.prompt,
+        outputDir: item.outputDir,
+        exitCode,
+        stdout,
+        stderr
+      });
+    };
+
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish("failed", null, "model executor timed out");
+    }, 30 * 60 * 1000);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
     });
-    writeCheckpoint(
-      cwd,
-      runId,
-      `agent-run-${item.id}`,
-      "after",
-      executed.status === 0 ? "completed" : "failed",
-      executed.status === 0 ? "model executor completed" : "model executor failed",
-      [path.join(item.outputDir, "execution-status.json")]
-    );
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      finish("failed", null, error.message);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      finish(code === 0 ? "executed" : "failed", code);
+    });
+
+    const prompt = fs.readFileSync(item.prompt, "utf8");
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+export async function executeAgentBatch(cwd: string, runId: string, options: ExecuteOptions): Promise<AgentExecuteResult> {
+  const prepared = prepareAgentExecutions(cwd, runId);
+  const ready = prepared.packages.filter((item) => item.status === "ready");
+  const filtered = options.actionIds?.length
+    ? ready.filter((item) => {
+      const taskActionId = item.taskId ? `agent-${item.role}-${item.taskId}` : "";
+      const runLevelActionPrefix = item.taskId ? "" : `agent-${item.role}`;
+      return options.actionIds?.includes(taskActionId)
+        || options.actionIds?.some((actionId) => Boolean(runLevelActionPrefix) && actionId.startsWith(runLevelActionPrefix))
+        || options.actionIds?.includes(item.id);
+    })
+    : ready;
+  const selected = typeof options.limit === "number" && options.limit >= 0 ? filtered.slice(0, options.limit) : filtered;
+  const executor = options.executor || "";
+  const results: AgentExecutionResult[] = [];
+
+  if (!options.dryRun && !executor) {
+    throw new Error("Missing internal executor. Pass --executor for non-interactive testing, or use --dry-run to only prepare model prompts.");
+  }
+
+  const tasks = selected.map(async (item) => {
+    const lock = acquireLock(cwd, runId, "action", `agent-run-${item.id}`);
+    if (!lock.acquired) {
+      const result: AgentExecutionResult = {
+        id: item.id,
+        role: item.role,
+        taskId: item.taskId,
+        status: "failed",
+        prompt: item.prompt,
+        outputDir: item.outputDir,
+        stderr: lock.reason || "agent-run lock is held"
+      };
+      results.push(result);
+      writeCheckpoint(cwd, runId, `agent-run-${item.id}`, "after", "blocked", lock.reason || "agent-run lock is held", [lock.file]);
+      return;
+    }
+
+    try {
+      writeCheckpoint(cwd, runId, `agent-run-${item.id}`, "before", "started", `prepare model execution for ${item.id}`, [item.prompt]);
+      if (options.dryRun) {
+        const statusFile = path.join(item.outputDir, "execution-status.json");
+        writeText(statusFile, `${JSON.stringify({
+          schema_version: 1,
+          run_id: runId,
+          agent_id: item.id,
+          status: "dry_run",
+          prompt: item.prompt,
+          output_dir: item.outputDir,
+          updated_at: new Date().toISOString()
+        }, null, 2)}\n`);
+        results.push({ id: item.id, role: item.role, taskId: item.taskId, status: "dry_run", prompt: item.prompt, outputDir: item.outputDir });
+        writeCheckpoint(cwd, runId, `agent-run-${item.id}`, "after", "waiting_for_model", "dry-run model dispatch prepared", [statusFile]);
+        return;
+      }
+
+      const executed = await executeOneAgent(cwd, runId, executor, item);
+      results.push(executed);
+      writeCheckpoint(
+        cwd,
+        runId,
+        `agent-run-${item.id}`,
+        "after",
+        executed.status === "executed" ? "completed" : "failed",
+        executed.status === "executed" ? "model executor completed" : "model executor failed",
+        [path.join(item.outputDir, "execution-status.json")]
+      );
     } finally {
       releaseLock(cwd, lock);
     }
-  }
+  });
+  await Promise.all(tasks);
 
   return {
     runId,

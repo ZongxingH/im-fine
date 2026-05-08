@@ -511,6 +511,13 @@ needs_infrastructure_action
 - action ledger 会持久记录 completed action，重复 resume / run 不会重复执行同一 completed action。
 - stale lock 可由 Orchestrator / resume 根据时间、状态和 evidence 自主恢复。
 
+基于 imfine-demo 复盘后补充确认的实现约束：
+
+- lifecycle gate 必须是硬约束，不能只记录 blocker 但继续推进后续动作。
+- `patch_invalid` 任务不得进入 QA、Review、Commit 或 Conflict Resolver 集成路径。
+- 所有 deterministic runtime 动作在修改 run / task 生命周期后，都应刷新 orchestration snapshot，避免 `run.json`、`orchestration/state.json`、`queue.json` 和 `timeline.md` 视图脱节。
+- `orchestration/state.json` 必须只统计真正可执行的后续动作；已完成的 `done` action 不能继续作为 next action 落盘。
+
 ## 9. Agent 体系
 
 ### 9.1 Orchestrator Agent
@@ -677,6 +684,7 @@ needs_infrastructure_action
 - Risk Reviewer 支持 `ready|blocked|needs_replan`，由 Orchestrator 决定继续、阻塞或进入 replan。
 - Technical Writer 支持 `ready|not_needed|blocked`，用于归档前文档整理确认。
 - Project Knowledge Updater 支持 `ready|blocked`，用于归档前项目知识更新确认。
+- `agent-runs.json` 现在必须保留 role instance / agent instance 维度的执行元数据，包括 execution package、started/completed 时间、outputDir 和 handoff 文件，不能只保留角色标签。
 
 ## 10. 任务拆分、并行和冲突策略
 
@@ -731,6 +739,12 @@ T3 docs/order-filter/**
 - 并行 Agent 不直接共享同一个可写工作区；必须通过 worktree、任务边界、handoff 和 runtime gate 集成。
 - 失败、冲突或证据不足时，Orchestrator 优先自主重规划、返工、降级并行度或触发 Conflict Resolver，而不是默认要求人工介入。
 
+基于 imfine-demo 复盘后补充确认：
+
+- 并行能力的完成标准不是“有多个角色文件”，而是必须同时具备 ready wave、agent-run registry、execution package、并发执行时间线和 handoff 汇聚证据。
+- `parallel-plan.json` 必须既能表达 ready wave，也能在完成态保留 agent-run 分组视图，证明哪些角色或任务曾经并行执行。
+- 同一 wave 内的多个 ready agent 应能被 runtime 一次性 dispatch，而不是退化成单链顺序推进。
+
 ### 10.4 write_scope 校验
 
 Runtime 必须检查：
@@ -750,6 +764,7 @@ Runtime 必须检查：
 - patch risk scanner 会记录 lockfile 修改、CI / 生产配置修改、权限 / 安全策略修改、大量删除和 `.imfine` runtime-owned 状态文件修改。
 - 高风险变更写入 `.imfine/runs/<run-id>/evidence/patch-risks.md`，并生成 Risk Reviewer 输入。
 - 高风险记录不替模型做最终判断；是否继续、返工、重规划或阻塞由 Orchestrator / Risk Reviewer 判定。
+- `write_scope` matcher 必须与 planner 使用同一 glob 语义；`tsconfig*.json`、`vite.config.*`、`src/**`、`docs/**` 等模式已被视为必须回归覆盖的基准样例。
 
 ## 11. Git、Commit 和 Push 策略
 
@@ -800,7 +815,7 @@ Verification:
 push 失败处理：
 
 - 无 remote：记录 `push_blocked_no_remote`。
-- 无权限：记录 `push_blocked_permission`。
+- 无权限：记录 `push_blocked_auth`。
 - 网络失败：可重试，超过限制后阻塞。
 - 分支已存在且冲突：由 Orchestrator 判断 rebase、rename 或阻塞。
 
@@ -811,9 +826,10 @@ push blocked 不阻止归档。Archive Agent 可以在报告中明确记录 push
 - task commit 和 integration commit 均由 runtime 执行，并要求 patch validation、QA pass、Review approved。
 - patch apply 冲突会生成 Conflict Resolver input / status / handoff / conflicts evidence，并把 run / task 推入 `needs_conflict_resolution`。
 - Conflict Resolver `resolved` handoff 会自动触发 affected verification、Review gate 和 resolved integration commit，用户不需要手动执行 `commit resolved`。
-- push 会记录 `push_blocked_no_remote`、`push_blocked_permission`、`push_blocked_branch_conflict`、`push_blocked_network`、`push_blocked_failed` 或 `pushed`。
+- push 会记录 `push_blocked_no_remote`、`push_blocked_auth`、`push_blocked_branch_conflict`、`push_blocked_network`、`push_blocked_failed` 或 `pushed`。
 - 网络失败会有限重试；分支冲突记录为 `push_blocked_branch_conflict`，后续由 Orchestrator 判断 rebase、rename 或阻塞。
 - push evidence 和 Archive 报告会记录 push status、目标分支、本地 commit hash、阻塞原因和用户后续动作。
+- Conflict Resolver resolved integration commit 也必须重新校验 run worktree 的实际改动是否仍在任务 `write_scope` 范围内，防止 Conflict Resolver 变成绕过 patch validity 的旁路提交机制。
 
 ## 12. 新项目流程
 
@@ -841,6 +857,12 @@ push blocked 不阻止归档。Archive Agent 可以在报告中明确记录 push
 - lint / format / typecheck / build 命令。
 - `.gitignore`。
 - `.imfine/project` 长期知识库。
+
+补充确认的交付约束：
+
+- 独立 task worktree / run worktree 只是执行隔离手段，不是最终交付落点。
+- 新项目交付完成后，runtime 必须执行 final materialization，把最终结果显化回当前工程目录，同时保留 `.imfine` runtime 状态不被旧 worktree 覆盖。
+- `run.json` 需要保留 `finalized_at`、`finalized_branch`、`finalized_from_worktree`、`finalized_to_cwd` 等字段，明确最终交付从哪里落到了哪里。
 
 高风险或无法安全假设项：
 
@@ -921,6 +943,7 @@ Agent 负责智能判断：
 - 非法 handoff 不会触发 patch collect、verify、review、archive 或 commit resolved；默认进入 `waiting_for_model`、`blocked` 或可恢复状态。
 - auto loop 会结合 action ledger、checkpoint、状态和 evidence gate 恢复下一步，而不是只重跑最近 action。
 - QA / Review 失败会持续生成有边界的 fix task，由 Orchestrator 自主推进，不因固定重试次数直接阻塞。
+- QA runtime 只能在 task 已完成 patch collect 且 `patch_validated=true` 后运行，不能通过直接重跑 worktree 校验绕过 patch gate。
 
 ## 15. Gate 体系
 
@@ -1052,6 +1075,8 @@ Archive Agent 需要确认：
 - run 创建阶段生成 `.imfine/runs/<run-id>/spec-delta/proposal.md`、`design.md`、`tasks.md`。
 - Archive 消费 run-local spec delta，并更新 `.imfine/project/capabilities/<run-id>/spec.md`。
 - capability spec 区分 `Verified Facts` 和 `Inferences`，避免把推断当作已验证事实。
+- Archive 报告必须只消费真实 QA / Review / commit / push 状态，不能硬编码 `T*=pass`、`T*=approved` 或用 `missing/unknown` 掩盖其实已经明确分类的 push 结果。
+- 长期知识更新必须给出明确结论：要么列出实际更新到 `.imfine/project/**` 和 capability spec 的文件，要么明确说明因为证据缺失而未更新，而不是写成笼统的 `none`。
 
 ## 18. 分阶段实现路线
 
@@ -1160,6 +1185,7 @@ Archive Agent 需要确认：
 - runtime 生成并校验 task graph、ownership、execution plan、commit plan 和每个任务的 dev/test/review plan。
 - task graph 校验包含必填字段、依赖存在性、循环、并行任务 `write_scope` 重叠检查。
 - 边界不清或校验失败时 Orchestrator 进入 Task Planner replan，而不是继续执行不安全并行。
+- ready wave 生成和并行组持久化已被纳入阶段 4 的实际完成标准，不能只停留在“逻辑上可并行”的任务图。
 
 ### 阶段 5：worktree 并行开发
 
@@ -1185,6 +1211,7 @@ Archive Agent 需要确认：
 - Dev / Technical Writer Agent 在独立 worktree 中产出 patch。
 - patch collect 会收集 binary diff、commands、task evidence，并校验 `write_scope`。
 - patch risk scanner 会记录高风险变更并生成 Risk Reviewer 输入。
+- `write_scope` glob 匹配已按 planner/validator 同规则固化，并有针对性回归覆盖 `tsconfig*.json`、`vite.config.*` 等模式。
 
 ### 阶段 6：QA、Review、返工闭环
 
@@ -1209,6 +1236,7 @@ Archive Agent 需要确认：
 - QA 失败和 Review changes_requested 会生成 scoped fix task，并推进 `needs_dev_fix`。
 - 设计不成立可进入 Architect / Task Planner rework。
 - role-specific handoff gate 防止非法 handoff 推进后续动作；已覆盖 Dev、QA、Reviewer、Archive、Conflict Resolver、Committer、Risk Reviewer、Technical Writer、Project Knowledge Updater。
+- QA / Review / Commit 阶段已补充“不能基于部分证据继续推进”的完成约束，保证 task lifecycle 与 run lifecycle 单调一致。
 
 ### 阶段 7：commit 和 push
 
@@ -1234,6 +1262,7 @@ Archive Agent 需要确认：
 - Orchestrator 会消费 Committer handoff；只有 `ready` 会推进 runtime commit，`blocked` 会阻止 commit 并保留证据。
 - Conflict Resolver resolved 后自动 QA、Review、commit，并继续 push / archive。
 - push 支持 no remote、permission、network、branch conflict、generic failure 分类和 evidence。
+- resolved integration commit 现在也必须通过 write-scope 和 gate 校验，避免 invalid patch 被 Conflict Resolver 集成。
 
 ### 阶段 8：归档和长期知识更新
 
@@ -1258,6 +1287,7 @@ Archive Agent 需要确认：
 - Archive 确认 requirement、design、task、QA、Review、commit、push evidence。
 - Archive 更新 `.imfine/project/**`、`.imfine/reports/<run-id>.md` 和 `.imfine/project/capabilities/<run-id>/spec.md`。
 - push blocked 时仍可归档，并在报告中记录阻塞原因和用户后续动作。
+- archive/report/state 现在被视为同一条证据链的不同视图，必须建立在统一状态源上，不能分别拼接“局部真相”。
 
 ### 阶段 9：新项目完整创建
 
@@ -1281,6 +1311,7 @@ Archive Agent 需要确认：
 - 当前大模型会话尚未执行 Architect / Task Planner 时，runtime 生成执行包并进入 `waiting_for_model`。
 - 当前大模型会话执行并写回 Agent 产物后，可继续完成 stack decision、task graph、worktree、实现、QA、Review、commit、push blocked 记录和 archive。
 - deterministic Node.js vertical slice 仅作为内部 debug/test 路径保留。
+- 新项目 cwd materialization 已被纳入阶段 9 的完成标准，而不再被视为后续体验优化。
 
 ## 19. 已确认实现决策
 
@@ -1301,6 +1332,8 @@ Archive Agent 需要确认：
 15. `/imfine init` 是新项目和已有项目的统一初始化入口；已有项目必须生成架构文档草稿，并由 Architect Agent 基于证据补全。
 16. imfine 是应用级、项目级 harness；完整流程是长时任务，默认由 Orchestrator 自主调度、恢复、返工和解决问题，尽量减少人工介入。
 17. 多 Agent 并行包括同一角色的多个 Agent 实例并行；是否并行由边界和依赖决定，不由角色名称决定。
+18. 并行能力的完成标准不是“有多个角色文件”，而是必须同时具备 ready wave、agent-run registry、execution package、并发执行时间线和 handoff 汇聚证据。
+19. orchestration snapshot 的完成标准不是“状态大致对”，而是 `run.json`、`orchestration/state.json`、`queue.json`、`timeline.md` 对同一时刻的可执行动作和最终状态给出一致视图。
 
 ## 20. 参考来源
 

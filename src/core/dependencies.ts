@@ -1,8 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { runCommand } from "./shell.js";
-import { transitionRunState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 
 export type DependencyInstallStatus = "installed" | "skipped" | "blocked" | "failed";
 
@@ -117,12 +118,13 @@ export function installDependencies(cwd: string, runId: string): DependencyInsta
     };
     writeEvidence(result);
     if (result.status === "blocked") {
-      transitionRunState(cwd, runId, "needs_infrastructure_action", {
+      assertTransitionAccepted(transitionRunState(cwd, runId, "needs_infrastructure_action", {
         dependency_install_blocked_at: new Date().toISOString(),
         dependency_install_reason: result.reason,
         dependency_install_evidence: evidence
-      });
+      }), `dependency install blocked for ${runId}`);
     }
+    refreshOrchestrationSnapshot(cwd, runId);
     return result;
   }
 
@@ -141,11 +143,12 @@ export function installDependencies(cwd: string, runId: string): DependencyInsta
   };
   writeEvidence(result);
   if (result.status === "failed") {
-    transitionRunState(cwd, runId, "needs_infrastructure_action", {
+    assertTransitionAccepted(transitionRunState(cwd, runId, "needs_infrastructure_action", {
       dependency_install_failed_at: new Date().toISOString(),
       dependency_install_reason: result.reason,
       dependency_install_evidence: evidence
-    });
+    }), `dependency install failed for ${runId}`);
   }
+  refreshOrchestrationSnapshot(cwd, runId);
   return result;
 }

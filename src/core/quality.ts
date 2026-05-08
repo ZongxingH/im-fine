@@ -1,9 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph, type TaskGraphTask } from "./plan.js";
 import { runShellCommand } from "./shell.js";
-import { transitionRunState, transitionTaskState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState, transitionTaskState } from "./state-machine.js";
 import { validatePatch } from "./worktree.js";
 
 export type VerificationStatus = "pass" | "fail" | "blocked";
@@ -113,11 +114,11 @@ function normalizeVerificationStatus(value: VerificationStatus | undefined): Ver
 }
 
 function updateRunStatus(cwd: string, runId: string, status: string, extra: Record<string, unknown> = {}): void {
-  transitionRunState(cwd, runId, status, extra);
+  assertTransitionAccepted(transitionRunState(cwd, runId, status, extra), `update run ${runId}`);
 }
 
 function updateTaskStatus(cwd: string, runId: string, taskId: string, status: string, extra: Record<string, unknown> = {}): void {
-  transitionTaskState(cwd, runId, taskId, status, extra);
+  assertTransitionAccepted(transitionTaskState(cwd, runId, taskId, status, extra), `update task ${taskId}`);
 }
 
 function writeEvidenceSection(file: string, title: string, section: string): void {
@@ -184,9 +185,21 @@ function reviewerAgentDir(cwd: string, runId: string, taskId: string): string {
   return path.join(runDir(cwd, runId), "agents", `reviewer-${taskId}`);
 }
 
+function requireValidatedPatch(cwd: string, runId: string, taskId: string): void {
+  const file = path.join(runDir(cwd, runId), "agents", taskId, "status.json");
+  if (!fs.existsSync(file)) {
+    throw new Error(`Missing patch collection status for task ${taskId}`);
+  }
+  const status = readJson<{ status?: string; validation?: { passed?: boolean } }>(file);
+  if (status.status !== "patch_validated" || status.validation?.passed !== true) {
+    throw new Error(`Task ${taskId} patch must be collected and validated before QA`);
+  }
+}
+
 export function verifyTask(cwd: string, runId: string, taskId: string, agentStatus?: VerificationStatus, summary = ""): VerificationResult {
   const graph = readGraph(cwd, runId);
   const task = taskById(graph, taskId);
+  requireValidatedPatch(cwd, runId, taskId);
   const worktree = worktreeForTask(cwd, runId, taskId);
   const agentDir = qaAgentDir(cwd, runId, taskId);
   ensureDir(agentDir);
@@ -217,14 +230,14 @@ export function verifyTask(cwd: string, runId: string, taskId: string, agentStat
   let fixTaskId: string | undefined;
   if (status === "fail") {
     fixTaskId = createFixTask(cwd, runId, task, "qa_failed", errors);
-    updateRunStatus(cwd, runId, "needs_dev_fix", { qa_failed_at: new Date().toISOString() });
     updateTaskStatus(cwd, runId, taskId, "qa_failed", { fix_task_id: fixTaskId });
+    updateRunStatus(cwd, runId, "needs_dev_fix", { qa_failed_at: new Date().toISOString() });
   } else if (status === "blocked") {
-    updateRunStatus(cwd, runId, "blocked", { qa_blocked_at: new Date().toISOString() });
     updateTaskStatus(cwd, runId, taskId, "qa_blocked", { errors });
+    updateRunStatus(cwd, runId, "blocked", { qa_blocked_at: new Date().toISOString() });
   } else {
-    updateRunStatus(cwd, runId, "reviewing", { qa_passed_at: new Date().toISOString() });
     updateTaskStatus(cwd, runId, taskId, "qa_passed");
+    updateRunStatus(cwd, runId, "reviewing", { qa_passed_at: new Date().toISOString() });
   }
 
   const evidenceFile = path.join(runDir(cwd, runId), "evidence", "test-results.md");
@@ -249,6 +262,7 @@ export function verifyTask(cwd: string, runId: string, taskId: string, agentStat
     fix_task_id: fixTaskId
   }, null, 2)}\n`);
   writeText(statusFile, `${JSON.stringify({ task_id: taskId, status, fix_task_id: fixTaskId, errors }, null, 2)}\n`);
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,
@@ -286,14 +300,14 @@ export function reviewTask(cwd: string, runId: string, taskId: string, decision:
   let fixTaskId: string | undefined;
   if (status === "changes_requested") {
     fixTaskId = createFixTask(cwd, runId, task, "review_changes_requested", [summary]);
-    updateRunStatus(cwd, runId, "needs_dev_fix", { review_changes_requested_at: new Date().toISOString() });
     updateTaskStatus(cwd, runId, taskId, "review_changes_requested", { fix_task_id: fixTaskId });
+    updateRunStatus(cwd, runId, "needs_dev_fix", { review_changes_requested_at: new Date().toISOString() });
   } else if (status === "blocked") {
-    updateRunStatus(cwd, runId, "blocked", { review_blocked_at: new Date().toISOString() });
     updateTaskStatus(cwd, runId, taskId, "review_blocked", { errors });
+    updateRunStatus(cwd, runId, "blocked", { review_blocked_at: new Date().toISOString() });
   } else {
-    updateRunStatus(cwd, runId, "reviewing", { review_approved_at: new Date().toISOString() });
     updateTaskStatus(cwd, runId, taskId, "review_approved");
+    updateRunStatus(cwd, runId, "reviewing", { review_approved_at: new Date().toISOString() });
   }
 
   const evidenceFile = path.join(runDir(cwd, runId), "evidence", "review.md");
@@ -317,6 +331,7 @@ export function reviewTask(cwd: string, runId: string, taskId: string, decision:
     fix_task_id: fixTaskId
   }, null, 2)}\n`);
   writeText(statusFile, `${JSON.stringify({ task_id: taskId, status, summary, fix_task_id: fixTaskId, errors }, null, 2)}\n`);
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,
@@ -372,6 +387,7 @@ export function requestDesignRework(cwd: string, runId: string, taskId: string, 
   updateTaskStatus(cwd, runId, taskId, "implementation_blocked_by_design", {
     design_rework_evidence: evidenceFile
   });
+  refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,

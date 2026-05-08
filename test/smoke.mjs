@@ -251,6 +251,8 @@ fs.writeFileSync(path.join(t2.path, "src", "outside.js"), "export const outside 
 const invalidPatch = JSON.parse(run(["patch", "collect", gitRun.runId, "T2", "--json"], gitProject));
 assert.equal(invalidPatch.validation.passed, false);
 assert.ok(invalidPatch.validation.errors.some((error) => error.includes("outside write_scope")));
+const invalidVerify = runExpectFail(["verify", gitRun.runId, "T2", "--json"], gitProject);
+assert.match(invalidVerify, /patch must be collected and validated before QA/);
 
 const riskProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-risk-"));
 function riskGit(args) {
@@ -294,6 +296,49 @@ assert.ok(riskyPatch.validation.risks.some((risk) => risk.reason.includes("lockf
 assert.ok(fs.existsSync(path.join(riskRun.runDir, "evidence", "patch-risks.md")));
 assert.ok(fs.existsSync(path.join(riskRun.runDir, "agents", "risk-reviewer", "input.md")));
 
+const scopeProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-scope-"));
+function scopeGit(args) {
+  return execFileSync("git", args, {
+    cwd: scopeProject,
+    encoding: "utf8"
+  });
+}
+scopeGit(["init"]);
+scopeGit(["config", "user.email", "imfine@example.test"]);
+scopeGit(["config", "user.name", "imfine test"]);
+fs.writeFileSync(path.join(scopeProject, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }, null, 2));
+scopeGit(["add", "."]);
+scopeGit(["commit", "-m", "initial"]);
+const scopeRun = JSON.parse(run(["run", "Update config files", "--plan-only", "--json"], scopeProject));
+const scopeGraphFile = path.join(scopeRun.runDir, "planning", "task-graph.json");
+const scopeGraph = JSON.parse(fs.readFileSync(scopeGraphFile, "utf8"));
+scopeGraph.tasks = [{
+  id: "T1",
+  title: "Update config files",
+  type: "dev",
+  depends_on: [],
+  read_scope: ["package.json"],
+  write_scope: ["tsconfig*.json", "vite.config.*"],
+  acceptance: ["config files updated"],
+  dev_plan: ["edit config files"],
+  test_plan: ["documentation review"],
+  review_plan: ["review config scope"],
+  verification: ["documentation review"],
+  commit: { mode: "task", message: "chore: update config files" }
+}];
+fs.writeFileSync(scopeGraphFile, `${JSON.stringify(scopeGraph, null, 2)}\n`);
+const scopePrepared = JSON.parse(run(["worktree", "prepare", scopeRun.runId, "--json"], scopeProject));
+const scopeT1 = scopePrepared.tasks.find((task) => task.task_id === "T1");
+assert.ok(scopeT1);
+fs.writeFileSync(path.join(scopeT1.path, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022" } }, null, 2));
+fs.writeFileSync(path.join(scopeT1.path, "tsconfig.app.json"), JSON.stringify({ extends: "./tsconfig.json" }, null, 2));
+fs.writeFileSync(path.join(scopeT1.path, "vite.config.ts"), "export default { test: true };\n");
+const scopedPatch = JSON.parse(run(["patch", "collect", scopeRun.runId, "T1", "--json"], scopeProject));
+assert.equal(scopedPatch.validation.passed, true);
+assert.ok(scopedPatch.validation.changedFiles.includes("tsconfig.json"));
+assert.ok(scopedPatch.validation.changedFiles.includes("tsconfig.app.json"));
+assert.ok(scopedPatch.validation.changedFiles.includes("vite.config.ts"));
+
 const gitStatus = JSON.parse(run(["status", "--json"], gitProject));
 assert.equal(gitStatus.currentRunStatus, "reviewing");
 assert.equal(gitStatus.currentRunBranch, `imfine/${gitRun.runId}`);
@@ -335,6 +380,8 @@ const promptFile = process.env.IMFINE_AGENT_PROMPT || "";
 const outputDir = process.env.IMFINE_AGENT_OUTPUT_DIR || "";
 const prompt = fs.readFileSync(promptFile, "utf8");
 const agentDir = path.dirname(outputDir);
+fs.writeFileSync(path.join(agentDir, "started-at.txt"), new Date().toISOString());
+await new Promise((resolve) => setTimeout(resolve, 150));
 
 function worktreePath() {
   const match = prompt.match(/## Worktree\\n\\n([^\\n]+)/);
@@ -533,6 +580,25 @@ assert.ok(autoRun.steps.some((step) => step.actionId === "agent-technical-writer
 assert.ok(autoRun.steps.some((step) => step.actionId === "agent-project-knowledge-updater" && step.detail.includes("Project Knowledge Updater handoff")));
 assert.ok(fs.existsSync(autoRun.timeline));
 assert.ok(fs.existsSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "checkpoints", "latest.json")));
+const autoAgentRuns = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "agent-runs.json"), "utf8"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "risk-reviewer" && agent.status === "completed"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "technical-writer" && agent.status === "completed"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "risk-reviewer" && agent.executionStatus === "completed"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "dev" && typeof agent.startedAt === "string"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "dev" && typeof agent.outputDir === "string"));
+const autoParallelPlan = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "parallel-plan.json"), "utf8"));
+assert.ok(autoParallelPlan.groups.some((group) => typeof group.status === "string"));
+assert.ok(autoParallelPlan.groups.some((group) => Array.isArray(group.readyActionIds)));
+assert.ok(autoParallelPlan.groups.some((group) => group.id === "archive" && group.status === "done"));
+const autoState = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "state.json"), "utf8"));
+assert.equal(autoState.status, "archived");
+assert.equal(autoState.inferred_status, "archived");
+assert.equal(autoState.next_action_count, 0);
+const autoQueue = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "state", "queue.json"), "utf8"));
+assert.deepEqual(autoQueue.actions, []);
+const startedDev = Date.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "agents", "T1", "started-at.txt"), "utf8").trim());
+const startedRisk = Date.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "agents", "risk-reviewer", "started-at.txt"), "utf8").trim());
+assert.ok(Math.abs(startedDev - startedRisk) < 120);
 const autoStatus = JSON.parse(run(["status", "--json"], autoProject));
 assert.equal(autoStatus.currentRunStatus, "archived");
 assert.match(run(["report", autoRun.runId], autoProject), /push status: push_blocked_no_remote/);
@@ -809,6 +875,10 @@ const parallelValidation = JSON.parse(run(["task", "graph", "validate", parallel
 assert.equal(parallelValidation.passed, true);
 assert.deepEqual(parallelValidation.parallelGroups, [["T1", "T2"]]);
 const parallelPrepared = JSON.parse(run(["worktree", "prepare", parallelRun.runId, "--json"], parallelProject));
+const parallelResume = JSON.parse(run(["resume", parallelRun.runId, "--json"], parallelProject));
+const parallelWave = parallelResume.parallelGroups.find((group) => group.id === "task-layer-0");
+assert.ok(parallelWave);
+assert.deepEqual([...parallelWave.readyActionIds].sort(), ["agent-dev-T1", "agent-technical-writer-T2"]);
 assert.equal(parallelPrepared.tasks.length, 2);
 const parallelT1 = parallelPrepared.tasks.find((task) => task.task_id === "T1");
 const parallelT2 = parallelPrepared.tasks.find((task) => task.task_id === "T2");
@@ -853,6 +923,7 @@ assert.match(fs.readFileSync(archive.archiveReport, "utf8"), /Delivered Changes/
 assert.match(fs.readFileSync(archive.archiveReport, "utf8"), /Evidence Chain/);
 assert.match(fs.readFileSync(archive.archiveReport, "utf8"), /push status: push_blocked_no_remote/);
 assert.match(fs.readFileSync(archive.archiveReport, "utf8"), /push user action:/);
+assert.match(fs.readFileSync(archive.archiveReport, "utf8"), /Project Knowledge Updates/);
 assert.match(fs.readFileSync(archive.userReport, "utf8"), /Commit and Push/);
 assert.match(fs.readFileSync(path.join(parallelProject, ".imfine", "project", "test-strategy.md"), "utf8"), new RegExp(parallelRun.runId));
 assert.ok(fs.existsSync(path.join(parallelProject, ".imfine", "project", "capabilities", parallelRun.runId.toLowerCase(), "spec.md")));
@@ -869,6 +940,11 @@ const blockedArchive = JSON.parse(run(["archive", delivery.runId, "--json"]));
 assert.equal(blockedArchive.status, "blocked");
 assert.ok(blockedArchive.blockedItems.length > 0);
 assert.ok(fs.existsSync(blockedArchive.archiveReport));
+const blockedArchiveReport = fs.readFileSync(blockedArchive.archiveReport, "utf8");
+assert.match(blockedArchiveReport, /QA status: T1=missing/);
+assert.match(blockedArchiveReport, /Review status: T1=missing/);
+assert.match(blockedArchiveReport, /push status: missing/);
+assert.match(blockedArchiveReport, /blocked: archive did not update long-term project knowledge/);
 
 const newProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-new-project-"));
 const delivered = JSON.parse(run(["run", "Create a tiny task tracker", "--deliver", "--json"], newProject));
@@ -878,6 +954,11 @@ assert.equal(delivered.push.status, "push_blocked_no_remote");
 assert.equal(delivered.commit.commits.length, 2);
 assert.ok(fs.existsSync(path.join(newProject, ".git")));
 assert.ok(fs.existsSync(path.join(newProject, ".imfine", "runs", delivered.runId, "archive", "archive-report.md")));
+assert.ok(fs.existsSync(path.join(newProject, "package.json")));
+assert.ok(fs.existsSync(path.join(newProject, ".gitignore")));
+assert.ok(fs.existsSync(path.join(newProject, "src", "index.js")));
+assert.ok(fs.existsSync(path.join(newProject, "test", "index.test.js")));
+assert.ok(fs.existsSync(path.join(newProject, "docs", "usage.md")));
 assert.ok(fs.existsSync(path.join(delivered.projectWorktree, "package.json")));
 assert.ok(fs.existsSync(path.join(delivered.projectWorktree, ".gitignore")));
 assert.ok(fs.existsSync(path.join(delivered.projectWorktree, "src", "index.js")));
@@ -888,6 +969,9 @@ assert.match(fs.readFileSync(path.join(newProject, ".imfine", "runs", delivered.
 const generatedPackage = JSON.parse(fs.readFileSync(path.join(delivered.projectWorktree, "package.json"), "utf8"));
 assert.equal(generatedPackage.scripts.test, "node --test");
 assert.ok(generatedPackage.scripts.format);
+const finalizedRun = JSON.parse(fs.readFileSync(path.join(newProject, ".imfine", "runs", delivered.runId, "run.json"), "utf8"));
+assert.equal(fs.realpathSync(finalizedRun.finalized_to_cwd), fs.realpathSync(newProject));
+assert.equal(finalizedRun.finalized_branch, `imfine/${delivered.runId}`);
 execFileSync("npm", ["run", "test"], { cwd: delivered.projectWorktree, encoding: "utf8" });
 const generatedBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: delivered.projectWorktree, encoding: "utf8" }).trim();
 assert.equal(generatedBranch, `imfine/${delivered.runId}`);

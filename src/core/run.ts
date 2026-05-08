@@ -4,7 +4,7 @@ import { doctor } from "./doctor.js";
 import { ensureDir, writeText } from "./fs.js";
 import { initProject } from "./init.js";
 import { planRun, type PlanResult } from "./plan.js";
-import { transitionRunState } from "./state-machine.js";
+import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 
 export interface DeliveryRunResult {
   runId: string;
@@ -229,13 +229,13 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
     source: sourceInfo,
     created_at: new Date().toISOString()
   }, null, 2)}\n`, artifacts);
-  transitionRunState(cwd, runId, "infrastructure_checked", { infrastructure_checked_at: new Date().toISOString() });
-  transitionRunState(cwd, runId, "project_analyzed", { project_analyzed_at: new Date().toISOString() });
+  assertTransitionAccepted(transitionRunState(cwd, runId, "infrastructure_checked", { infrastructure_checked_at: new Date().toISOString() }), `run ${runId} infrastructure checked`);
+  assertTransitionAccepted(transitionRunState(cwd, runId, "project_analyzed", { project_analyzed_at: new Date().toISOString() }), `run ${runId} project analyzed`);
 
   writeArtifact(path.join(runDir, "request", "input.md"), `# Original Input\n\n${source.content.trim()}\n`, artifacts);
   writeArtifact(path.join(runDir, "request", "normalized.md"), `# Normalized Requirement\n\n${source.content.trim()}\n\n## Source\n\n- Type: ${source.type}\n- Value: ${source.value}\n`, artifacts);
   writeArtifact(path.join(runDir, "request", "source.json"), `${JSON.stringify(sourceInfo, null, 2)}\n`, artifacts);
-  transitionRunState(cwd, runId, "requirement_analyzed", { requirement_analyzed_at: new Date().toISOString() });
+  assertTransitionAccepted(transitionRunState(cwd, runId, "requirement_analyzed", { requirement_analyzed_at: new Date().toISOString() }), `run ${runId} requirement analyzed`);
 
   writeArtifact(path.join(runDir, "analysis", "project-context.md"), `# Project Context\n\n## Classification\n\n${analysis.kind}\n\n## Evidence\n\n${evidenceLines(analysis.evidence)}\n\n## Unknowns\n\n${lines(analysis.unknowns)}\n\n## Package Manager\n\n${analysis.packageManager}\n\n## Test Commands\n\n${lines(analysis.testCommands)}\n\n## Doctor Summary\n\n- pass: ${doctorReport.summary.pass}\n- warn: ${doctorReport.summary.warn}\n- fail: ${doctorReport.summary.fail}\n`, artifacts);
 
@@ -254,7 +254,7 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
   writeArtifact(path.join(runDir, "design", "technical-solution.md"), `# Technical Solution\n\n## Current Technical Position\n\n- Project kind: ${analysis.kind}.\n- Package manager: ${analysis.packageManager}.\n- Test commands: ${analysis.testCommands.length > 0 ? analysis.testCommands.join(", ") : "unknown"}.\n\n## Proposed Direction\n\n${analysis.kind === "new_project" ? "- Agent must choose the technology stack, framework, directory structure, and test tooling in the design/planning workflow.\n- The selected stack must be recorded with rationale before implementation." : "- Agent must use existing stack and module boundaries supported by evidence.\n- Unknown technical areas must be inspected before task planning."}\n\n## Evidence or Unknowns\n\n### Evidence\n\n${evidenceLines(analysis.evidence)}\n\n### Unknowns\n\n${lines(analysis.unknowns)}\n`, artifacts);
 
   writeArtifact(path.join(runDir, "design", "acceptance.md"), `# Acceptance Criteria\n\n- The original requirement is preserved.\n- A normalized requirement exists.\n- Project context classifies the project as new or existing.\n- Every project conclusion includes file evidence or is marked unknown.\n- A solution design exists and is ready for Agent review before task graph generation.\n`, artifacts);
-  transitionRunState(cwd, runId, "designed", { designed_at: new Date().toISOString() });
+  assertTransitionAccepted(transitionRunState(cwd, runId, "designed", { designed_at: new Date().toISOString() }), `run ${runId} designed`);
 
   updateCurrentRun(workspace, runId);
   const plan = planRun(cwd, runId);
