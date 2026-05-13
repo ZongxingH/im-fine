@@ -3,7 +3,7 @@ import path from "node:path";
 import { copyFileIfChanged, ensureDir } from "./fs.js";
 import { packageRoot } from "./paths.js";
 
-export type LibraryKind = "agents" | "skills" | "templates";
+export type LibraryKind = "agents" | "skills" | "templates" | "workflows";
 
 export interface LibraryEntry {
   id: string;
@@ -18,7 +18,7 @@ export interface LibrarySyncResult {
   preserved: string[];
 }
 
-const KINDS: LibraryKind[] = ["agents", "skills", "templates"];
+const KINDS: LibraryKind[] = ["agents", "skills", "templates", "workflows"];
 
 export function libraryRoot(): string {
   return path.join(packageRoot(), "library");
@@ -28,10 +28,10 @@ export function listLibrary(kind: LibraryKind): LibraryEntry[] {
   const dir = path.join(libraryRoot(), kind);
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
-    .filter((file) => file.endsWith(".md") || file.endsWith(".json"))
+    .filter((file) => file.endsWith(".md") || file.endsWith(".json") || file.endsWith(".yaml"))
     .sort()
     .map((file) => ({
-      id: file.replace(/\.(md|json)$/, ""),
+      id: file.replace(/\.(md|json|yaml)$/, ""),
       file: path.join(dir, file),
       kind
     }));
@@ -47,7 +47,7 @@ export function readLibrary(kind: LibraryKind, id: string): string {
 }
 
 export function syncLibrary(cwd: string): LibrarySyncResult {
-  const workspace = path.join(cwd, ".imfine");
+  const workspace = path.join(cwd, ".imfine", "debug", "library-snapshot");
   const created: string[] = [];
   const updated: string[] = [];
   const preserved: string[] = [];
@@ -62,13 +62,13 @@ export function syncLibrary(cwd: string): LibrarySyncResult {
 
   const readme = path.join(libraryRoot(), "README.md");
   if (fs.existsSync(readme)) {
-    copyFileIfChanged(readme, path.join(workspace, "library.md"), created, updated, preserved);
+    copyFileIfChanged(readme, path.join(workspace, "README.md"), created, updated, preserved);
   }
 
   return { workspace, created, updated, preserved };
 }
 
 export function parseKind(value: string): LibraryKind {
-  if (value === "agents" || value === "skills" || value === "templates") return value;
-  throw new Error("Expected one of: agents, skills, templates.");
+  if (value === "agents" || value === "skills" || value === "templates" || value === "workflows") return value;
+  throw new Error("Expected one of: agents, skills, templates, workflows.");
 }

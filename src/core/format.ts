@@ -9,6 +9,8 @@ import type { NewProjectDeliveryResult } from "./new-project.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { PlanResult } from "./plan.js";
 import type { DesignReworkResult, ReviewResult, VerificationResult } from "./quality.js";
+import type { ReplanResult } from "./replan.js";
+import type { RecoveryResult } from "./recovery.js";
 import type { DeliveryRunResult } from "./run.js";
 import type { ReportResult, StatusResult } from "./status.js";
 import type { PatchCollectResult, PatchValidationResult, WorktreePrepareResult } from "./worktree.js";
@@ -29,7 +31,7 @@ export function formatInit(result: InitResult): string {
   return [
     `initialized imfine workspace: ${result.workspace}`,
     `project mode: ${result.projectMode}`,
-    `architecture files: ${result.architecture.files.length}`,
+    `architecture placeholders: ${result.architecture.files.length}`,
     result.architecture.architectInput ? `architect input: ${result.architecture.architectInput}` : "architect input: none",
     `created: ${result.created.length}`,
     `updated: ${result.updated.length}`,
@@ -94,7 +96,9 @@ export function formatDeliveryRun(result: DeliveryRunResult): string {
     `status: ${result.status}`,
     `project kind: ${result.projectKind}`,
     `run dir: ${result.runDir}`,
-    `task graph: ${result.plan.taskGraph}`,
+    `runtime context: ${result.runDir}/orchestration/context.json`,
+    `pending roles: ${result.runDir}/orchestration/pending-roles.json`,
+    `task graph: ${result.plan?.taskGraph || "pending model task planner output"}`,
     `artifacts: ${result.artifacts.length}`,
     ""
   ].join("\n");
@@ -186,6 +190,26 @@ export function formatDesignRework(result: DesignReworkResult): string {
   ].join("\n");
 }
 
+export function formatRecovery(result: RecoveryResult): string {
+  return [
+    `recovered task ${result.runId}/${result.taskId}`,
+    `task state: ${result.fromTaskState} -> ${result.toTaskState}`,
+    `run state: ${result.fromRunState} -> ${result.toRunState}`,
+    ""
+  ].join("\n");
+}
+
+export function formatReplan(result: ReplanResult): string {
+  return [
+    `requested task-planner replan for ${result.runId}`,
+    `status: ${result.status}`,
+    `reason: ${result.reason}`,
+    `input: ${result.input}`,
+    `report: ${result.report}`,
+    ""
+  ].join("\n");
+}
+
 export function formatCommit(result: CommitResult): string {
   return [
     `committed run ${result.runId}`,
@@ -242,9 +266,11 @@ export function formatOrchestrator(result: OrchestratorResult): string {
     `status: ${result.status}`,
     `next actions: ${result.nextActions.length}`,
     `agent runs: ${result.agentRuns.length}`,
+    `dispatch contracts: ${result.dispatchContracts.length}`,
     `parallel groups: ${result.parallelGroups.length}`,
     `state: ${result.files.state}`,
     `queue: ${result.files.queue}`,
+    `contracts: ${result.files.dispatchContracts}`,
     `timeline: ${result.files.timeline}`,
     "actions:",
     ...(result.nextActions.length > 0
@@ -256,7 +282,8 @@ export function formatOrchestrator(result: OrchestratorResult): string {
 
 export function formatAgentPrepare(result: AgentPrepareResult): string {
   return [
-    `prepared model agent execution for run: ${result.runId}`,
+    `prepared legacy bridge artifacts for run: ${result.runId}`,
+    `usage: debug/testing only`,
     `dispatch: ${result.dispatch}`,
     `packages: ${result.packages.length}`,
     ...result.packages.map((item) => `- [${item.status}] ${item.id}: ${item.prompt}`),
@@ -266,7 +293,8 @@ export function formatAgentPrepare(result: AgentPrepareResult): string {
 
 export function formatAgentExecute(result: AgentExecuteResult): string {
   return [
-    `executed model agent batch for run: ${result.runId}`,
+    `executed legacy bridge batch for run: ${result.runId}`,
+    `usage: debug/testing only`,
     `executor: ${result.executor}`,
     `dry run: ${result.dryRun ? "yes" : "no"}`,
     `dispatch: ${result.dispatch}`,

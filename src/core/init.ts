@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { doctor } from "./doctor.js";
 import { ensureDir, writeFileIfMissing, writeJsonIfMissing, writeText } from "./fs.js";
-import { syncLibrary } from "./library.js";
 import type { InitResult } from "./types.js";
 
 function markdown(title: string, body: string): string {
@@ -85,6 +84,24 @@ function bullet(items: string[], fallback = "- 未发现明确证据"): string {
   return items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : fallback;
 }
 
+function placeholder(title: string, evidenceTitle: string, evidenceItems: string[], nextOwner: string, notes: string[] = []): string {
+  return markdown(title, `
+## 状态
+
+- pending
+- owner: ${nextOwner}
+- 这是初始化占位，不是最终结论。
+
+## ${evidenceTitle}
+
+${bullet(evidenceItems)}
+
+## 后续要求
+
+${notes.length > 0 ? notes.map((item) => `- ${item}`).join("\n") : "- 仅在有文件证据时写入结论。"}
+`);
+}
+
 function writeArchitectureDocs(cwd: string, workspace: string, created: string[], preserved: string[]): InitResult["architecture"] {
   const projectEntries = listProjectEntries(cwd);
   const mode: "empty" | "existing" = projectEntries.length === 0 ? "empty" : "existing";
@@ -104,111 +121,51 @@ function writeArchitectureDocs(cwd: string, workspace: string, created: string[]
     generated.push(file);
   };
 
-  add("overview.md", markdown("架构概览", `
-## 状态
+  add("overview.md", placeholder("架构概览占位", "项目证据", [...projectEntries, ...evidence.sourceFiles], "architect", [
+    "由 Architect Agent 基于项目证据补全项目模式、主要模块和总体边界。",
+    "证据不足时保持 unknown，不要猜测。"
+  ]));
 
-- 初始化阶段生成的架构草稿。
-- 当前大模型会话必须使用 Architect Agent 基于项目证据补全，不要把 runtime 草稿当作最终结论。
+  add("tech-stack.md", placeholder("技术栈占位", "包管理与配置证据", [...evidence.packageFiles, ...evidence.configFiles], "architect", [
+    "语言、框架、中间件、外部服务结论必须引用文件路径。"
+  ]));
 
-## 项目模式
+  add("modules.md", placeholder("模块结构占位", "源码证据", evidence.sourceFiles, "architect", [
+    "后续补全模块职责、依赖关系和主要读写边界。"
+  ]));
 
-- existing
+  add("module-tech-stack.md", placeholder("模块技术栈占位", "候选证据", [...evidence.packageFiles, ...evidence.configFiles], "architect", [
+    "仅在有文件证据时记录模块级技术栈。"
+  ]));
 
-## 项目根目录证据
+  add("entrypoints.md", placeholder("入口占位", "入口候选", evidence.entrypointFiles, "architect", [
+    "每个入口结论都必须带文件证据。"
+  ]));
 
-${bullet(projectEntries)}
+  add("test-strategy.md", placeholder("测试策略占位", "测试证据", evidence.testFiles, "architect", [
+    "后续补全测试框架、测试目录和可执行测试命令。"
+  ]));
 
-## 源码证据
-
-${bullet(evidence.sourceFiles)}
-`));
-
-  add("tech-stack.md", markdown("技术栈", `
-## 包管理和构建证据
-
-${bullet(evidence.packageFiles)}
-
-## 配置证据
-
-${bullet(evidence.configFiles)}
-
-## 待 Architect Agent 补全
-
-- 语言、框架、中间件、外部服务结论必须带文件证据。
-- 证据不足时保留未知，不要猜测。
-`));
-
-  add("modules.md", markdown("模块结构", `
-## 初始文件线索
-
-${bullet(evidence.sourceFiles)}
-
-## 待 Architect Agent 补全
-
-- 模块职责。
-- 模块间依赖。
-- 主要读写边界。
-`));
-
-  add("module-tech-stack.md", markdown("模块技术栈", `
-## 候选证据
-
-${bullet([...evidence.packageFiles, ...evidence.configFiles])}
-
-## 待 Architect Agent 补全
-
-- 只有存在文件证据时，才输出 Redis、MongoDB、MySQL、PostgreSQL、Nacos、Kafka、RabbitMQ、Elasticsearch、MyBatis、Spring Boot、Spring Cloud、Dubbo、gRPC、GraphQL 等模块级技术栈。
-`));
-
-  add("entrypoints.md", markdown("入口", `
-## 入口候选
-
-${bullet(evidence.entrypointFiles)}
-
-## 待 Architect Agent 补全
-
-- 每个入口结论都必须带文件证据。
-`));
-
-  add("test-strategy.md", markdown("测试策略", `
-## 测试证据
-
-${bullet(evidence.testFiles)}
-
-## 待 Architect Agent 补全
-
-- 测试框架。
-- 测试目录。
-- 可执行测试命令。
-- 缺失测试时记录风险和补齐建议。
-`));
-
-  add("risks.md", markdown("架构风险", `
-## 初始化风险
-
-- 这是初始化架构草稿，不是完整架构评审。
-- 所有结论必须由 Architect Agent 基于证据补全。
-- 证据不足的区域应标记未知。
-
-## 当前缺口
-
-- ${evidence.packageFiles.length === 0 ? "未发现包管理或构建文件。" : "包管理和构建文件需要进一步确认。"}
-- ${evidence.testFiles.length === 0 ? "未发现测试文件。" : "测试策略需要进一步确认。"}
-`));
+  add("risks.md", placeholder("架构风险占位", "初始化缺口", [
+    evidence.packageFiles.length === 0 ? "未发现包管理或构建文件" : "包管理和构建文件仍需 Agent 确认",
+    evidence.testFiles.length === 0 ? "未发现测试文件" : "测试策略仍需 Agent 确认"
+  ], "architect", [
+    "风险文件只记录缺口，不输出完整架构评审结论。"
+  ]));
 
   const architectDir = path.join(workspace, "runs", "init", "agents", "architect");
   const architectInput = path.join(architectDir, "input.md");
   writeText(architectInput, markdown("Architect Init Input", `
 ## 目标
 
-基于已有项目证据补全 \`.imfine/project/architecture\` 和 \`.imfine/project/*.md\`。
+基于已有项目证据补全 \`.imfine/project/architecture\` 和 \`.imfine/project/*.md\` 中的 pending 占位。
 
 ## 约束
 
 - 只根据文件证据给出架构结论。
-- 每个语言、框架、中间件、外部服务、入口、模块职责结论都必须引用文件路径。
-- 证据不足时标记未知，不要猜测。
+- 证据不足时标记 unknown，不要猜测。
 - 不修改业务代码。
+- 不把初始化占位文本当作已确认结论。
 
 ## 初始证据
 
@@ -232,7 +189,7 @@ ${bullet(evidence.sourceFiles)}
 
 ${bullet(evidence.testFiles)}
 
-## 需要更新的文件
+## 需要补全的占位文件
 
 ${generated.map((file) => `- ${file}`).join("\n")}
 `));
@@ -271,15 +228,15 @@ export function initProject(cwd: string): InitResult {
     ""
   ].join("\n"), created, preserved);
 
-  writeFileIfMissing(path.join(workspace, "project", "overview.md"), markdown("Project Overview", "Status: unknown. Evidence-backed project analysis will be added by later imfine phases."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "product.md"), markdown("Product", "Status: unknown."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "architecture.md"), markdown("Architecture", "Status: unknown. Architecture conclusions must cite file evidence."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "tech-stack.md"), markdown("Tech Stack", "Status: unknown. Detected tooling is available in doctor output."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "module-map.md"), markdown("Module Map", "Status: unknown."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "conventions.md"), markdown("Conventions", "Status: unknown."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "test-strategy.md"), markdown("Test Strategy", "Status: unknown."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "infrastructure.md"), markdown("Infrastructure", "Run `/imfine init` or `imfine doctor` to refresh infrastructure checks."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "risks.md"), markdown("Risks", "No risks recorded yet."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "overview.md"), markdown("Project Overview", "Status: pending.\n\nThis file is a placeholder. Product and project conclusions must be filled by model agents with evidence."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "product.md"), markdown("Product", "Status: pending.\n\nThis file is a placeholder, not a confirmed product summary."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "architecture.md"), markdown("Architecture", "Status: pending.\n\nArchitecture conclusions must be supplied by Architect Agent with file evidence."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "tech-stack.md"), markdown("Tech Stack", "Status: pending.\n\nDetected tooling may appear in doctor output, but this file starts as a placeholder."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "module-map.md"), markdown("Module Map", "Status: pending.\n\nModule boundaries must be filled by model agents from source evidence."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "conventions.md"), markdown("Conventions", "Status: pending.\n\nDevelopment conventions must be confirmed from repository evidence."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "test-strategy.md"), markdown("Test Strategy", "Status: pending.\n\nTesting conclusions must be supplied from repository evidence."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "infrastructure.md"), markdown("Infrastructure", "Status: pending.\n\nUse `/imfine init` or `imfine doctor` to refresh deterministic infrastructure checks."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "risks.md"), markdown("Risks", "Status: pending.\n\nNo evidence-backed risk summary has been written yet."), created, preserved);
   writeFileIfMissing(path.join(workspace, "project", "capabilities", ".gitkeep"), "", created, preserved);
   writeFileIfMissing(path.join(workspace, "runs", ".gitkeep"), "", created, preserved);
   writeFileIfMissing(path.join(workspace, "reports", ".gitkeep"), "", created, preserved);
@@ -300,11 +257,6 @@ export function initProject(cwd: string): InitResult {
     schema_version: 1,
     queue: []
   }, created, preserved);
-
-  const library = syncLibrary(cwd);
-  created.push(...library.created);
-  updated.push(...library.updated);
-  preserved.push(...library.preserved);
 
   const report = doctor(cwd);
   return { cwd, workspace, projectMode: architecture.mode, architecture, created, updated, preserved, doctor: report };

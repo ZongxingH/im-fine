@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "imfine Agent Handoff",
   "type": "object",
-  "required": ["run_id", "from", "to", "status", "summary", "next_state"],
+  "required": ["run_id", "from", "to", "status", "summary", "evidence", "next_state"],
   "properties": {
     "run_id": { "type": "string" },
     "task_id": { "type": "string" },

@@ -14,14 +14,15 @@ Phase 2 adds:
 - `imfine agents list|show <id>`
 - `imfine skills list|show <id>`
 - `imfine templates list|show <id>`
-- `imfine library sync`
+- `imfine workflows list|show <id>`
+- `imfine library sync` for an explicit debug snapshot only
 - imfine-owned source-level agents, skills, and artifact templates
 
 Phase 3 adds:
 
 - `imfine run <requirement text|requirement-file>`
 - delivery run creation from text or requirement files
-- project context, requirement analysis, impact analysis, risk analysis, solution design, architecture decisions, and acceptance criteria
+- runtime context, evidence, state, and pending-role materialization for delivery runs
 
 Phase 4 adds:
 
@@ -59,9 +60,9 @@ Phase 8 adds:
 
 Phase 9 adds:
 
-- `imfine run <requirement text|requirement-file>` full delivery for empty new-project directories
-- `imfine run <requirement text|requirement-file> --plan-only` to stop at analysis/planning
-- new project delivery with git init, code, tests, docs, local commits, push-blocked evidence, and archive
+- `imfine run <requirement text|requirement-file>` materializes runtime context for empty new-project directories and waits for Architect and Task Planner model work
+- empty-directory new-project runs stop at `waiting_for_model`
+- runtime does not generate a default project scaffold, task graph, or verification stack for new projects
 
 Orchestrator recovery adds:
 
@@ -70,9 +71,10 @@ Orchestrator recovery adds:
 
 Model agent execution adds:
 
-- `imfine agents prepare <run-id>` to generate agent/skill-backed model execution packages
-- the current Codex or Claude `/imfine` session executes or dispatches prepared Agent packages and writes the required handoff/artifacts
+- `imfine agents prepare <run-id>` as a legacy bridge for generating agent/skill-backed model execution packages
+- the target harness path is still the current Codex or Claude `/imfine` session acting as Orchestrator over runtime state and contracts
 - `imfine agents execute <run-id> --executor "<command>"` remains an internal/testing bridge for non-interactive runners
+- all bridge artifacts are debug-only and explicitly marked `legacy_debug`; they must not be used to claim true harness execution
 
 Existing-project automatic orchestration adds:
 
@@ -84,7 +86,7 @@ New-project automatic orchestration adds:
 - `/imfine run <requirement text|requirement-file>` inside Codex or Claude for empty project directories
 - Architect Agent stack decision output at `.imfine/runs/<run-id>/design/stack-decision.json`
 - Task Planner Agent task graph output before runtime prepares worktrees
-- runtime validation of the model-selected stack decision and task graph before delivery proceeds
+- runtime waits for model-selected stack and task-graph outputs before delivery proceeds
 
 Install from GitHub and enable `/imfine` in both Codex and Claude:
 

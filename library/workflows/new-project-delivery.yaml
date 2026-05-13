@@ -1,0 +1,30 @@
+{
+  "id": "new-project-delivery",
+  "states": {
+    "waiting_for_model": {
+      "roles": {
+        "architect": {
+          "status": "ready",
+          "action_id": "agent-architect",
+          "parallel_group": "new-project-discovery",
+          "skills": ["project-analysis", "clarify"],
+          "allowed_transitions": ["designed", "blocked"],
+          "ready_reason": "runtime context is materialized; Architect must choose stack and produce design artifacts"
+        },
+        "task-planner": {
+          "status": "waiting",
+          "action_id": "agent-task-planner",
+          "parallel_group": "new-project-planning",
+          "depends_on": ["agent-architect"],
+          "skills": ["write-delivery-plan", "parallel-agent-dispatch"],
+          "allowed_transitions": ["planned", "needs_task_replan", "blocked"],
+          "blocked_reason": "waiting for Architect stack decision and design outputs"
+        }
+      },
+      "notes": [
+        "Architect must produce stack decision and technical solution first.",
+        "Task Planner starts only after Architect outputs are present."
+      ]
+    }
+  }
+}

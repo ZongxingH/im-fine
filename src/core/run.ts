@@ -17,8 +17,8 @@ export interface DeliveryRunResult {
     value: string;
   };
   artifacts: string[];
-  status: "planned";
-  plan: PlanResult;
+  status: "planned" | "waiting_for_model";
+  plan?: PlanResult;
 }
 
 interface Evidence {
@@ -183,6 +183,12 @@ function writeArtifact(file: string, content: string, artifacts: string[]): void
   artifacts.push(file);
 }
 
+function pendingRoles(projectKind: ProjectAnalysis["kind"]): string[] {
+  return projectKind === "new_project"
+    ? ["architect", "task-planner"]
+    : ["intake", "project-analyzer", "product-planner", "architect", "task-planner"];
+}
+
 function updateCurrentRun(workspace: string, runId: string): void {
   writeText(path.join(workspace, "state", "current.json"), `${JSON.stringify({
     schema_version: 1,
@@ -208,6 +214,7 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
     "analysis",
     "design",
     "planning",
+    "orchestration",
     "spec-delta",
     "tasks",
     "agents",
@@ -239,27 +246,54 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
 
   writeArtifact(path.join(runDir, "analysis", "project-context.md"), `# Project Context\n\n## Classification\n\n${analysis.kind}\n\n## Evidence\n\n${evidenceLines(analysis.evidence)}\n\n## Unknowns\n\n${lines(analysis.unknowns)}\n\n## Package Manager\n\n${analysis.packageManager}\n\n## Test Commands\n\n${lines(analysis.testCommands)}\n\n## Doctor Summary\n\n- pass: ${doctorReport.summary.pass}\n- warn: ${doctorReport.summary.warn}\n- fail: ${doctorReport.summary.fail}\n`, artifacts);
 
-  writeArtifact(path.join(runDir, "analysis", "requirement-analysis.md"), `# Requirement Analysis\n\n## Requirement\n\n${source.content.trim()}\n\n## Project Kind\n\n${analysis.kind}\n\n## Assumptions\n\n- The run should stop before implementation; task graph and development execution are later phases.\n- Missing project facts are marked unknown instead of guessed.\n\n## Ambiguities\n\n- unknown until an Agent performs deeper requirement clarification.\n\n## Non-Goals\n\n- No code implementation in phase 3.\n- No branch, commit, push, or archive execution in phase 3.\n\n## Acceptance Candidates\n\n- Requirement is captured in normalized form.\n- Project context includes file evidence or unknown markers.\n- Solution design and acceptance criteria are generated for review.\n`, artifacts);
-
   writeArtifact(path.join(runDir, "analysis", "impact-analysis.md"), `# Impact Analysis\n\n## Likely Impact\n\n${analysis.kind === "new_project" ? "- New project scaffolding, product shape, architecture, and test strategy need Agent decisions." : "- Existing project files may be impacted; exact modules require Agent analysis in the planning phase."}\n\n## Evidence\n\n${evidenceLines(analysis.evidence)}\n\n## Unknowns\n\n${lines(analysis.unknowns)}\n`, artifacts);
 
   writeArtifact(path.join(runDir, "analysis", "risk-analysis.md"), `# Risk Analysis\n\n## Risks\n\n- Requirement interpretation may need Agent clarification before task planning.\n- Test command is ${analysis.testCommands.length > 0 ? "available from detected scripts" : "unknown"}.\n- Package manager is ${analysis.packageManager}.\n\n## High-Risk Areas\n\n- Security, permissions, production configuration, data migration, CI/CD, and external services require explicit evidence before implementation.\n`, artifacts);
 
-  writeArtifact(path.join(runDir, "analysis", "product-analysis.md"), `# Product Analysis\n\n## Project Kind\n\n${analysis.kind}\n\n## Product Goal\n\n${source.content.trim()}\n\n## Users\n\n- unknown until Product Planner or Intake Analyst refines user context.\n\n## Core Workflow\n\n${analysis.kind === "new_project" ? "- Define the first usable workflow from the requirement before implementation." : "- Fit the requirement into the existing product workflow; exact flow requires Agent analysis."}\n\n## Scope Boundary\n\n- Phase 3 captures product direction only. Feature scope must be converted into a task graph in a later phase.\n`, artifacts);
-
-  writeArtifact(path.join(runDir, "design", "solution-design.md"), `# Solution Design\n\n## Requirement\n\n${source.content.trim()}\n\n## Product Direction\n\n${analysis.kind === "new_project" ? "Create a new project that satisfies the requirement. Product positioning, users, core workflow, and scope should be refined by Product Planner and Architect agents." : "Implement the requirement within the existing project architecture and conventions."}\n\n## Technical Approach\n\n${analysis.kind === "new_project" ? "Technology stack, framework, test tooling, and directory structure are Agent-decided in later phases. Current deterministic analysis records this as pending Agent decision." : "Use existing evidence-backed stack and module boundaries. Unknown areas must remain unknown until inspected by agents."}\n\n## Evidence Basis\n\n${evidenceLines(analysis.evidence)}\n`, artifacts);
-
-  writeArtifact(path.join(runDir, "design", "architecture-decisions.md"), `# Architecture Decisions\n\n## Decisions\n\n- Project kind: ${analysis.kind}.\n- Package manager: ${analysis.packageManager}.\n- Implementation is deferred to task planning and development phases.\n\n## Pending Agent Decisions\n\n${analysis.kind === "new_project" ? "- Select technology stack.\n- Select framework.\n- Define directory structure.\n- Define test strategy." : "- Confirm affected modules.\n- Confirm write boundaries.\n- Confirm test coverage strategy."}\n\n## Unknowns\n\n${lines(analysis.unknowns)}\n`, artifacts);
-
-  writeArtifact(path.join(runDir, "design", "technical-solution.md"), `# Technical Solution\n\n## Current Technical Position\n\n- Project kind: ${analysis.kind}.\n- Package manager: ${analysis.packageManager}.\n- Test commands: ${analysis.testCommands.length > 0 ? analysis.testCommands.join(", ") : "unknown"}.\n\n## Proposed Direction\n\n${analysis.kind === "new_project" ? "- Agent must choose the technology stack, framework, directory structure, and test tooling in the design/planning workflow.\n- The selected stack must be recorded with rationale before implementation." : "- Agent must use existing stack and module boundaries supported by evidence.\n- Unknown technical areas must be inspected before task planning."}\n\n## Evidence or Unknowns\n\n### Evidence\n\n${evidenceLines(analysis.evidence)}\n\n### Unknowns\n\n${lines(analysis.unknowns)}\n`, artifacts);
-
-  writeArtifact(path.join(runDir, "design", "acceptance.md"), `# Acceptance Criteria\n\n- The original requirement is preserved.\n- A normalized requirement exists.\n- Project context classifies the project as new or existing.\n- Every project conclusion includes file evidence or is marked unknown.\n- A solution design exists and is ready for Agent review before task graph generation.\n`, artifacts);
+  const readyRoles = pendingRoles(analysis.kind);
+  writeArtifact(path.join(runDir, "orchestration", "context.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    project_kind: analysis.kind,
+    source: sourceInfo,
+    evidence: analysis.evidence,
+    unknowns: analysis.unknowns,
+    package_manager: analysis.packageManager,
+    test_commands: analysis.testCommands,
+    runtime_context_files: [
+      path.join(runDir, "request", "normalized.md"),
+      path.join(runDir, "analysis", "project-context.md"),
+      path.join(runDir, "analysis", "impact-analysis.md"),
+      path.join(runDir, "analysis", "risk-analysis.md")
+    ],
+    generated_at: new Date().toISOString()
+  }, null, 2)}\n`, artifacts);
+  writeArtifact(path.join(runDir, "orchestration", "pending-roles.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    project_kind: analysis.kind,
+    pending_roles: readyRoles.map((role) => ({
+      role,
+      status: "pending",
+      reason: role === "task-planner"
+        ? "runtime captured requirement and project evidence; task planning remains model-owned"
+        : "runtime captured requirement and project evidence; role judgment remains model-owned"
+    })),
+    updated_at: new Date().toISOString()
+  }, null, 2)}\n`, artifacts);
+  writeArtifact(path.join(runDir, "orchestration", "state.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    current_orchestrator: "session",
+    runtime_status: "context_materialized",
+    ready_roles: readyRoles,
+    waiting_roles: [],
+    last_completed_role: "runtime",
+    updated_at: new Date().toISOString()
+  }, null, 2)}\n`, artifacts);
   assertTransitionAccepted(transitionRunState(cwd, runId, "designed", { designed_at: new Date().toISOString() }), `run ${runId} designed`);
 
   updateCurrentRun(workspace, runId);
-  const plan = planRun(cwd, runId);
-  artifacts.push(...plan.artifacts);
-  const plannedGraph = JSON.parse(fs.readFileSync(plan.taskGraph, "utf8")) as { tasks: Array<{ id: string; title: string; type: string; write_scope: string[]; acceptance: string[] }> };
   writeArtifact(path.join(runDir, "spec-delta", "proposal.md"), `# Proposal
 
 ## Requirement
@@ -277,7 +311,7 @@ Capture the run-local capability delta for Archive Agent. This is not the top-le
 `, artifacts);
   writeArtifact(path.join(runDir, "spec-delta", "design.md"), `# Design Delta
 
-## Technical Direction
+## Runtime Context
 
 - project kind: ${analysis.kind}
 - package manager: ${analysis.packageManager}
@@ -290,7 +324,36 @@ ${evidenceLines(analysis.evidence)}
 ## Unknowns
 
 ${lines(analysis.unknowns)}
+
+## Pending Model Roles
+
+${readyRoles.map((role) => `- ${role}`).join("\n")}
 `, artifacts);
+  if (analysis.kind === "new_project") {
+    writeArtifact(path.join(runDir, "spec-delta", "tasks.md"), `# Task Delta
+
+- pending: Task Planner Agent must create the first task graph for this new project.
+- required outputs:
+  - planning/task-graph.json
+  - planning/ownership.json
+  - planning/execution-plan.md
+  - planning/commit-plan.md
+`, artifacts);
+    return {
+      runId,
+      cwd,
+      workspace,
+      runDir,
+      projectKind: analysis.kind,
+      source: sourceInfo,
+      artifacts,
+      status: "waiting_for_model"
+    };
+  }
+
+  const plan = planRun(cwd, runId);
+  artifacts.push(...plan.artifacts);
+  const plannedGraph = JSON.parse(fs.readFileSync(plan.taskGraph, "utf8")) as { tasks: Array<{ id: string; title: string; type: string; write_scope: string[]; acceptance: string[] }> };
   writeArtifact(path.join(runDir, "spec-delta", "tasks.md"), `# Task Delta
 
 ${plannedGraph.tasks.map((task) => `## ${task.id}: ${task.title}\n\n- type: ${task.type}\n- write scope: ${task.write_scope.join(", ")}\n- acceptance: ${task.acceptance.join("; ")}`).join("\n\n")}

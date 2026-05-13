@@ -38,7 +38,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
 - \`/imfine run <requirement text|requirement-file>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <requirement text|requirement-file>\` from the project root. In an empty new-project directory this completes the first delivery run.
 - \`/imfine run <requirement text|requirement-file> --plan-only\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <requirement text|requirement-file> --plan-only\` when the Agent intentionally wants to stop at planning.
 - \`/imfine resume <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js resume <run-id>\` to infer next actions, persist queue state, and route ready Agent work.
-- \`/imfine agents prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` to generate model execution packages; then the current ${toolName} session must execute or dispatch the listed Agent work using native model/subagent capability and write the required handoff and artifacts.
+- \`/imfine agents prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` only when debugging the legacy model-execution bridge. It is not the target harness path.
 - \`/imfine orchestrate <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id>\` to let runtime progress deterministic actions after this session has completed model Agent work.
 - \`/imfine plan <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js plan <run-id>\` from the project root.
 - \`/imfine worktree prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js worktree prepare <run-id>\` from the project root.
@@ -68,7 +68,7 @@ When the user runs \`/imfine init\`, the current session must act as Orchestrato
    node ~/.imfine/runtime/dist/cli/imfine-runtime.js init
    \`\`\`
 4. Read the runtime result and \`.imfine/project/architecture/\`.
-5. For existing projects, start or use an internal Architect Agent to complete model-driven architecture analysis:
+5. For existing projects, start or use an internal Architect Agent to fill the pending architecture placeholders:
    - update \`.imfine/project/architecture/overview.md\`, \`tech-stack.md\`, \`module-tech-stack.md\`, \`modules.md\`, \`entrypoints.md\`, \`test-strategy.md\`, and \`risks.md\`
    - update related \`.imfine/project/*.md\` files when evidence supports it
    - cite file evidence for every architecture conclusion
@@ -93,15 +93,19 @@ Required core agents: Orchestrator, Intake, Architect, Task Planner, Dev, QA, Re
 
 ## Model Agent Execution
 
-\`/imfine agents prepare <run-id>\` turns the Orchestrator's ready Agent runs into model execution packages under \`.imfine/runs/<run-id>/agents/<agent-id>/execution/\`.
+\`/imfine agents prepare <run-id>\` is a legacy bridge that turns ready Agent runs into model execution packages under \`.imfine/runs/<run-id>/agents/<agent-id>/execution/\`.
 
-Each package includes the Agent contract, skill bundle, model input prompt, boundaries, required outputs, and handoff expectations. The model must make architecture, implementation, QA, Review, conflict, and archive judgments; runtime only materializes the prompt package and records execution evidence.
+Each package includes the Agent contract, skill bundle, model input prompt, boundaries, required outputs, and handoff expectations. The model must make architecture, implementation, QA, Review, conflict, and archive judgments; runtime only materializes bridge artifacts and records execution evidence.
 
-\`/imfine agents prepare <run-id>\` is the normal provider path. After it generates execution packages, the current ${toolName} session acts as Orchestrator: read the package prompts, execute or dispatch the Agent roles, make the model judgments, modify task worktrees when assigned, and write the required handoff files and artifacts.
+\`/imfine agents prepare <run-id>\` is not the target provider path. The target harness path is: runtime materializes state and contracts, and the current ${toolName} session acts as Orchestrator to execute or dispatch Agent roles with native subagent capability.
+
+All bridge artifacts must be explicitly treated as \`legacy_debug\` outputs. They are for debugging or non-interactive test runners only and must not be used as evidence that the true harness path has run.
 
 \`imfine-runtime agents execute <run-id> --executor "<command>"\` exists only as an internal/testing bridge for non-interactive runners. It is not required for normal \`/imfine\` use inside Codex or Claude.
 
-If native provider subagents are unavailable, the current session should still preserve role boundaries and execute the ready Agent work deliberately, or leave the run in \`waiting_for_model\` with the generated packages. Do not silently complete the whole workflow as one undifferentiated Agent.
+\`/imfine library sync\` is an explicit debug-only snapshot of the global runtime library into \`.imfine/debug/library-snapshot/\`. It is not part of \`init\` and not required for the true harness path.
+
+If native provider subagents are unavailable, the run should be treated as blocked for the true harness path. Do not silently complete the whole workflow as one undifferentiated Agent.
 
 ## Existing-Project Auto Orchestration
 
@@ -113,7 +117,7 @@ For new projects, the current ${toolName} session first performs Architect and T
 
 ## Phase 3 Run Boundary
 
-\`/imfine run\` currently creates a delivery run from text or a requirement file and generates project context, requirement analysis, impact analysis, risk analysis, solution design, architecture decisions, and acceptance criteria.
+\`/imfine run\` currently creates a delivery run from text or a requirement file and materializes runtime context, evidence, state, and pending roles. It must not be described as completing requirement analysis, solution design, architecture decisions, or acceptance conclusions.
 
 Do not claim implementation, task graph generation, commits, push, QA, review, or archive have happened in phase 3.
 
@@ -159,9 +163,9 @@ Phase 7 still does not archive.
 
 If evidence is missing, archive writes a blocked report and handoff, but does not update long-term project knowledge with unverified claims.
 
-## Phase 9 New Project Delivery Boundary
+## Phase 9 New Project Waiting Boundary
 
-\`/imfine run ...\` completes the first delivery for empty new-project directories by default. It initializes git and \`.imfine\`, creates the first project code, tests, docs, local task commits on \`imfine/<run-id>\`, records missing remote as \`push_blocked_no_remote\`, and archives the completed delivery.
+\`/imfine run ...\` for empty new-project directories only materializes runtime context and waits for Architect and Task Planner model work. Runtime must not generate default project code, tests, docs, task graphs, or verification commands for a new project.
 
 Do not create GitHub, GitLab, cloud services, databases, production credentials, or external infrastructure.
 
@@ -211,7 +215,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
 - \`/imfine run <需求文本|需求文件>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <需求文本|需求文件>\`。在新的空项目目录中会默认完成首个 delivery run。
 - \`/imfine run <需求文本|需求文件> --plan-only\`：当 Agent 明确只希望停在规划阶段时，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <需求文本|需求文件> --plan-only\`。
 - \`/imfine resume <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js resume <run-id>\`，推断下一步、持久化 queue，并路由可执行的 Agent 工作。
-- \`/imfine agents prepare <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` 生成模型执行包；然后当前 ${toolName} 会话必须使用原生模型/子 Agent 能力执行或分发对应 Agent 工作，并写回 required handoff 和产物。
+- \`/imfine agents prepare <run-id>\`：仅在调试旧的模型执行桥接路径时执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\`。它不是目标 harness 主路径。
 - \`/imfine orchestrate <run-id>\`：当前会话完成模型 Agent 工作后，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id>\`，由 runtime 推进确定性动作。
 - \`/imfine plan <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js plan <run-id>\`。
 - \`/imfine worktree prepare <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js worktree prepare <run-id>\`。
@@ -241,7 +245,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
    node ~/.imfine/runtime/dist/cli/imfine-runtime.js init
    \`\`\`
 4. 读取 runtime 返回和 \`.imfine/project/architecture/\`。
-5. 如果是已有项目，启动或使用内部 Architect Agent 执行模型驱动的架构分析：
+5. 如果是已有项目，启动或使用内部 Architect Agent 补全待处理的架构占位：
    - 更新 \`.imfine/project/architecture/overview.md\`、\`tech-stack.md\`、\`module-tech-stack.md\`、\`modules.md\`、\`entrypoints.md\`、\`test-strategy.md\`、\`risks.md\`
    - 在证据支持时同步更新相关 \`.imfine/project/*.md\`
    - 每个架构结论都必须引用文件证据
@@ -266,15 +270,19 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js library sync
 
 ## 模型 Agent 执行
 
-\`/imfine agents prepare <run-id>\` 会把 Orchestrator 识别出的 ready Agent run 转成模型执行包，位置在 \`.imfine/runs/<run-id>/agents/<agent-id>/execution/\`。
+\`/imfine agents prepare <run-id>\` 是遗留桥接路径，会把 ready Agent run 转成模型执行包，位置在 \`.imfine/runs/<run-id>/agents/<agent-id>/execution/\`。
 
-每个执行包包含 Agent 契约、skill bundle、模型输入 prompt、边界、必需输出和 handoff 要求。架构、实现、QA、Review、冲突处理和归档判断必须由模型完成；runtime 只负责生成执行包和记录执行证据。
+每个执行包包含 Agent 契约、skill bundle、模型输入 prompt、边界、必需输出和 handoff 要求。架构、实现、QA、Review、冲突处理和归档判断必须由模型完成；runtime 只负责生成桥接产物和记录执行证据。
 
-\`/imfine agents prepare <run-id>\` 是正常 provider 路径。它生成执行包后，当前 ${toolName} 会话就是 Orchestrator：读取 package prompt，执行或分发各角色 Agent，完成模型判断，按任务边界修改 worktree，并写回 handoff 和产物。
+\`/imfine agents prepare <run-id>\` 不是目标 provider 主路径。目标 harness 路径应由 runtime 物化状态与 contract，再由当前 ${toolName} 会话作为 Orchestrator 使用原生子 Agent 能力执行或分发角色工作。
+
+所有 bridge 产物都必须显式视为 \`legacy_debug\` 输出，只能用于调试或非交互测试 runner，不能被当成 true harness 已执行的证据。
 
 \`imfine-runtime agents execute <run-id> --executor "<command>"\` 只作为非交互 runner 的内部/测试桥接，不是 Codex 或 Claude 中正常使用 \`/imfine\` 的前提。
 
-如果当前 provider 没有可用子 Agent 能力，当前会话仍必须保持角色边界，有意识地顺序执行 ready Agent 工作，或者让 run 保持 \`waiting_for_model\` 并保留执行包。不要静默降级成一个无边界的单 Agent 全流程。
+\`/imfine library sync\` 只是显式调试用途，会把全局 runtime library 快照到 \`.imfine/debug/library-snapshot/\`。它不属于 \`init\` 主路径，也不是目标 harness 的前置条件。
+
+如果当前 provider 没有可用子 Agent 能力，真实 harness 路径应视为 blocked。不要静默降级成一个无边界的单 Agent 全流程。
 
 ## 已有项目自动编排
 
@@ -286,7 +294,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js library sync
 
 ## 阶段 3 Run 边界
 
-\`/imfine run\` 当前会从需求文本或需求文件创建 delivery run，并生成项目上下文、需求分析、影响面分析、风险分析、方案设计、架构决策和验收标准。
+\`/imfine run\` 当前会从需求文本或需求文件创建 delivery run，并物化项目上下文、证据、状态和待执行角色。不要把它描述成已经完成需求分析、方案设计、架构决策或验收结论。
 
 阶段 3 不要声称已经完成实现、任务图生成、commit、push、QA、Review 或归档。
 
@@ -332,9 +340,9 @@ QA 或 Review 连续失败时，应继续生成有边界的 fix task，由 Orche
 
 如果证据缺失，归档会写入 blocked 报告和 handoff，但不会把未验证结论写入长期项目知识。
 
-## 阶段 9 新项目交付边界
+## 阶段 9 新项目等待模型边界
 
-\`/imfine run ...\` 在新的空项目目录中默认完成首个 delivery。它会初始化 git 和 \`.imfine\`，创建首批项目代码、测试、文档，在 \`imfine/<run-id>\` 上完成本地任务 commit，把缺失 remote 记录为 \`push_blocked_no_remote\`，并完成归档。
+\`/imfine run ...\` 在新的空项目目录中只物化 runtime context，并等待 Architect 和 Task Planner 的模型工作。Runtime 不得为新项目默认生成项目代码、测试、文档、task graph 或验证命令。
 
 不要创建 GitHub、GitLab、云服务、数据库、生产凭据或外部基础设施。
 

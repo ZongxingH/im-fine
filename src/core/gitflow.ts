@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { validateHandoff, type HandoffRole } from "./handoff-validator.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph, type TaskGraphTask } from "./plan.js";
 import { runCommand, runShellCommand } from "./shell.js";
@@ -172,6 +173,24 @@ function reviewerStatusFile(cwd: string, runId: string, taskId: string): string 
   return path.join(runDir(cwd, runId), "agents", `reviewer-${taskId}`, "status.json");
 }
 
+function handoffFile(cwd: string, runId: string, role: "qa" | "reviewer", taskId: string): string {
+  return path.join(runDir(cwd, runId), "agents", `${role}-${taskId}`, "handoff.json");
+}
+
+function requireValidatedHandoff(cwd: string, runId: string, role: HandoffRole, taskId: string): void {
+  const file = handoffFile(cwd, runId, role as "qa" | "reviewer", taskId);
+  if (!fs.existsSync(file)) throw new Error(`Missing ${role} handoff for task ${taskId}`);
+  const parsed = readJson<unknown>(file);
+  const validation = validateHandoff(role, parsed, runId, taskId);
+  if (!validation.passed) throw new Error(`Invalid ${role} handoff for task ${taskId}: ${validation.errors.join("; ")}`);
+  const evidence = (parsed as { evidence?: unknown[] }).evidence || [];
+  for (const item of evidence) {
+    if (typeof item !== "string" || !fs.existsSync(item)) {
+      throw new Error(`Missing ${role} evidence for task ${taskId}: ${String(item)}`);
+    }
+  }
+}
+
 function requireReadyToCommit(cwd: string, runId: string, taskId: string): void {
   const patch = patchFile(cwd, runId, taskId);
   if (!fs.existsSync(patch) || fs.readFileSync(patch, "utf8").trim().length === 0) {
@@ -189,11 +208,13 @@ function requireReadyToCommit(cwd: string, runId: string, taskId: string): void 
   if (!fs.existsSync(qaPath)) throw new Error(`Missing QA evidence for task ${taskId}`);
   const qa = readJson<AgentStatus>(qaPath);
   if (qa.status !== "pass") throw new Error(`Task ${taskId} QA status is not pass`);
+  requireValidatedHandoff(cwd, runId, "qa", taskId);
 
   const reviewPath = reviewerStatusFile(cwd, runId, taskId);
   if (!fs.existsSync(reviewPath)) throw new Error(`Missing Review evidence for task ${taskId}`);
   const review = readJson<AgentStatus>(reviewPath);
   if (review.status !== "approved") throw new Error(`Task ${taskId} Review status is not approved`);
+  requireValidatedHandoff(cwd, runId, "reviewer", taskId);
 }
 
 function orderedTasks(graph: TaskGraph, taskIds: string[]): TaskGraphTask[] {

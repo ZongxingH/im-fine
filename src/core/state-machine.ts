@@ -9,6 +9,7 @@ export type RunState =
   | "requirement_analyzed"
   | "designed"
   | "planned"
+  | "waiting_for_model"
   | "branch_prepared"
   | "implementing"
   | "integrating"
@@ -33,6 +34,7 @@ const RUN_STATES = new Set<RunState>([
   "requirement_analyzed",
   "designed",
   "planned",
+  "waiting_for_model",
   "branch_prepared",
   "implementing",
   "integrating",
@@ -170,8 +172,9 @@ function isLegalRunTransition(from: RunState, to: RunState): boolean {
     infrastructure_checked: ["project_analyzed", "requirement_analyzed"],
     project_analyzed: ["requirement_analyzed", "designed"],
     requirement_analyzed: ["designed"],
-    designed: ["planned"],
-    planned: ["branch_prepared", "implementing"],
+    designed: ["planned", "waiting_for_model"],
+    planned: ["waiting_for_model", "branch_prepared", "implementing"],
+    waiting_for_model: ["planned", "branch_prepared", "implementing"],
     branch_prepared: ["implementing"],
     implementing: ["integrating", "verifying", "reviewing", "committing"],
     integrating: ["verifying", "reviewing", "committing"],

@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { validateHandoff } from "./handoff-validator.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
+import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 
 export type ArchiveStatus = "archived" | "blocked";
 
@@ -76,6 +78,14 @@ function reviewStatusFile(cwd: string, runId: string, taskId: string): string {
   return path.join(runDir(cwd, runId), "agents", `reviewer-${taskId}`, "status.json");
 }
 
+function qaHandoffFile(cwd: string, runId: string, taskId: string): string {
+  return path.join(runDir(cwd, runId), "agents", `qa-${taskId}`, "handoff.json");
+}
+
+function reviewHandoffFile(cwd: string, runId: string, taskId: string): string {
+  return path.join(runDir(cwd, runId), "agents", `reviewer-${taskId}`, "handoff.json");
+}
+
 function checkFile(id: string, file: string): ArchiveCheck {
   return {
     id,
@@ -101,6 +111,20 @@ function readTaskGraph(cwd: string, runId: string): TaskGraph | null {
   return readJson<TaskGraph>(file);
 }
 
+function handoffEvidenceCheck(id: string, role: "qa" | "reviewer", file: string, runId: string, taskId: string): ArchiveCheck {
+  if (!fs.existsSync(file)) return { id, status: "fail", detail: `missing handoff: ${file}` };
+  const parsed = readJson<unknown>(file);
+  const validation = validateHandoff(role, parsed, runId, taskId);
+  if (!validation.passed) return { id, status: "fail", detail: `${file}: ${validation.errors.join("; ")}` };
+  const evidence = (parsed as { evidence?: unknown[] }).evidence || [];
+  const missing = evidence.filter((item) => typeof item !== "string" || !fs.existsSync(item));
+  return {
+    id,
+    status: missing.length === 0 ? "pass" : "fail",
+    detail: missing.length === 0 ? file : `${file}: missing evidence ${missing.map(String).join(", ")}`
+  };
+}
+
 function taskEvidenceChecks(cwd: string, runId: string, graph: TaskGraph | null): ArchiveCheck[] {
   if (!graph) return [{ id: "tasks", status: "fail", detail: "missing task graph" }];
   const run = readJson<RunMetadata>(path.join(runDir(cwd, runId), "run.json"));
@@ -118,11 +142,13 @@ function taskEvidenceChecks(cwd: string, runId: string, graph: TaskGraph | null)
       status: qa.status === "pass" ? "pass" : "fail",
       detail: qaFile
     });
+    checks.push(handoffEvidenceCheck(`task.${task.id}.qa_handoff`, "qa", qaHandoffFile(cwd, runId, task.id), runId, task.id));
     checks.push({
       id: `task.${task.id}.review`,
       status: review.status === "approved" ? "pass" : "fail",
       detail: reviewFile
     });
+    checks.push(handoffEvidenceCheck(`task.${task.id}.review_handoff`, "reviewer", reviewHandoffFile(cwd, runId, task.id), runId, task.id));
     checks.push({
       id: `task.${task.id}.commit`,
       status: taskStatus.status === "committed" || taskStatus.status === "exempt" || commitOutcomeKnown ? "pass" : "fail",
@@ -202,6 +228,7 @@ function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, c
   const requirement = firstContentLine(path.join(dir, "request", "normalized.md"));
   const commits = readTextIfExists(path.join(dir, "evidence", "commits.md"));
   const push = readTextIfExists(path.join(dir, "evidence", "push.md"));
+  const harnessEvidence = path.join(dir, "orchestration", "true-harness-evidence.md");
 
   return `# Archive Report
 
@@ -223,12 +250,11 @@ ${taskLines(graph, cwd, runId).join("\n")}
 ## Evidence Chain
 
 - request: ${path.join(dir, "request", "normalized.md")}
-- requirement analysis: ${path.join(dir, "analysis", "requirement-analysis.md")}
 - project context: ${path.join(dir, "analysis", "project-context.md")}
 - impact analysis: ${path.join(dir, "analysis", "impact-analysis.md")}
 - risk analysis: ${path.join(dir, "analysis", "risk-analysis.md")}
-- solution design: ${path.join(dir, "design", "solution-design.md")}
-- architecture decisions: ${path.join(dir, "design", "architecture-decisions.md")}
+- runtime context: ${path.join(dir, "orchestration", "context.json")}
+- pending roles: ${path.join(dir, "orchestration", "pending-roles.json")}
 - task graph: ${path.join(dir, "planning", "task-graph.json")}
 - execution plan: ${path.join(dir, "planning", "execution-plan.md")}
 - commit plan: ${path.join(dir, "planning", "commit-plan.md")}
@@ -252,6 +278,10 @@ ${taskLines(graph, cwd, runId).join("\n")}
 - push status: ${run.push_status || "missing"}
 - push local commit: ${run.push_local_commit || run.commit_hashes?.at(-1) || "missing"}
 - push user action: ${run.push_user_action || "none"}
+
+## True Harness Evidence
+
+- true harness evidence: ${fs.existsSync(harnessEvidence) ? harnessEvidence : "missing"}
 
 ## Project Knowledge Updates
 
@@ -277,7 +307,7 @@ function writeProjectKnowledge(cwd: string, runId: string, graph: TaskGraph | nu
   const updates: Array<[string, string]> = [
     ["overview.md", `Requirement: ${requirement}\n\nReport: .imfine/reports/${runId}.md`],
     ["product.md", `Delivered requirement: ${requirement}`],
-    ["architecture.md", `Design evidence:\n\n- .imfine/runs/${runId}/design/solution-design.md\n- .imfine/runs/${runId}/design/architecture-decisions.md`],
+    ["architecture.md", `Runtime and design evidence:\n\n- .imfine/runs/${runId}/orchestration/context.json\n- .imfine/runs/${runId}/archive/archive-report.md`],
     ["test-strategy.md", `Verification evidence:\n\n- .imfine/runs/${runId}/evidence/test-results.md`],
     ["risks.md", `Risk evidence:\n\n- .imfine/runs/${runId}/analysis/risk-analysis.md\n- .imfine/runs/${runId}/archive/archive-report.md`]
   ];
@@ -324,7 +354,7 @@ ${specDeltaFiles.length > 0 ? specDeltaFiles.map((file) => `- ${file}`).join("\n
 
 - archive: .imfine/runs/${runId}/archive/archive-report.md
 - report: .imfine/reports/${runId}.md
-- design: .imfine/runs/${runId}/design/solution-design.md
+- runtime context: .imfine/runs/${runId}/orchestration/context.json
 - tests: .imfine/runs/${runId}/evidence/test-results.md
 - review: .imfine/runs/${runId}/evidence/review.md
 - commits: .imfine/runs/${runId}/evidence/commits.md
@@ -344,8 +374,8 @@ export function archiveRun(cwd: string, runId: string): ArchiveResult {
   ensureDir(agentDir);
 
   const checks: ArchiveCheck[] = [
-    checkFile("requirement-analysis", path.join(dir, "analysis", "requirement-analysis.md")),
-    checkFile("solution-design", path.join(dir, "design", "solution-design.md")),
+    checkFile("project-context", path.join(dir, "analysis", "project-context.md")),
+    checkFile("runtime-context", path.join(dir, "orchestration", "context.json")),
     checkFile("task-graph", path.join(dir, "planning", "task-graph.json")),
     checkFile("test-results", path.join(dir, "evidence", "test-results.md")),
     checkFile("review", path.join(dir, "evidence", "review.md")),
@@ -363,6 +393,7 @@ export function archiveRun(cwd: string, runId: string): ArchiveResult {
   const projectUpdates = path.join(archiveDir, "project-updates.md");
   const finalSummary = path.join(archiveDir, "final-summary.md");
   const userReport = path.join(workspace(cwd), "reports", `${runId}.md`);
+  writeTrueHarnessEvidence(cwd, runId);
 
   const report = buildArchiveReport(cwd, runId, status, checks, blockedItems, projectUpdateFiles);
   writeText(archiveReport, report);
@@ -402,6 +433,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
     to: "orchestrator",
     status,
     summary: status === "archived" ? "Archive completed" : "Archive blocked by missing evidence",
+    evidence: [archiveReport, userReport],
     archive_report: archiveReport,
     project_updates: projectUpdateFiles,
     blocked_items: blockedItems,

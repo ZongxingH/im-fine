@@ -9,6 +9,10 @@ const cli = path.join(root, "dist", "cli", "imfine.js");
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-smoke-"));
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-home-"));
 const realTmp = fs.realpathSync(tmp);
+const harnessEnv = {
+  IMFINE_PROVIDER: "codex",
+  IMFINE_SUBAGENT_SUPPORTED: "true"
+};
 
 function run(args, cwd = tmp, extraEnv = {}) {
   return execFileSync(process.execPath, [cli, ...args], {
@@ -38,6 +42,9 @@ assert.ok(doctor.checks.some((item) => item.id === "provider.codex.subagent_supp
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.entry_installed"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.session_orchestrator"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.subagent_supported" && item.detail.includes("subagent_supported=unknown")));
+assert.ok(doctor.checks.some((item) => item.id === "provider.current" && item.status === "fail"));
+assert.ok(doctor.checks.some((item) => item.id === "provider.current.subagent_supported" && item.status === "fail"));
+assert.ok(doctor.checks.some((item) => item.id === "provider.current.true_harness_ready" && item.status === "fail"));
 
 const init = JSON.parse(run(["init", "--json"]));
 assert.equal(fs.realpathSync(path.dirname(init.workspace)), realTmp);
@@ -51,18 +58,10 @@ assert.ok(fs.existsSync(path.join(tmp, ".imfine", "runs", ".gitkeep")));
 assert.ok(fs.existsSync(path.join(tmp, ".imfine", "reports", ".gitkeep")));
 assert.ok(fs.existsSync(path.join(tmp, ".imfine", "state", "current.json")));
 assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, ".imfine", "state", "locks.json"), "utf8")).locks, {});
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "orchestrator.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "intake.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "architect.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "task-planner.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "dev.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "qa.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "reviewer.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "archive.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "agents", "committer.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "skills", "clarify.md")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "templates", "handoff.schema.json")));
-assert.ok(fs.existsSync(path.join(tmp, ".imfine", "library.md")));
+assert.ok(!fs.existsSync(path.join(tmp, ".imfine", "agents")));
+assert.ok(!fs.existsSync(path.join(tmp, ".imfine", "skills")));
+assert.ok(!fs.existsSync(path.join(tmp, ".imfine", "templates")));
+assert.ok(!fs.existsSync(path.join(tmp, ".imfine", "library.md")));
 
 const status = JSON.parse(run(["status", "--json"]));
 assert.equal(status.initialized, true);
@@ -84,78 +83,106 @@ assert.ok(skills.some((item) => item.id === "code-review"));
 
 const templates = JSON.parse(run(["templates", "list", "--json"]));
 assert.ok(templates.some((item) => item.id === "handoff.schema"));
+const workflows = JSON.parse(run(["workflows", "list", "--json"]));
+assert.ok(workflows.some((item) => item.id === "existing-project-delivery"));
+assert.ok(workflows.some((item) => item.id === "fix-loop"));
+const fixLoopWorkflow = run(["workflows", "show", "fix-loop"]);
+assert.match(fixLoopWorkflow, /needs_task_replan/);
+assert.match(fixLoopWorkflow, /qa_failed/);
+assert.match(fixLoopWorkflow, /review_changes_requested/);
+assert.match(fixLoopWorkflow, /implementation_blocked_by_design/);
 
 const sync = JSON.parse(run(["library", "sync", "--json"]));
-assert.equal(fs.realpathSync(path.dirname(sync.workspace)), realTmp);
+assert.equal(fs.realpathSync(path.dirname(path.dirname(path.dirname(sync.workspace)))), realTmp);
+assert.ok(fs.existsSync(path.join(sync.workspace, "agents", "orchestrator.md")));
+assert.ok(fs.existsSync(path.join(sync.workspace, "skills", "clarify.md")));
+assert.ok(fs.existsSync(path.join(sync.workspace, "templates", "handoff.schema.json")));
+assert.ok(fs.existsSync(path.join(sync.workspace, "README.md")));
 
 const delivery = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"]));
-assert.equal(delivery.status, "planned");
+assert.equal(delivery.status, "waiting_for_model");
 assert.equal(delivery.projectKind, "new_project");
 assert.ok(fs.existsSync(path.join(delivery.runDir, "run.json")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "request", "normalized.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "project-context.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "requirement-analysis.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "impact-analysis.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "risk-analysis.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "product-analysis.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "design", "solution-design.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "design", "architecture-decisions.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "design", "technical-solution.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "design", "acceptance.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "planning", "task-graph.json")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "planning", "ownership.json")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "planning", "execution-plan.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "planning", "commit-plan.md")));
+assert.ok(fs.existsSync(path.join(delivery.runDir, "orchestration", "context.json")));
+assert.ok(fs.existsSync(path.join(delivery.runDir, "orchestration", "pending-roles.json")));
+assert.ok(fs.existsSync(path.join(delivery.runDir, "orchestration", "state.json")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "analysis", "requirement-analysis.md")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "analysis", "product-analysis.md")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "design", "solution-design.md")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "design", "architecture-decisions.md")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "design", "technical-solution.md")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "design", "acceptance.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "spec-delta", "proposal.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "spec-delta", "design.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "spec-delta", "tasks.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "tasks", "T1", "task.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "tasks", "T1", "dev-plan.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "tasks", "T1", "test-plan.md")));
-assert.ok(fs.existsSync(path.join(delivery.runDir, "tasks", "T1", "review-plan.md")));
-const taskGraph = JSON.parse(fs.readFileSync(path.join(delivery.runDir, "planning", "task-graph.json"), "utf8"));
-assert.equal(taskGraph.run_id, delivery.runId);
-assert.equal(taskGraph.strategy, "parallel");
-assert.ok(taskGraph.tasks.length > 0);
-for (const task of taskGraph.tasks) {
-  assert.ok(task.read_scope.length > 0);
-  assert.ok(task.write_scope.length > 0);
-  assert.ok(task.dev_plan.length > 0);
-  assert.ok(task.test_plan.length > 0);
-  assert.ok(task.review_plan.length > 0);
-  assert.ok(task.commit.message);
-}
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "task-graph.json")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "ownership.json")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "execution-plan.md")));
+assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "commit-plan.md")));
+assert.match(fs.readFileSync(path.join(delivery.runDir, "spec-delta", "tasks.md"), "utf8"), /Task Planner Agent must create the first task graph/);
+assert.ok(fs.existsSync(path.join(delivery.runDir, "orchestration", "dispatch-contracts.json")));
+const deliveryContracts = JSON.parse(fs.readFileSync(path.join(delivery.runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
+assert.equal(deliveryContracts.contracts.length, 2);
+assert.ok(deliveryContracts.contracts.some((item) => item.role === "architect" && item.status === "ready"));
+assert.ok(deliveryContracts.contracts.some((item) => item.role === "task-planner" && item.status === "waiting"));
+assert.ok(deliveryContracts.contracts.some((item) => item.role === "architect" && item.workflow_state === "waiting_for_model" && item.action_id === "agent-architect"));
+assert.ok(deliveryContracts.contracts.some((item) => item.role === "task-planner" && item.workflow_state === "waiting_for_model" && item.depends_on.includes("agent-architect")));
+assert.ok(deliveryContracts.contracts.some((item) => item.role === "architect" && item.skills.includes("project-analysis")));
+assert.ok(deliveryContracts.contracts.some((item) => item.role === "task-planner" && item.skills.includes("parallel-agent-dispatch")));
 assert.match(fs.readFileSync(path.join(delivery.runDir, "analysis", "project-context.md"), "utf8"), /unknown/);
+assert.match(fs.readFileSync(path.join(delivery.runDir, "spec-delta", "design.md"), "utf8"), /Pending Model Roles/);
 
 const statusAfterRun = JSON.parse(run(["status", "--json"]));
 assert.equal(statusAfterRun.currentRunId, delivery.runId);
-assert.equal(statusAfterRun.currentRunStatus, "planned");
-const resumedPlan = JSON.parse(run(["resume", delivery.runId, "--json"]));
+assert.equal(statusAfterRun.currentRunStatus, "waiting_for_model");
+const blockedCapabilityRun = JSON.parse(run(["run", "Blocked capability app", "--plan-only", "--json"]));
+const capabilityBlocked = JSON.parse(run(["resume", blockedCapabilityRun.runId, "--json"]));
+assert.equal(capabilityBlocked.status, "blocked");
+assert.ok(capabilityBlocked.nextActions.some((action) => action.id === "gate-subagent-capability"));
+const resumedPlan = JSON.parse(run(["resume", delivery.runId, "--json"], tmp, harnessEnv));
 assert.equal(resumedPlan.mode, "resume");
 assert.equal(resumedPlan.runId, delivery.runId);
-assert.ok(resumedPlan.nextActions.some((action) => action.id === "runtime-worktree-prepare"));
+assert.ok(resumedPlan.nextActions.length > 0);
 assert.ok(fs.existsSync(resumedPlan.files.state));
 assert.ok(fs.existsSync(resumedPlan.files.queue));
 assert.ok(fs.existsSync(resumedPlan.files.infrastructureGate));
 assert.ok(fs.existsSync(resumedPlan.files.agentRuns));
+assert.ok(fs.existsSync(resumedPlan.files.dispatchContracts));
 assert.ok(fs.existsSync(resumedPlan.files.parallelPlan));
 assert.ok(fs.existsSync(resumedPlan.files.timeline));
 const resumedQueue = JSON.parse(fs.readFileSync(resumedPlan.files.queue, "utf8"));
 assert.equal(resumedQueue.run_id, delivery.runId);
 assert.ok(resumedQueue.actions.length > 0);
-const blockedGate = JSON.parse(run(["resume", delivery.runId, "--json"], tmp, { PATH: "/nonexistent" }));
+assert.ok(resumedQueue.contracts.length > 0);
+const resumedContracts = JSON.parse(fs.readFileSync(resumedPlan.files.dispatchContracts, "utf8"));
+assert.equal(resumedContracts.run_id, delivery.runId);
+assert.ok(resumedContracts.contracts.length > 0);
+assert.ok(resumedContracts.contracts.some((contract) => contract.role === "architect"));
+assert.ok(resumedContracts.contracts.every((contract) => typeof contract.parallel_group === "string"));
+assert.ok(resumedContracts.contracts.every((contract) => contract.workflow_state === undefined || typeof contract.workflow_state === "string"));
+const resumedParallelPlan = JSON.parse(fs.readFileSync(resumedPlan.files.parallelPlan, "utf8"));
+assert.ok(Array.isArray(resumedParallelPlan.executed_parallel_groups));
+assert.ok(Array.isArray(resumedParallelPlan.blocked_parallel_groups));
+assert.ok(Array.isArray(resumedParallelPlan.wave_history));
+assert.equal(resumedParallelPlan.parallelism_blocked_by, "task_graph");
+const resumedState = JSON.parse(fs.readFileSync(resumedPlan.files.state, "utf8"));
+assert.ok(Array.isArray(resumedState.ready_roles));
+assert.ok(resumedState.ready_roles.includes("architect"));
+const blockedGate = JSON.parse(run(["resume", delivery.runId, "--json"], tmp, { ...harnessEnv, PATH: "/nonexistent" }));
 assert.ok(blockedGate.nextActions.some((action) => action.id === "gate-infrastructure"));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "evidence", "infrastructure.md")));
 
 const planValidation = JSON.parse(run(["plan", "validate", delivery.runId, "--json"]));
-assert.equal(planValidation.passed, true);
-assert.deepEqual(planValidation.serialTasks, ["T2"]);
+assert.equal(planValidation.passed, false);
+assert.match(planValidation.errors[0], /Missing task graph/);
 const taskGraphValidation = JSON.parse(run(["task", "graph", "validate", delivery.runId, "--json"]));
-assert.equal(taskGraphValidation.passed, true);
-
-const replanned = JSON.parse(run(["plan", delivery.runId, "--json"]));
-assert.equal(replanned.validation.passed, true);
-assert.equal(replanned.runId, delivery.runId);
+assert.equal(taskGraphValidation.passed, false);
+const replanOutput = runExpectFail(["plan", delivery.runId, "--json"]);
+assert.match(replanOutput, /model-owned|Missing task graph/);
 
 const duplicateRun = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"]));
 assert.notEqual(duplicateRun.runId, delivery.runId);
@@ -165,9 +192,18 @@ fs.writeFileSync(requirementFile, "Create a CLI calculator");
 const fileRun = JSON.parse(run(["run", "requirement.md", "--plan-only", "--json"]));
 assert.equal(fileRun.source.type, "file");
 assert.equal(fileRun.projectKind, "new_project");
-assert.equal(fileRun.status, "planned");
+assert.equal(fileRun.status, "waiting_for_model");
 
 const existingProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-existing-"));
+function existingGit(args) {
+  return execFileSync("git", args, {
+    cwd: existingProject,
+    encoding: "utf8"
+  });
+}
+existingGit(["init"]);
+existingGit(["config", "user.email", "imfine@example.test"]);
+existingGit(["config", "user.name", "imfine test"]);
 fs.writeFileSync(path.join(existingProject, "package.json"), JSON.stringify({
   scripts: {
     test: "node --test",
@@ -176,6 +212,8 @@ fs.writeFileSync(path.join(existingProject, "package.json"), JSON.stringify({
 }, null, 2));
 fs.mkdirSync(path.join(existingProject, "src"));
 fs.writeFileSync(path.join(existingProject, "src", "index.js"), "export function main() { return true; }\n");
+existingGit(["add", "."]);
+existingGit(["commit", "-m", "initial"]);
 const existingRun = JSON.parse(run(["run", "Add auth", "--plan-only", "--json"], existingProject));
 assert.equal(existingRun.projectKind, "existing_project");
 assert.equal(existingRun.status, "planned");
@@ -190,6 +228,14 @@ assert.match(fs.readFileSync(path.join(existingProject, ".imfine", "project", "a
 const existingGraph = JSON.parse(fs.readFileSync(path.join(existingRun.runDir, "planning", "task-graph.json"), "utf8"));
 assert.equal(existingGraph.strategy, "serial");
 assert.equal(existingGraph.tasks[0].commit.mode, "integration");
+assert.match(fs.readFileSync(path.join(existingRun.runDir, "planning", "execution-plan.md"), "utf8"), /serial_reason: task_graph: strategy is serial/);
+assert.match(fs.readFileSync(path.join(existingRun.runDir, "planning", "execution-plan.md"), "utf8"), /replan_recommended: true/);
+const existingReplan = JSON.parse(run(["task-planner", "replan", existingRun.runId, "--json"], existingProject));
+assert.equal(existingReplan.status, "needs_task_replan");
+assert.ok(fs.existsSync(existingReplan.input));
+const existingReplanResume = JSON.parse(run(["resume", existingRun.runId, "--json"], existingProject, harnessEnv));
+assert.equal(existingReplanResume.status, "needs_task_replan");
+assert.ok(existingReplanResume.nextActions.some((action) => action.id === "agent-task-planner-replan"));
 
 const gitProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-git-"));
 function git(args) {
@@ -211,19 +257,26 @@ const gitRun = JSON.parse(run(["run", "Add value change", "--plan-only", "--json
 const prepared = JSON.parse(run(["worktree", "prepare", gitRun.runId, "--json"], gitProject));
 assert.equal(prepared.runBranch, `imfine/${gitRun.runId}`);
 assert.ok(prepared.tasks.length > 0);
-const agentPrepared = JSON.parse(run(["agents", "prepare", gitRun.runId, "--json"], gitProject));
+const agentPrepared = JSON.parse(run(["agents", "prepare", gitRun.runId, "--json"], gitProject, harnessEnv));
 assert.equal(agentPrepared.runId, gitRun.runId);
 assert.ok(fs.existsSync(agentPrepared.dispatch));
+const bridgeDispatch = JSON.parse(fs.readFileSync(agentPrepared.dispatch, "utf8"));
+assert.equal(bridgeDispatch.bridge_mode, "legacy_debug");
+assert.match(bridgeDispatch.bridge_notice, /debug\/testing only/);
 assert.ok(agentPrepared.packages.some((item) => item.id === "T1"));
 const t1Package = agentPrepared.packages.find((item) => item.id === "T1");
 assert.ok(t1Package);
 assert.ok(fs.existsSync(t1Package.prompt));
+assert.ok(fs.existsSync(path.join(path.dirname(t1Package.prompt), "legacy-bridge.md")));
+assert.equal(JSON.parse(fs.readFileSync(t1Package.execution, "utf8")).bridge_mode, "legacy_debug");
+assert.match(fs.readFileSync(t1Package.prompt, "utf8"), /legacy_bridge/);
 assert.match(fs.readFileSync(t1Package.prompt, "utf8"), /Dev Agent/);
 assert.match(fs.readFileSync(t1Package.skillBundle, "utf8"), /execute-task-plan/);
-const agentDryRun = JSON.parse(run(["agents", "execute", gitRun.runId, "--dry-run", "--limit", "1", "--json"], gitProject));
+const agentDryRun = JSON.parse(run(["agents", "execute", gitRun.runId, "--dry-run", "--limit", "1", "--json"], gitProject, harnessEnv));
 assert.equal(agentDryRun.dryRun, true);
 assert.equal(agentDryRun.results.length, 1);
 assert.equal(agentDryRun.results[0].status, "dry_run");
+assert.equal(JSON.parse(fs.readFileSync(path.join(agentDryRun.results[0].outputDir, "execution-status.json"), "utf8")).bridge_mode, "legacy_debug");
 const t1 = prepared.tasks.find((task) => task.task_id === "T1");
 assert.ok(t1);
 assert.ok(fs.existsSync(t1.path));
@@ -253,6 +306,10 @@ assert.equal(invalidPatch.validation.passed, false);
 assert.ok(invalidPatch.validation.errors.some((error) => error.includes("outside write_scope")));
 const invalidVerify = runExpectFail(["verify", gitRun.runId, "T2", "--json"], gitProject);
 assert.match(invalidVerify, /patch must be collected and validated before QA/);
+const recoveredInvalid = JSON.parse(run(["recover", "task", gitRun.runId, "T2", "--json"], gitProject));
+assert.equal(recoveredInvalid.status, "recovered");
+assert.equal(recoveredInvalid.fromTaskState, "patch_invalid");
+assert.equal(recoveredInvalid.toTaskState, "ready_for_dev");
 
 const riskProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-risk-"));
 function riskGit(args) {
@@ -398,7 +455,7 @@ function writeHandoff(status, summary) {
     summary,
     commands: role === "qa" ? ["fake qa command"] : undefined,
     failures: role === "qa" ? [] : undefined,
-    evidence: role === "qa" ? [path.join(agentDir, "handoff.json")] : undefined,
+    evidence: [path.join(agentDir, "handoff.json")],
     findings: role === "reviewer" ? [] : undefined,
     next_state: role === "qa" ? "reviewing" : role === "reviewer" ? "committing" : "ready"
   }, null, 2));
@@ -432,6 +489,7 @@ if (role === "dev") {
       status: "ready",
       summary: "fake technical summary ready",
       docs_changed: [],
+      evidence: [path.join(agentDir, "handoff.json")],
       reason: "archive summary prepared",
       next_state: "archiving"
     }, null, 2));
@@ -463,6 +521,7 @@ if (role === "dev") {
     status: "ready",
     summary: "fake risk review passed",
     risks: [],
+    evidence: [path.join(agentDir, "handoff.json")],
     required_changes: [],
     next_state: "planned"
   }, null, 2));
@@ -473,6 +532,7 @@ if (role === "dev") {
     to: "archive",
     status: "ready",
     summary: "fake project knowledge update ready",
+    evidence: [path.join(agentDir, "handoff.json")],
     updated_files: [],
     next_state: "archived"
   }, null, 2));
@@ -569,7 +629,7 @@ fs.writeFileSync(path.join(autoProject, "src", "index.js"), "export const value 
 autoGit(["add", "."]);
 autoGit(["commit", "-m", "initial"]);
 const fakeExecutorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fakeExecutor)}`;
-const autoRun = JSON.parse(run(["run", "Change value and document it", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], autoProject));
+const autoRun = JSON.parse(run(["run", "Change value and document it", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], autoProject, harnessEnv));
 assert.equal(autoRun.status, "completed");
 assert.ok(autoRun.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
 assert.ok(autoRun.steps.some((step) => step.actionId === "agent-risk-reviewer" && step.detail.includes("Risk Reviewer handoff")));
@@ -586,10 +646,36 @@ assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "technical-writer"
 assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "risk-reviewer" && agent.executionStatus === "completed"));
 assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "dev" && typeof agent.startedAt === "string"));
 assert.ok(autoAgentRuns.agents.some((agent) => agent.role === "dev" && typeof agent.outputDir === "string"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.taskId === "T1" && agent.workflowState === "implementation_done"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.taskId === "T1" && agent.role === "qa" && agent.workflowState === "qa_done"));
+assert.ok(autoAgentRuns.agents.some((agent) => agent.taskId === "T1" && agent.role === "reviewer" && agent.workflowState === "review_done"));
+const autoContracts = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "dispatch-contracts.json"), "utf8"));
+assert.ok(autoContracts.contracts.some((contract) => contract.role === "archive"));
+assert.ok(autoContracts.contracts.some((contract) => contract.status === "done"));
+assert.ok(autoContracts.contracts.some((contract) => contract.task_id === "T1" && contract.workflow_state === "implementation_done"));
+assert.ok(autoContracts.contracts.some((contract) => contract.task_id === "T1" && contract.role === "qa" && contract.workflow_state === "qa_done"));
+assert.ok(autoContracts.contracts.some((contract) => contract.task_id === "T1" && contract.role === "reviewer" && contract.workflow_state === "review_done"));
 const autoParallelPlan = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "parallel-plan.json"), "utf8"));
 assert.ok(autoParallelPlan.groups.some((group) => typeof group.status === "string"));
 assert.ok(autoParallelPlan.groups.some((group) => Array.isArray(group.readyActionIds)));
 assert.ok(autoParallelPlan.groups.some((group) => group.id === "archive" && group.status === "done"));
+assert.ok(Object.hasOwn(autoParallelPlan, "serial_reason"));
+assert.ok(Object.hasOwn(autoParallelPlan, "replan_recommended"));
+assert.ok(Array.isArray(autoParallelPlan.wave_history));
+assert.ok(autoParallelPlan.wave_history.some((wave) => wave.status === "completed"));
+assert.ok(Array.isArray(autoParallelPlan.executed_parallel_groups));
+assert.ok(autoParallelPlan.executed_parallel_groups.length > 0);
+const autoHarnessEvidence = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "true-harness-evidence.json"), "utf8"));
+assert.equal(autoHarnessEvidence.capability_gate.passed, true);
+assert.ok(autoHarnessEvidence.participating_roles.includes("dev"));
+assert.ok(autoHarnessEvidence.participating_roles.includes("qa"));
+assert.ok(autoHarnessEvidence.participating_roles.includes("reviewer"));
+assert.ok(autoHarnessEvidence.participating_roles.includes("risk-reviewer"));
+assert.ok(autoHarnessEvidence.parallel_execution.wave_count > 0);
+assert.ok(autoHarnessEvidence.parallel_execution.waves.some((wave) => wave.agent_count > 0));
+assert.ok(autoHarnessEvidence.handoff_evidence_chain.some((handoff) => handoff.role === "qa"));
+assert.ok(autoHarnessEvidence.handoff_evidence_chain.some((handoff) => handoff.role === "reviewer"));
+assert.ok(autoHarnessEvidence.handoff_evidence_chain.some((handoff) => handoff.role === "archive"));
 const autoState = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "state.json"), "utf8"));
 assert.equal(autoState.status, "archived");
 assert.equal(autoState.inferred_status, "archived");
@@ -602,6 +688,8 @@ assert.ok(Math.abs(startedDev - startedRisk) < 120);
 const autoStatus = JSON.parse(run(["status", "--json"], autoProject));
 assert.equal(autoStatus.currentRunStatus, "archived");
 assert.match(run(["report", autoRun.runId], autoProject), /push status: push_blocked_no_remote/);
+assert.match(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "archive", "archive-report.md"), "utf8"), /True Harness Evidence/);
+assert.match(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "archive", "archive-report.md"), "utf8"), /true-harness-evidence\.md/);
 
 const dependencyProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-deps-"));
 function dependencyGit(args) {
@@ -623,7 +711,7 @@ fs.mkdirSync(path.join(dependencyProject, "src"));
 fs.writeFileSync(path.join(dependencyProject, "src", "index.js"), "export const value = 1;\n");
 dependencyGit(["add", "."]);
 dependencyGit(["commit", "-m", "initial"]);
-const dependencyRun = JSON.parse(run(["run", "Change dependency project value", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], dependencyProject));
+const dependencyRun = JSON.parse(run(["run", "Change dependency project value", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], dependencyProject, harnessEnv));
 assert.equal(dependencyRun.status, "completed");
 assert.ok(dependencyRun.steps.some((step) => step.actionId === "runtime-dependency-install"));
 const dependencyEvidence = path.join(dependencyProject, ".imfine", "runs", dependencyRun.runId, "evidence", "dependency-install.md");
@@ -632,21 +720,22 @@ assert.match(fs.readFileSync(dependencyEvidence, "utf8"), /status: installed/);
 
 const autoNewProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-auto-new-"));
 const autoNewRun = JSON.parse(run(["run", "Create a model selected utility", "--executor", fakeExecutorCommand, "--max-iterations", "40", "--json"], autoNewProject));
-assert.equal(autoNewRun.status, "completed");
+assert.equal(autoNewRun.status, "waiting_for_model");
 const autoNewRunDir = path.join(autoNewProject, ".imfine", "runs", autoNewRun.runId);
-assert.ok(fs.existsSync(path.join(autoNewRunDir, "design", "stack-decision.json")));
-assert.equal(JSON.parse(fs.readFileSync(path.join(autoNewRunDir, "design", "stack-decision.json"), "utf8")).project_type, "library");
-assert.match(fs.readFileSync(path.join(autoNewRunDir, "design", "technical-solution.md"), "utf8"), /fake Architect Agent/);
-assert.equal(JSON.parse(fs.readFileSync(path.join(autoNewRunDir, "planning", "task-graph.json"), "utf8")).tasks[0].title, "Create model-selected project foundation");
+assert.ok(fs.existsSync(path.join(autoNewRunDir, "orchestration", "dispatch-contracts.json")));
+assert.ok(!fs.existsSync(path.join(autoNewRunDir, "design", "stack-decision.json")));
+assert.ok(!fs.existsSync(path.join(autoNewRunDir, "planning", "task-graph.json")));
 const autoNewStatus = JSON.parse(run(["status", "--json"], autoNewProject));
-assert.equal(autoNewStatus.currentRunStatus, "archived");
+assert.equal(autoNewStatus.currentRunStatus, "waiting_for_model");
 
 const waitingNewProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-waiting-new-"));
 const waitingNewRun = JSON.parse(run(["run", "Create a waiting model project", "--json"], waitingNewProject));
 assert.equal(waitingNewRun.status, "waiting_for_model");
-assert.equal(waitingNewRun.packages.length, 2);
-assert.ok(waitingNewRun.packages.every((item) => item.status === "dry_run"));
-assert.ok(fs.existsSync(path.join(waitingNewProject, ".imfine", "runs", waitingNewRun.runId, "agents", "architect", "execution", "model-input.md")));
+assert.equal(waitingNewRun.contracts.length, 2);
+assert.ok(waitingNewRun.contracts.some((item) => item.role === "architect" && item.status === "ready"));
+assert.ok(waitingNewRun.contracts.some((item) => item.role === "task-planner" && item.status === "waiting"));
+assert.ok(waitingNewRun.contracts.every((item) => item.workflow_state === "waiting_for_model"));
+assert.ok(fs.existsSync(path.join(waitingNewProject, ".imfine", "runs", waitingNewRun.runId, "orchestration", "dispatch-contracts.json")));
 
 const conflictProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-conflict-"));
 function conflictGit(args) {
@@ -718,9 +807,9 @@ assert.equal(conflictStatus.currentRunStatus, "needs_conflict_resolution");
 assert.ok(fs.existsSync(path.join(conflictRun.runDir, "agents", "conflict-resolver", "input.md")));
 assert.ok(fs.existsSync(path.join(conflictRun.runDir, "agents", "conflict-resolver", "handoff.json")));
 assert.ok(fs.existsSync(path.join(conflictRun.runDir, "evidence", "conflicts.md")));
-const conflictResume = JSON.parse(run(["resume", conflictRun.runId, "--json"], conflictProject));
+const conflictResume = JSON.parse(run(["resume", conflictRun.runId, "--json"], conflictProject, harnessEnv));
 assert.ok(conflictResume.nextActions.some((action) => action.id === "agent-conflict-resolver"));
-const conflictAuto = JSON.parse(run(["orchestrate", conflictRun.runId, "--executor", fakeExecutorCommand, "--max-iterations", "10", "--json"], conflictProject));
+const conflictAuto = JSON.parse(run(["orchestrate", conflictRun.runId, "--executor", fakeExecutorCommand, "--max-iterations", "10", "--json"], conflictProject, harnessEnv));
 assert.equal(conflictAuto.status, "completed");
 assert.ok(conflictAuto.steps.some((step) => step.detail.includes("resolved conflict verified")));
 const conflictAutoStatus = JSON.parse(run(["status", "--json"], conflictProject));
@@ -763,6 +852,10 @@ assert.equal(repeatedFix.fixTaskId, "FIX-T1-4");
 assert.ok(fs.existsSync(path.join(reviewFixRun.runDir, "tasks", repeatedFix.fixTaskId, "task.md")));
 const repeatedFixStatus = JSON.parse(run(["status", "--json"], reviewFixProject));
 assert.equal(repeatedFixStatus.currentRunStatus, "needs_dev_fix");
+const recoveredReviewFix = JSON.parse(run(["recover", "task", reviewFixRun.runId, "T1", "--json"], reviewFixProject));
+assert.equal(recoveredReviewFix.fromTaskState, "review_changes_requested");
+assert.equal(recoveredReviewFix.toTaskState, "ready_for_dev");
+assert.equal(recoveredReviewFix.toRunState, "implementing");
 
 const qaFailProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-qa-fail-"));
 function qaFailGit(args) {
@@ -791,6 +884,10 @@ assert.ok(failedVerification.fixTaskId.startsWith("FIX-T1-"));
 assert.ok(fs.existsSync(path.join(qaFailRun.runDir, "tasks", failedVerification.fixTaskId, "task.md")));
 const qaFailStatus = JSON.parse(run(["status", "--json"], qaFailProject));
 assert.equal(qaFailStatus.currentRunStatus, "needs_dev_fix");
+const recoveredQaFail = JSON.parse(run(["recover", "task", qaFailRun.runId, "T1", "--json"], qaFailProject));
+assert.equal(recoveredQaFail.fromTaskState, "qa_failed");
+assert.equal(recoveredQaFail.toTaskState, "ready_for_dev");
+assert.equal(recoveredQaFail.toRunState, "implementing");
 
 const designProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-design-rework-"));
 function designGit(args) {
@@ -817,6 +914,15 @@ assert.ok(fs.existsSync(designRework.architectInput));
 assert.ok(fs.existsSync(designRework.taskPlannerInput));
 const designStatus = JSON.parse(run(["status", "--json"], designProject));
 assert.equal(designStatus.currentRunStatus, "needs_design_update");
+const designResume = JSON.parse(run(["resume", designRun.runId, "--json"], designProject, harnessEnv));
+assert.ok(designResume.nextActions.some((action) => action.id === "agent-architect-design-rework-T1" && action.status === "ready"));
+assert.ok(designResume.nextActions.some((action) => action.id === "agent-task-planner-design-rework-T1" && action.status === "waiting"));
+const designContracts = JSON.parse(fs.readFileSync(path.join(designRun.runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
+assert.ok(designContracts.contracts.some((contract) => contract.id === "architect-T1" && contract.workflow_state === "implementation_blocked_by_design"));
+assert.ok(designContracts.contracts.some((contract) => contract.id === "task-planner-T1" && contract.workflow_state === "implementation_blocked_by_design"));
+const recoveredDesign = JSON.parse(run(["recover", "task", designRun.runId, "T1", "--json"], designProject));
+assert.equal(recoveredDesign.fromTaskState, "implementation_blocked_by_design");
+assert.equal(recoveredDesign.toTaskState, "planned");
 
 const parallelProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-parallel-"));
 function parallelGit(args) {
@@ -875,7 +981,7 @@ const parallelValidation = JSON.parse(run(["task", "graph", "validate", parallel
 assert.equal(parallelValidation.passed, true);
 assert.deepEqual(parallelValidation.parallelGroups, [["T1", "T2"]]);
 const parallelPrepared = JSON.parse(run(["worktree", "prepare", parallelRun.runId, "--json"], parallelProject));
-const parallelResume = JSON.parse(run(["resume", parallelRun.runId, "--json"], parallelProject));
+const parallelResume = JSON.parse(run(["resume", parallelRun.runId, "--json"], parallelProject, harnessEnv));
 const parallelWave = parallelResume.parallelGroups.find((group) => group.id === "task-layer-0");
 assert.ok(parallelWave);
 assert.deepEqual([...parallelWave.readyActionIds].sort(), ["agent-dev-T1", "agent-technical-writer-T2"]);
@@ -941,42 +1047,24 @@ assert.equal(blockedArchive.status, "blocked");
 assert.ok(blockedArchive.blockedItems.length > 0);
 assert.ok(fs.existsSync(blockedArchive.archiveReport));
 const blockedArchiveReport = fs.readFileSync(blockedArchive.archiveReport, "utf8");
-assert.match(blockedArchiveReport, /QA status: T1=missing/);
-assert.match(blockedArchiveReport, /Review status: T1=missing/);
+assert.match(blockedArchiveReport, /task graph missing/);
+assert.match(blockedArchiveReport, /QA status: missing/);
+assert.match(blockedArchiveReport, /Review status: missing/);
 assert.match(blockedArchiveReport, /push status: missing/);
 assert.match(blockedArchiveReport, /blocked: archive did not update long-term project knowledge/);
 
 const newProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-new-project-"));
-const delivered = JSON.parse(run(["run", "Create a tiny task tracker", "--deliver", "--json"], newProject));
-assert.equal(delivered.status, "archived");
-assert.equal(delivered.run.projectKind, "new_project");
-assert.equal(delivered.push.status, "push_blocked_no_remote");
-assert.equal(delivered.commit.commits.length, 2);
-assert.ok(fs.existsSync(path.join(newProject, ".git")));
-assert.ok(fs.existsSync(path.join(newProject, ".imfine", "runs", delivered.runId, "archive", "archive-report.md")));
-assert.ok(fs.existsSync(path.join(newProject, "package.json")));
-assert.ok(fs.existsSync(path.join(newProject, ".gitignore")));
-assert.ok(fs.existsSync(path.join(newProject, "src", "index.js")));
-assert.ok(fs.existsSync(path.join(newProject, "test", "index.test.js")));
-assert.ok(fs.existsSync(path.join(newProject, "docs", "usage.md")));
-assert.ok(fs.existsSync(path.join(delivered.projectWorktree, "package.json")));
-assert.ok(fs.existsSync(path.join(delivered.projectWorktree, ".gitignore")));
-assert.ok(fs.existsSync(path.join(delivered.projectWorktree, "src", "index.js")));
-assert.ok(fs.existsSync(path.join(delivered.projectWorktree, "test", "index.test.js")));
-assert.ok(fs.existsSync(path.join(delivered.projectWorktree, "docs", "usage.md")));
-assert.match(fs.readFileSync(path.join(newProject, ".imfine", "runs", delivered.runId, "design", "technical-solution.md"), "utf8"), /Selected Stack/);
-assert.match(fs.readFileSync(path.join(newProject, ".imfine", "runs", delivered.runId, "analysis", "risk-analysis.md"), "utf8"), /Missing remote is expected/);
-const generatedPackage = JSON.parse(fs.readFileSync(path.join(delivered.projectWorktree, "package.json"), "utf8"));
-assert.equal(generatedPackage.scripts.test, "node --test");
-assert.ok(generatedPackage.scripts.format);
-const finalizedRun = JSON.parse(fs.readFileSync(path.join(newProject, ".imfine", "runs", delivered.runId, "run.json"), "utf8"));
-assert.equal(fs.realpathSync(finalizedRun.finalized_to_cwd), fs.realpathSync(newProject));
-assert.equal(finalizedRun.finalized_branch, `imfine/${delivered.runId}`);
-execFileSync("npm", ["run", "test"], { cwd: delivered.projectWorktree, encoding: "utf8" });
-const generatedBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: delivered.projectWorktree, encoding: "utf8" }).trim();
-assert.equal(generatedBranch, `imfine/${delivered.runId}`);
-const generatedReport = run(["report", delivered.runId], newProject);
-assert.match(generatedReport, /push status: push_blocked_no_remote/);
+const preparedNewProject = JSON.parse(run(["run", "Create a tiny task tracker", "--deliver", "--json"], newProject));
+assert.equal(preparedNewProject.status, "waiting_for_model");
+assert.ok(fs.existsSync(path.join(newProject, ".imfine", "runs", preparedNewProject.runId, "orchestration", "dispatch-contracts.json")));
+assert.ok(!fs.existsSync(path.join(newProject, ".git")));
+assert.ok(!fs.existsSync(path.join(newProject, "package.json")));
+assert.ok(!fs.existsSync(path.join(newProject, ".gitignore")));
+assert.ok(!fs.existsSync(path.join(newProject, "src", "index.js")));
+assert.ok(!fs.existsSync(path.join(newProject, "test", "index.test.js")));
+assert.ok(!fs.existsSync(path.join(newProject, "docs", "usage.md")));
+assert.ok(fs.existsSync(path.join(newProject, ".imfine", "runs", preparedNewProject.runId, "orchestration", "context.json")));
+assert.ok(!fs.existsSync(path.join(newProject, ".imfine", "runs", preparedNewProject.runId, "design", "technical-solution.md")));
 
 const npmEnv = {
   npm_execpath: "/usr/local/bin/npm",

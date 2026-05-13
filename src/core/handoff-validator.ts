@@ -59,6 +59,7 @@ function requireCommon(input: JsonObject, runId: string, taskId: string | undefi
   stringField(input, "from", errors);
   stringField(input, "to", errors);
   stringField(input, "summary", errors);
+  arrayField(input, "evidence", errors);
 }
 
 export function validateHandoff(role: HandoffRole, value: unknown, runId: string, taskId?: string): HandoffValidationResult {
@@ -72,13 +73,11 @@ export function validateHandoff(role: HandoffRole, value: unknown, runId: string
     arrayField(value, "files_changed", errors);
     arrayField(value, "commands", errors);
     arrayField(value, "verification", errors);
-    stringField(value, "patch", errors);
     stringField(value, "next_state", errors);
   } else if (role === "qa") {
     statusField(value, ["pass", "fail", "blocked"], errors);
     arrayField(value, "commands", errors);
     arrayField(value, "failures", errors);
-    arrayField(value, "evidence", errors);
     stringField(value, "next_state", errors);
   } else if (role === "reviewer") {
     statusField(value, ["approved", "changes_requested", "blocked"], errors);
@@ -99,7 +98,6 @@ export function validateHandoff(role: HandoffRole, value: unknown, runId: string
   } else if (role === "committer") {
     statusField(value, ["ready", "blocked"], errors);
     stringField(value, "commit_mode", errors);
-    arrayField(value, "evidence", errors);
     stringField(value, "next_state", errors);
   } else if (role === "risk-reviewer") {
     statusField(value, ["ready", "blocked", "needs_replan"], errors);

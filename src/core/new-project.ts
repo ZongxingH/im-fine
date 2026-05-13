@@ -224,44 +224,13 @@ function recordNewProjectDecisions(cwd: string, run: DeliveryRunResult): void {
 }
 
 export function completeNewProjectDelivery(cwd: string, run: DeliveryRunResult): NewProjectDeliveryResult {
-  if (run.projectKind !== "new_project") {
-    throw new Error("New project delivery requires an empty or unimplemented project directory.");
-  }
-
-  ensureGitRepository(cwd);
-  recordNewProjectDecisions(cwd, run);
-  const worktrees = prepareWorktrees(cwd, run.runId);
-
-  writeProjectFoundation(taskWorktree(worktrees, "T1"), run);
-  const patch1 = collectPatch(cwd, run.runId, "T1");
-  const verify1 = verifyTask(cwd, run.runId, "T1");
-  const review1 = reviewTask(cwd, run.runId, "T1", "approved", "project foundation is scoped and verified");
-
-  writeProjectDocs(taskWorktree(worktrees, "T2"), run);
-  const patch2 = collectPatch(cwd, run.runId, "T2");
-  const verify2 = verifyTask(cwd, run.runId, "T2", "pass", "documentation review passed");
-  const review2 = reviewTask(cwd, run.runId, "T2", "approved", "documentation matches generated project");
-
-  const commit = commitRun(cwd, run.runId, "task");
-  const push = pushRun(cwd, run.runId);
-  const archive = archiveRun(cwd, run.runId);
-
-  return {
-    runId: run.runId,
-    cwd,
-    status: archive.status,
-    run,
-    worktrees,
-    patches: [patch1, patch2],
-    verification: [verify1, verify2],
-    reviews: [review1, review2],
-    commit,
-    push,
-    archive,
-    projectWorktree: commit.runWorktree
-  };
+  void cwd;
+  void run;
+  throw new Error("New-project runtime delivery scaffolding has been removed. Prepare model execution packages and wait for Agent outputs instead.");
 }
 
 export function deliverNewProject(cwd: string, requirementArgs: string[]): NewProjectDeliveryResult {
-  return completeNewProjectDelivery(cwd, createDeliveryRun(cwd, requirementArgs));
+  void cwd;
+  void requirementArgs;
+  throw new Error("New-project runtime delivery scaffolding has been removed. Use `run` to prepare Architect and Task Planner packages.");
 }

@@ -1,11 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
+import { buildDispatchContracts, type DispatchContract } from "./dispatch.js";
 import { dependencyInstallRequired } from "./dependencies.js";
-import { doctor } from "./doctor.js";
+import { detectTrueHarnessCapability, doctor } from "./doctor.js";
+import { materializeFixLoopPattern, readFixLoopDesignReworkState, readFixLoopRoleActionState } from "./fix-loop.js";
 import { ensureDir, writeText } from "./fs.js";
 import { validateTaskGraph, type TaskGraph, type TaskGraphTask } from "./plan.js";
 import { isActionCompleted } from "./reliability.js";
-import { normalizeRunState, type RunState } from "./state-machine.js";
+import { normalizeRunState, transitionRunState, type RunState } from "./state-machine.js";
+import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
+import { workflowState } from "./workflows.js";
 
 export type OrchestrationActionKind = "runtime" | "agent" | "gate";
 export type OrchestrationActionStatus = "ready" | "waiting" | "blocked" | "done";
@@ -29,6 +33,7 @@ export interface AgentRun {
   instanceId?: string;
   role: string;
   taskId?: string;
+  workflowState?: string;
   status: "ready" | "waiting" | "planned" | "completed";
   executionStatus?: "unprepared" | "prepared" | "waiting_for_model" | "executed" | "failed" | "completed";
   outputDir?: string;
@@ -62,12 +67,14 @@ export interface OrchestratorResult {
   status: RunState;
   nextActions: OrchestrationAction[];
   agentRuns: AgentRun[];
+  dispatchContracts: DispatchContract[];
   parallelGroups: ParallelGroup[];
   files: {
     state: string;
     queue: string;
     infrastructureGate: string;
     agentRuns: string;
+    dispatchContracts: string;
     parallelPlan: string;
     timeline: string;
   };
@@ -109,6 +116,135 @@ interface DoctorLikeCheck {
   label: string;
   status: string;
   detail: string;
+}
+
+interface ParallelPlanEvidence {
+  serialReason: string | null;
+  replanRecommended: boolean;
+  parallelismBlockedBy: "none" | "task_graph" | "boundary_conflict" | "provider_capability";
+}
+
+interface ExistingProjectNoTaskGraphWorkflow {
+  discovery_roles: string[];
+  planning_roles: string[];
+  planning_runtime_action: string;
+  parallel_groups: {
+    discovery: string;
+    planning: string;
+    planning_finalize: string;
+  };
+}
+
+interface ExistingProjectActiveDeliveryWorkflow {
+  task_pipeline: {
+    states: {
+      implementation_ready: {
+        roles: string[];
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      implementation_waiting: {
+        roles: string[];
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      implementation_done: {
+        roles: string[];
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      qa_ready: {
+        role: string;
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      qa_waiting: {
+        role: string;
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      qa_done: {
+        role: string;
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      review_ready: {
+        role: string;
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      review_waiting: {
+        role: string;
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+      review_done: {
+        role: string;
+        action_id_pattern: string;
+        parallel_group_pattern: string;
+        reason: string;
+      };
+    };
+  };
+  risk_review_role: string;
+  risk_review_parallel_group: string;
+  risk_review_reason: string;
+}
+
+type TaskPipelineConfig = ExistingProjectActiveDeliveryWorkflow["task_pipeline"];
+type TaskPipelineWorkflowState =
+  | "implementation_ready"
+  | "implementation_waiting"
+  | "implementation_done"
+  | "qa_ready"
+  | "qa_waiting"
+  | "qa_done"
+  | "review_ready"
+  | "review_waiting"
+  | "review_done";
+
+interface TaskPipelineMaterialized {
+  workflowState: TaskPipelineWorkflowState;
+  role: string;
+  actionId: string;
+  parallelGroup: string;
+  reason: string;
+}
+
+interface ExistingProjectReadyToCommitWorkflow {
+  review_role: string;
+  review_action_id: string;
+  runtime_action_id: string;
+  parallel_group: string;
+  review_reason: string;
+  runtime_reason: string;
+}
+
+interface ExistingProjectReadyToPushWorkflow {
+  runtime_action_id: string;
+  parallel_group: string;
+  runtime_reason: string;
+  depends_on: string[];
+}
+
+interface ExistingProjectReadyToArchiveWorkflow {
+  roles: string[];
+  parallel_group: string;
+  depends_on: string[];
+  technical_writer_action_id: string;
+  project_knowledge_action_id: string;
+  archive_action_id: string;
+  technical_writer_reason: string;
+  project_knowledge_reason: string;
+  archive_reason: string;
 }
 
 function readJson<T>(file: string): T {
@@ -219,6 +355,10 @@ function taskStatus(runDirPath: string, taskId: string): string | undefined {
   return optionalJson<{ status?: string }>(path.join(runDirPath, "tasks", taskId, "status.json"))?.status;
 }
 
+function tasksWithStatus(graph: TaskGraph, runDirPath: string, status: string): TaskGraphTask[] {
+  return graph.tasks.filter((task) => taskStatus(runDirPath, task.id) === status);
+}
+
 function hasPendingFixTask(graph: TaskGraph, runDirPath: string, taskId: string): boolean {
   const prefix = `FIX-${taskId}-`;
   return graph.tasks.some((task) => task.id.startsWith(prefix) && !taskCommitted(runDirPath, task.id) && !reviewApproved(runDirPath, task.id));
@@ -265,7 +405,7 @@ function makeRunLevelAgent(cwd: string, runDirPath: string, runId: string, role:
     inputs: [
       rel(cwd, path.join(runDirPath, "request", "normalized.md")),
       rel(cwd, path.join(runDirPath, "analysis", "project-context.md")),
-      rel(cwd, path.join(runDirPath, "design", "technical-solution.md")),
+      rel(cwd, path.join(runDirPath, "orchestration", "context.json")),
       rel(cwd, path.join(runDirPath, "planning", "task-graph.json"))
     ],
     outputs: outputs.map((file) => rel(cwd, file)),
@@ -276,7 +416,15 @@ function makeRunLevelAgent(cwd: string, runDirPath: string, runId: string, role:
   };
 }
 
-function makeAgentRun(cwd: string, runDirPath: string, task: TaskGraphTask, role: string, status: AgentRun["status"], parallelGroup: string): AgentRun {
+function makeAgentRun(
+  cwd: string,
+  runDirPath: string,
+  task: TaskGraphTask,
+  role: string,
+  status: AgentRun["status"],
+  parallelGroup: string,
+  workflowState?: TaskPipelineWorkflowState
+): AgentRun {
   const id = role === "dev" || role === "technical-writer" ? task.id : `${role}-${task.id}`;
   const lifecycle = executionLifecycle(runDirPath, id);
   return {
@@ -284,11 +432,12 @@ function makeAgentRun(cwd: string, runDirPath: string, task: TaskGraphTask, role
     ...lifecycle,
     role,
     taskId: task.id,
+    workflowState,
     status,
     skills: skillsForRole(role),
     inputs: [
       rel(cwd, path.join(runDirPath, "request", "normalized.md")),
-      rel(cwd, path.join(runDirPath, "design", "technical-solution.md")),
+      rel(cwd, path.join(runDirPath, "orchestration", "context.json")),
       rel(cwd, path.join(runDirPath, "tasks", task.id, "task.md")),
       rel(cwd, path.join(runDirPath, "agents", task.id, "input.md"))
     ],
@@ -300,6 +449,36 @@ function makeAgentRun(cwd: string, runDirPath: string, task: TaskGraphTask, role
     readScope: task.read_scope,
     writeScope: role === "qa" || role === "reviewer" ? [] : task.write_scope,
     dependsOn: task.depends_on,
+    parallelGroup
+  };
+}
+
+function makeNamedAgentRun(
+  cwd: string,
+  runDirPath: string,
+  runId: string,
+  agentId: string,
+  role: string,
+  status: AgentRun["status"],
+  parallelGroup: string,
+  inputs: string[],
+  outputs: string[],
+  dependsOn: string[] = [],
+  workflowState?: string
+): AgentRun {
+  const lifecycle = executionLifecycle(runDirPath, agentId);
+  return {
+    id: agentId,
+    ...lifecycle,
+    role,
+    workflowState,
+    status,
+    skills: skillsForRole(role),
+    inputs,
+    outputs,
+    readScope: [`.imfine/runs/${runId}/**`, ".imfine/project/**"],
+    writeScope: outputs,
+    dependsOn,
     parallelGroup
   };
 }
@@ -359,9 +538,324 @@ ${blockers.length > 0 ? blockers.map((item) => `- Resolve ${item.label}: ${item.
   return rel(cwd, file);
 }
 
+function writeCapabilityEvidence(cwd: string, runId: string, runDirPath: string, reason: string): string {
+  const file = path.join(runDirPath, "evidence", "subagent-capability.md");
+  writeText(file, `# True Harness Capability Gate
+
+## Status
+
+- run: ${runId}
+- gate: blocked
+- reason: ${reason}
+
+## Required Recovery
+
+- Resume this run from the real provider session that is acting as Orchestrator.
+- Ensure \`IMFINE_PROVIDER\` is set to \`codex\` or \`claude\`.
+- Ensure \`IMFINE_SUBAGENT_SUPPORTED=true\` is only declared when native subagent/spawn is actually available.
+- Re-run \`imfine doctor\` and then \`imfine resume ${runId}\`.
+`);
+  return rel(cwd, file);
+}
+
+function outputsForDiscoveryRole(runDirPath: string, role: string): string[] {
+  if (role === "intake") return [path.join(runDirPath, "agents", "intake", "handoff.json"), path.join(runDirPath, "request", "normalized.md")];
+  if (role === "project-analyzer") return [path.join(runDirPath, "agents", "project-analyzer", "handoff.json"), path.join(runDirPath, "analysis", "project-context.md")];
+  if (role === "product-planner") return [path.join(runDirPath, "agents", "product-planner", "handoff.json"), path.join(runDirPath, "analysis", "product-analysis.md")];
+  if (role === "architect") return [path.join(runDirPath, "agents", "architect", "handoff.json"), path.join(runDirPath, "design", "technical-solution.md")];
+  return [path.join(runDirPath, "agents", role, "handoff.json")];
+}
+
+function taskPipelineWorkflow(): ExistingProjectActiveDeliveryWorkflow["task_pipeline"] {
+  return workflowState<ExistingProjectActiveDeliveryWorkflow>("existing-project-delivery", "active_delivery").task_pipeline;
+}
+
+function taskPipelineState(config: TaskPipelineConfig, workflowStateId: TaskPipelineWorkflowState) {
+  return config.states[workflowStateId];
+}
+
+function materializePattern(pattern: string, params: Record<string, string | number>): string {
+  return pattern.replace(/\{([^}]+)\}/g, (_match, key) => {
+    const value = params[key];
+    if (value === undefined) throw new Error(`Missing task pipeline pattern param: ${key}`);
+    return String(value);
+  });
+}
+
+function materializeTaskPipelineState(
+  config: TaskPipelineConfig,
+  workflowStateId: TaskPipelineWorkflowState,
+  taskId: string,
+  layer: number,
+  roleOverride?: string
+): TaskPipelineMaterialized {
+  const state = taskPipelineState(config, workflowStateId);
+  const role = roleOverride || ("role" in state ? state.role : state.roles[0]);
+  return {
+    workflowState: workflowStateId,
+    role,
+    actionId: materializePattern(state.action_id_pattern, { role, task_id: taskId, layer }),
+    parallelGroup: materializePattern(state.parallel_group_pattern, { role, task_id: taskId, layer }),
+    reason: state.reason
+  };
+}
+
+function taskLayerNumber(graph: TaskGraph, task: TaskGraphTask): number {
+  return taskLayer(graph, task);
+}
+
+function implementationRoleStatus(runDirPath: string, task: TaskGraphTask, role: string, dependenciesReady: boolean): "ready" | "waiting" | "completed" {
+  return taskRoleStatus(runDirPath, task, role, dependenciesReady);
+}
+
+function qaRoleStatus(runDirPath: string, taskId: string): "ready" | "waiting" | "completed" {
+  if (qaPassed(runDirPath, taskId)) return "completed";
+  return patchReady(runDirPath, taskId) ? "ready" : "waiting";
+}
+
+function reviewRoleStatus(runDirPath: string, taskId: string): "ready" | "waiting" | "completed" {
+  if (reviewApproved(runDirPath, taskId)) return "completed";
+  return qaPassed(runDirPath, taskId) ? "ready" : "waiting";
+}
+
+function implementationWorkflowState(status: "ready" | "waiting" | "completed"): TaskPipelineWorkflowState {
+  if (status === "ready") return "implementation_ready";
+  if (status === "waiting") return "implementation_waiting";
+  return "implementation_done";
+}
+
+function qaWorkflowState(status: "ready" | "waiting" | "completed"): TaskPipelineWorkflowState {
+  if (status === "ready") return "qa_ready";
+  if (status === "waiting") return "qa_waiting";
+  return "qa_done";
+}
+
+function reviewWorkflowState(status: "ready" | "waiting" | "completed"): TaskPipelineWorkflowState {
+  if (status === "ready") return "review_ready";
+  if (status === "waiting") return "review_waiting";
+  return "review_done";
+}
+
+function addImplementationStage(
+  actions: OrchestrationAction[],
+  agents: AgentRun[],
+  cwd: string,
+  runDirPath: string,
+  task: TaskGraphTask,
+  role: string,
+  status: "ready" | "waiting" | "completed",
+  layer: number,
+  config: TaskPipelineConfig
+): void {
+  const materialized = materializeTaskPipelineState(config, implementationWorkflowState(status), task.id, layer, role);
+  agents.push(makeAgentRun(cwd, runDirPath, task, role, status, materialized.parallelGroup, materialized.workflowState));
+  actions.push(createAction(cwd, runDirPath, {
+    id: materialized.actionId,
+    kind: "agent",
+    status: status === "completed" ? "done" : status,
+    role,
+    taskId: task.id,
+    reason: materialized.reason,
+    dependsOn: task.depends_on,
+    parallelGroup: materialized.parallelGroup,
+    inputs: [rel(cwd, path.join(runDirPath, "agents", task.id, "input.md"))],
+    outputs: [rel(cwd, patchFile(runDirPath, task.id))]
+  }));
+}
+
+function addQaStage(
+  actions: OrchestrationAction[],
+  agents: AgentRun[],
+  cwd: string,
+  runId: string,
+  runDirPath: string,
+  task: TaskGraphTask,
+  status: "ready" | "waiting" | "completed",
+  layer: number,
+  config: TaskPipelineConfig
+): void {
+  const materialized = materializeTaskPipelineState(config, qaWorkflowState(status), task.id, layer);
+  agents.push(makeAgentRun(cwd, runDirPath, task, materialized.role, status, materialized.parallelGroup, materialized.workflowState));
+  if (status === "completed") return;
+  const implementation = materializeTaskPipelineState(config, "implementation_done", task.id, layer, roleForTask(task));
+  actions.push(createAction(cwd, runDirPath, {
+    id: materialized.actionId,
+    kind: "agent",
+    status,
+    role: materialized.role,
+    taskId: task.id,
+    command: `imfine verify ${runId} ${task.id}`,
+    reason: materialized.reason,
+    dependsOn: [implementation.actionId],
+    parallelGroup: materialized.parallelGroup,
+    inputs: [rel(cwd, patchFile(runDirPath, task.id))],
+    outputs: [rel(cwd, path.join(runDirPath, "agents", `qa-${task.id}`, "handoff.json"))]
+  }));
+}
+
+function addReviewStage(
+  actions: OrchestrationAction[],
+  agents: AgentRun[],
+  cwd: string,
+  runId: string,
+  runDirPath: string,
+  task: TaskGraphTask,
+  status: "ready" | "waiting" | "completed",
+  layer: number,
+  config: TaskPipelineConfig
+): void {
+  const materialized = materializeTaskPipelineState(config, reviewWorkflowState(status), task.id, layer);
+  agents.push(makeAgentRun(cwd, runDirPath, task, materialized.role, status, materialized.parallelGroup, materialized.workflowState));
+  if (status === "completed") return;
+  const qa = materializeTaskPipelineState(config, "qa_done", task.id, layer);
+  actions.push(createAction(cwd, runDirPath, {
+    id: materialized.actionId,
+    kind: "agent",
+    status,
+    role: materialized.role,
+    taskId: task.id,
+    command: `imfine review ${runId} ${task.id} --status approved|changes_requested|blocked`,
+    reason: materialized.reason,
+    dependsOn: [qa.actionId],
+    parallelGroup: materialized.parallelGroup,
+    inputs: [rel(cwd, path.join(runDirPath, "agents", `qa-${task.id}`, "handoff.json"))],
+    outputs: [rel(cwd, path.join(runDirPath, "agents", `reviewer-${task.id}`, "handoff.json"))]
+  }));
+}
+
+function addDesignReworkActions(
+  actions: OrchestrationAction[],
+  agents: AgentRun[],
+  cwd: string,
+  runId: string,
+  runDirPath: string,
+  graph: TaskGraph
+): void {
+  const workflow = readFixLoopDesignReworkState();
+  const blockedTasks = tasksWithStatus(graph, runDirPath, "implementation_blocked_by_design");
+
+  for (const task of blockedTasks) {
+    const architectActionId = materializeFixLoopPattern(workflow.architect.action_id_pattern, { task_id: task.id });
+    const plannerActionId = materializeFixLoopPattern(workflow.task_planner.action_id_pattern, { task_id: task.id });
+    const architectParallelGroup = materializeFixLoopPattern(workflow.architect.parallel_group_pattern, { task_id: task.id });
+    const plannerParallelGroup = materializeFixLoopPattern(workflow.task_planner.parallel_group_pattern, { task_id: task.id });
+    const plannerDependsOn = materializeFixLoopPattern(workflow.task_planner.depends_on_pattern, { task_id: task.id });
+    const architectAgentId = `architect-${task.id}`;
+    const plannerAgentId = `task-planner-${task.id}`;
+    const architectInput = rel(cwd, path.join(runDirPath, "agents", architectAgentId, "input.md"));
+    const plannerInput = rel(cwd, path.join(runDirPath, "agents", plannerAgentId, "input.md"));
+    const architectOutputs = [
+      rel(cwd, path.join(runDirPath, "agents", architectAgentId, "handoff.json")),
+      rel(cwd, path.join(runDirPath, "design", "technical-solution.md")),
+      rel(cwd, path.join(runDirPath, "design", "architecture-decisions.md"))
+    ];
+    const plannerOutputs = [
+      rel(cwd, path.join(runDirPath, "agents", plannerAgentId, "handoff.json")),
+      rel(cwd, path.join(runDirPath, "planning", "task-graph.json")),
+      rel(cwd, path.join(runDirPath, "planning", "execution-plan.md")),
+      rel(cwd, path.join(runDirPath, "planning", "commit-plan.md"))
+    ];
+    const architectCompleted = isActionCompleted(cwd, runId, architectActionId);
+    const plannerCompleted = isActionCompleted(cwd, runId, plannerActionId);
+    const architectStatus: AgentRun["status"] = architectCompleted ? "completed" : "ready";
+    const plannerStatus: AgentRun["status"] = plannerCompleted ? "completed" : architectCompleted ? "ready" : "waiting";
+
+    agents.push(makeNamedAgentRun(
+      cwd,
+      runDirPath,
+      runId,
+      architectAgentId,
+      workflow.architect.role,
+      architectStatus,
+      architectParallelGroup,
+      [architectInput],
+      architectOutputs,
+      [],
+      "implementation_blocked_by_design"
+    ));
+    actions.push(createAction(cwd, runDirPath, {
+      id: architectActionId,
+      kind: "agent",
+      status: architectCompleted ? "done" : "ready",
+      role: workflow.architect.role,
+      taskId: task.id,
+      reason: workflow.architect.reason,
+      dependsOn: [],
+      parallelGroup: architectParallelGroup,
+      inputs: [architectInput],
+      outputs: architectOutputs
+    }));
+
+    agents.push(makeNamedAgentRun(
+      cwd,
+      runDirPath,
+      runId,
+      plannerAgentId,
+      workflow.task_planner.role,
+      plannerStatus,
+      plannerParallelGroup,
+      [plannerInput],
+      plannerOutputs,
+      [plannerDependsOn],
+      "implementation_blocked_by_design"
+    ));
+    actions.push(createAction(cwd, runDirPath, {
+      id: plannerActionId,
+      kind: "agent",
+      status: plannerCompleted ? "done" : architectCompleted ? "ready" : "waiting",
+      role: workflow.task_planner.role,
+      taskId: task.id,
+      reason: workflow.task_planner.reason,
+      dependsOn: [plannerDependsOn],
+      parallelGroup: plannerParallelGroup,
+      inputs: [plannerInput],
+      outputs: plannerOutputs
+    }));
+  }
+}
+
+function inferParallelPlanEvidence(runDirPath: string, actions: OrchestrationAction[]): ParallelPlanEvidence {
+  if (actions.some((action) => action.id === "gate-subagent-capability")) {
+    return {
+      serialReason: "provider_capability: current session does not expose native subagent/spawn support",
+      replanRecommended: false,
+      parallelismBlockedBy: "provider_capability"
+    };
+  }
+  const taskGraphFile = path.join(runDirPath, "planning", "task-graph.json");
+  if (!exists(taskGraphFile)) {
+    return {
+      serialReason: "task_graph: task graph is missing, so parallel readiness cannot be computed yet",
+      replanRecommended: false,
+      parallelismBlockedBy: "task_graph"
+    };
+  }
+  const validation = validateTaskGraph(readJson<TaskGraph>(taskGraphFile));
+  if (validation.errors.some((error) => error.includes("overlapping write_scope"))) {
+    return {
+      serialReason: validation.serialReason,
+      replanRecommended: true,
+      parallelismBlockedBy: "boundary_conflict"
+    };
+  }
+  if (validation.serialReason) {
+    return {
+      serialReason: validation.serialReason,
+      replanRecommended: validation.replanRecommended,
+      parallelismBlockedBy: "task_graph"
+    };
+  }
+  return {
+    serialReason: null,
+    replanRecommended: false,
+    parallelismBlockedBy: "none"
+  };
+}
+
 function inferTaskActions(cwd: string, runId: string, runDirPath: string, graph: TaskGraph, hasWorktrees: boolean): { actions: OrchestrationAction[]; agents: AgentRun[] } {
   const actions: OrchestrationAction[] = [];
   const agents: AgentRun[] = [];
+  const pipeline = taskPipelineWorkflow();
 
   if (!hasWorktrees) {
     const needsDependencyInstall = dependencyInstallRequired(cwd) && !isActionCompleted(cwd, runId, "runtime-dependency-install");
@@ -393,7 +887,7 @@ function inferTaskActions(cwd: string, runId: string, runDirPath: string, graph:
   }
 
   for (const task of graph.tasks) {
-    const layer = `task-layer-${taskLayer(graph, task)}`;
+    const layer = taskLayerNumber(graph, task);
     const role = roleForTask(task);
     const dependenciesReady = dependencyReady(runDirPath, task);
     const status = taskStatus(runDirPath, task.id);
@@ -401,65 +895,27 @@ function inferTaskActions(cwd: string, runId: string, runDirPath: string, graph:
       continue;
     }
     if (!patchReady(runDirPath, task.id)) {
-      const status = taskRoleStatus(runDirPath, task, role, dependenciesReady);
-      agents.push(makeAgentRun(cwd, runDirPath, task, role, status, layer));
-      actions.push(createAction(cwd, runDirPath, {
-        id: `agent-${role}-${task.id}`,
-        kind: "agent",
-        status: status === "completed" ? "done" : status,
-        role,
-        taskId: task.id,
-        reason: status === "ready" ? "task patch is missing or not validated" : status === "waiting" ? "task dependencies are not ready" : "task patch is already validated",
-        dependsOn: task.depends_on,
-        parallelGroup: layer,
-        inputs: [rel(cwd, path.join(runDirPath, "agents", task.id, "input.md"))],
-        outputs: [rel(cwd, patchFile(runDirPath, task.id))]
-      }));
-      if (status === "completed") continue;
+      addImplementationStage(actions, agents, cwd, runDirPath, task, role, implementationRoleStatus(runDirPath, task, role, dependenciesReady), layer, pipeline);
       continue;
     }
 
-    agents.push(makeAgentRun(cwd, runDirPath, task, role, "completed", layer));
+    addImplementationStage(actions, agents, cwd, runDirPath, task, role, "completed", layer, pipeline);
 
-    if (!qaPassed(runDirPath, task.id)) {
-      agents.push(makeAgentRun(cwd, runDirPath, task, "qa", "ready", `qa-${layer}`));
-      actions.push(createAction(cwd, runDirPath, {
-        id: `agent-qa-${task.id}`,
-        kind: "agent",
-        status: "ready",
-        role: "qa",
-        taskId: task.id,
-        command: `imfine verify ${runId} ${task.id}`,
-        reason: "patch is ready but QA evidence is missing or not passing",
-        dependsOn: [`agent-${role}-${task.id}`],
-        parallelGroup: `qa-${layer}`,
-        inputs: [rel(cwd, patchFile(runDirPath, task.id))],
-        outputs: [rel(cwd, path.join(runDirPath, "agents", `qa-${task.id}`, "handoff.json"))]
-      }));
+    const qaStatus = qaRoleStatus(runDirPath, task.id);
+    if (qaStatus !== "completed") {
+      addQaStage(actions, agents, cwd, runId, runDirPath, task, qaStatus, layer, pipeline);
       continue;
     }
 
-    agents.push(makeAgentRun(cwd, runDirPath, task, "qa", "completed", `qa-${layer}`));
+    addQaStage(actions, agents, cwd, runId, runDirPath, task, "completed", layer, pipeline);
 
-    if (!reviewApproved(runDirPath, task.id)) {
-      agents.push(makeAgentRun(cwd, runDirPath, task, "reviewer", "ready", `review-${layer}`));
-      actions.push(createAction(cwd, runDirPath, {
-        id: `agent-reviewer-${task.id}`,
-        kind: "agent",
-        status: "ready",
-        role: "reviewer",
-        taskId: task.id,
-        command: `imfine review ${runId} ${task.id} --status approved|changes_requested|blocked`,
-        reason: "QA passed but reviewer decision is missing",
-        dependsOn: [`agent-qa-${task.id}`],
-        parallelGroup: `review-${layer}`,
-        inputs: [rel(cwd, path.join(runDirPath, "agents", `qa-${task.id}`, "handoff.json"))],
-        outputs: [rel(cwd, path.join(runDirPath, "agents", `reviewer-${task.id}`, "handoff.json"))]
-      }));
+    const reviewerStatus = reviewRoleStatus(runDirPath, task.id);
+    if (reviewerStatus !== "completed") {
+      addReviewStage(actions, agents, cwd, runId, runDirPath, task, reviewerStatus, layer, pipeline);
       continue;
     }
 
-    agents.push(makeAgentRun(cwd, runDirPath, task, "reviewer", "completed", `review-${layer}`));
+    addReviewStage(actions, agents, cwd, runId, runDirPath, task, "completed", layer, pipeline);
   }
 
   return { actions, agents };
@@ -551,9 +1007,19 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     queue: path.join(stateDir, "queue.json"),
     infrastructureGate: path.join(orchestrationDir, "infrastructure-gate.json"),
     agentRuns: path.join(orchestrationDir, "agent-runs.json"),
+    dispatchContracts: path.join(orchestrationDir, "dispatch-contracts.json"),
     parallelPlan: path.join(orchestrationDir, "parallel-plan.json"),
     timeline: path.join(orchestrationDir, "timeline.md")
   };
+  const dispatchContracts = buildDispatchContracts(cwd, runId, runDirPath, result.nextActions, result.agentRuns);
+  const parallelEvidence = inferParallelPlanEvidence(runDirPath, result.nextActions);
+  const existingParallelPlan = exists(files.parallelPlan)
+    ? readJson<{
+      executed_parallel_groups?: string[];
+      blocked_parallel_groups?: string[];
+      wave_history?: unknown[];
+    }>(files.parallelPlan)
+    : null;
 
   writeText(files.state, `${JSON.stringify({
     schema_version: 1,
@@ -565,27 +1031,45 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     next_action_count: actionable.length,
     ready_action_ids: actionable.filter((action) => action.status === "ready").map((action) => action.id),
     blocked_action_ids: actionable.filter((action) => action.status === "blocked").map((action) => action.id),
+    ready_roles: dispatchContracts.filter((item) => item.status === "ready").map((item) => item.role),
+    waiting_roles: dispatchContracts.filter((item) => item.status === "waiting").map((item) => item.role),
+    completed_roles: dispatchContracts.filter((item) => item.status === "done").map((item) => item.role),
+    blocked_roles: dispatchContracts.filter((item) => item.status === "blocked").map((item) => item.role),
+    ready_contract_ids: dispatchContracts.filter((item) => item.status === "ready").map((item) => item.id),
     parallel_group_count: result.parallelGroups.length
   }, null, 2)}\n`);
   writeText(files.queue, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
     updated_at: new Date().toISOString(),
-    actions: actionable
+    actions: actionable,
+    contracts: dispatchContracts.filter((item) => item.status !== "done")
   }, null, 2)}\n`);
   writeText(files.agentRuns, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
     agents: result.agentRuns
   }, null, 2)}\n`);
+  writeText(files.dispatchContracts, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    contracts: dispatchContracts
+  }, null, 2)}\n`);
   writeText(files.parallelPlan, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
-    groups: result.parallelGroups
+    groups: result.parallelGroups,
+    serial_reason: parallelEvidence.serialReason,
+    replan_recommended: parallelEvidence.replanRecommended,
+    parallelism_blocked_by: parallelEvidence.parallelismBlockedBy,
+    executed_parallel_groups: Array.isArray(existingParallelPlan?.executed_parallel_groups) ? existingParallelPlan.executed_parallel_groups : [],
+    blocked_parallel_groups: Array.isArray(existingParallelPlan?.blocked_parallel_groups) ? existingParallelPlan.blocked_parallel_groups : [],
+    wave_history: Array.isArray(existingParallelPlan?.wave_history) ? existingParallelPlan.wave_history : []
   }, null, 2)}\n`);
   writeTimeline(files.timeline, result);
+  writeTrueHarnessEvidence(cwd, runId);
 
-  return { ...result, files };
+  return { ...result, dispatchContracts, files };
 }
 
 export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorResult["mode"] = "orchestrate"): OrchestratorResult {
@@ -598,6 +1082,59 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
   const archiveComplete = status === "archived" || exists(archiveReport);
   const actions: OrchestrationAction[] = [];
   const agentRuns: AgentRun[] = [];
+  const capability = detectTrueHarnessCapability();
+
+  if (!capability.ready) {
+    const capabilityGate = path.join(runDirPath, "orchestration", "subagent-capability-gate.json");
+    const infrastructureGate = path.join(runDirPath, "orchestration", "infrastructure-gate.json");
+    ensureDir(path.dirname(capabilityGate));
+    writeText(infrastructureGate, `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status: "skipped_for_provider_capability_gate",
+      checked_at: new Date().toISOString(),
+      summary: { pass: 0, warn: 0, fail: 1 },
+      checks: []
+    }, null, 2)}\n`);
+    writeText(capabilityGate, `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status: "blocked",
+      checked_at: new Date().toISOString(),
+      provider: capability.provider,
+      subagent_support: capability.subagentSupport,
+      entry_installed: capability.entryInstalled,
+      reason: capability.reason
+    }, null, 2)}\n`);
+    transitionRunState(cwd, runId, "blocked", {
+      blocked_at: new Date().toISOString(),
+      blocked_reason: "true_harness_subagent_capability_missing",
+      blocked_provider: capability.provider,
+      blocked_subagent_support: capability.subagentSupport,
+      blocked_evidence: capabilityGate
+    });
+    actions.push(createAction(cwd, runDirPath, {
+      id: "gate-subagent-capability",
+      kind: "gate",
+      status: "blocked",
+      role: "orchestrator",
+      reason: capability.reason,
+      dependsOn: [],
+      parallelGroup: "provider-capability",
+      outputs: [rel(cwd, infrastructureGate), rel(cwd, capabilityGate), writeCapabilityEvidence(cwd, runId, runDirPath, capability.reason)]
+    }));
+    const parallelGroups = groupActions(actions, agentRuns);
+    return persist(cwd, runId, {
+      runId,
+      runDir: runDirPath,
+      mode,
+      status: "blocked",
+      nextActions: actions,
+      agentRuns,
+      dispatchContracts: [],
+      parallelGroups
+    });
+  }
 
   const report = doctor(cwd);
   const gateStatus = report.summary.fail > 0 ? "blocked" : report.summary.warn > 0 ? "ready_with_warnings" : "ready";
@@ -624,26 +1161,13 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
       outputs: [rel(cwd, infrastructureGate), evidence]
     }));
   } else if (!graph) {
-    const discoveryAgents = [
-      {
-        role: "intake",
-        outputs: [path.join(runDirPath, "agents", "intake", "handoff.json"), path.join(runDirPath, "request", "normalized.md")]
-      },
-      {
-        role: "project-analyzer",
-        outputs: [path.join(runDirPath, "agents", "project-analyzer", "handoff.json"), path.join(runDirPath, "analysis", "project-context.md")]
-      },
-      {
-        role: "product-planner",
-        outputs: [path.join(runDirPath, "agents", "product-planner", "handoff.json"), path.join(runDirPath, "analysis", "product-analysis.md")]
-      },
-      {
-        role: "architect",
-        outputs: [path.join(runDirPath, "agents", "architect", "handoff.json"), path.join(runDirPath, "design", "technical-solution.md")]
-      }
-    ];
+    const workflow = workflowState<ExistingProjectNoTaskGraphWorkflow>("existing-project-delivery", "no_task_graph");
+    const discoveryAgents = workflow.discovery_roles.map((role) => ({
+      role,
+      outputs: outputsForDiscoveryRole(runDirPath, role)
+    }));
     for (const item of discoveryAgents) {
-      agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, item.role, "ready", "discovery", item.outputs));
+      agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, item.role, "ready", workflow.parallel_groups.discovery, item.outputs));
       actions.push(createAction(cwd, runDirPath, {
         id: `agent-${item.role}`,
         kind: "agent",
@@ -651,87 +1175,111 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
         role: item.role,
         reason: "run is missing planning evidence; read-only discovery agents can refine requirement and project context in parallel",
         dependsOn: [],
-        parallelGroup: "discovery",
+        parallelGroup: workflow.parallel_groups.discovery,
         outputs: item.outputs.map((file) => rel(cwd, file))
       }));
     }
     const discoveryComplete = discoveryAgents.every((item) => isActionCompleted(cwd, runId, `agent-${item.role}`));
-    agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "task-planner", discoveryComplete ? "ready" : "waiting", "planning", [
+    agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.planning_roles[0], discoveryComplete ? "ready" : "waiting", workflow.parallel_groups.planning, [
       path.join(runDirPath, "planning", "task-graph.json"),
       path.join(runDirPath, "planning", "execution-plan.md")
     ]));
-    agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "risk-reviewer", discoveryComplete ? "ready" : "waiting", "planning", [
+    agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.planning_roles[1], discoveryComplete ? "ready" : "waiting", workflow.parallel_groups.planning, [
       path.join(runDirPath, "agents", "risk-reviewer", "handoff.json")
     ]));
     actions.push(createAction(cwd, runDirPath, {
       id: "agent-task-planner",
       kind: "agent",
       status: "ready",
-      role: "task-planner",
+      role: workflow.planning_roles[0],
       reason: "discovery and architecture evidence are ready for model task planning",
       dependsOn: discoveryAgents.map((item) => `agent-${item.role}`),
-      parallelGroup: "planning",
+      parallelGroup: workflow.parallel_groups.planning,
       outputs: [rel(cwd, path.join(runDirPath, "planning", "task-graph.json"))]
     }));
     actions.push(createAction(cwd, runDirPath, {
       id: "agent-risk-reviewer",
       kind: "agent",
       status: "ready",
-      role: "risk-reviewer",
+      role: workflow.planning_roles[1],
       reason: "planning risk can be reviewed alongside task planning",
       dependsOn: discoveryAgents.map((item) => `agent-${item.role}`),
-      parallelGroup: "planning",
+      parallelGroup: workflow.parallel_groups.planning,
       outputs: [rel(cwd, path.join(runDirPath, "agents", "risk-reviewer", "handoff.json"))]
     }));
     actions.push(createAction(cwd, runDirPath, {
-      id: "runtime-plan",
+      id: workflow.planning_runtime_action,
       kind: "runtime",
       status: "ready",
-      role: "task-planner",
+      role: workflow.planning_roles[0],
       command: `imfine plan ${runId}`,
       reason: "task graph is missing",
       dependsOn: ["agent-task-planner"],
-      parallelGroup: "planning-finalize"
+      parallelGroup: workflow.parallel_groups.planning_finalize
     }));
+  } else if (status === "needs_design_update") {
+    addDesignReworkActions(actions, agentRuns, cwd, runId, runDirPath, graph);
   } else if (status === "needs_conflict_resolution") {
+    const workflow = readFixLoopRoleActionState("needs_conflict_resolution");
     agentRuns.push({
-      id: "conflict-resolver",
-      role: "conflict-resolver",
+      id: workflow.role,
+      role: workflow.role,
       status: "ready",
-      skills: skillsForRole("conflict-resolver"),
-      inputs: [rel(cwd, path.join(runDirPath, "agents", "conflict-resolver", "input.md"))],
-      outputs: [rel(cwd, path.join(runDirPath, "agents", "conflict-resolver", "handoff.json"))],
+      skills: skillsForRole(workflow.role),
+      inputs: [rel(cwd, path.join(runDirPath, "agents", workflow.role, "input.md"))],
+      outputs: [rel(cwd, path.join(runDirPath, "agents", workflow.role, "handoff.json"))],
       readScope: [`.imfine/runs/${runId}/**`],
       writeScope: ["run worktree conflict files"],
       dependsOn: [],
-      parallelGroup: "conflict-resolution"
+      parallelGroup: workflow.parallel_group
     });
     actions.push(createAction(cwd, runDirPath, {
-      id: "agent-conflict-resolver",
+      id: workflow.action_id,
       kind: "agent",
       status: "ready",
-      role: "conflict-resolver",
-      reason: "run is waiting for conflict resolution",
+      role: workflow.role,
+      reason: workflow.reason,
       dependsOn: [],
-      parallelGroup: "conflict-resolution",
-      inputs: [rel(cwd, path.join(runDirPath, "agents", "conflict-resolver", "input.md"))],
-      outputs: [rel(cwd, path.join(runDirPath, "agents", "conflict-resolver", "handoff.json"))]
+      parallelGroup: workflow.parallel_group,
+      inputs: [rel(cwd, path.join(runDirPath, "agents", workflow.role, "input.md"))],
+      outputs: [rel(cwd, path.join(runDirPath, "agents", workflow.role, "handoff.json"))]
+    }));
+  } else if (status === "needs_task_replan") {
+    const workflow = readFixLoopRoleActionState("needs_task_replan");
+    agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.role, "ready", workflow.parallel_group, [
+      path.join(runDirPath, "planning", "task-graph.json"),
+      path.join(runDirPath, "planning", "ownership.json"),
+      path.join(runDirPath, "planning", "execution-plan.md"),
+      path.join(runDirPath, "planning", "commit-plan.md"),
+      path.join(runDirPath, "agents", workflow.role, "handoff.json")
+    ]));
+    actions.push(createAction(cwd, runDirPath, {
+      id: workflow.action_id,
+      kind: "agent",
+      status: "ready",
+      role: workflow.role,
+      reason: workflow.reason,
+      dependsOn: [],
+      parallelGroup: workflow.parallel_group,
+      inputs: [rel(cwd, path.join(runDirPath, "agents", "task-planner-replan", "input.md"))],
+      outputs: [rel(cwd, path.join(runDirPath, "planning", "task-graph.json"))]
     }));
   } else {
     const validation = validateTaskGraph(graph);
     if (!validation.passed) {
-      agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "task-planner", "ready", "replan", [
+      const workflow = readFixLoopRoleActionState("needs_task_replan");
+      agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.role, "ready", workflow.parallel_group, [
         path.join(runDirPath, "planning", "task-graph.json"),
         path.join(runDirPath, "planning", "execution-plan.md")
       ]));
       actions.push(createAction(cwd, runDirPath, {
-        id: "agent-task-planner-replan",
+        id: workflow.action_id,
         kind: "agent",
         status: "ready",
-        role: "task-planner",
+        role: workflow.role,
         reason: `task graph needs re-planning: ${validation.errors.join("; ")}`,
         dependsOn: [],
-        parallelGroup: "replan",
+        parallelGroup: workflow.parallel_group,
         outputs: [rel(cwd, path.join(runDirPath, "planning", "task-graph.json"))]
       }));
       return persist(cwd, runId, {
@@ -741,6 +1289,7 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
         status: "needs_task_replan",
         nextActions: actions,
         agentRuns,
+        dispatchContracts: [],
         parallelGroups: groupActions(actions, agentRuns)
       });
     }
@@ -750,19 +1299,20 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
     agentRuns.push(...inferred.agents);
 
     if (index && inferred.agents.some((agent) => agent.role === "dev" || agent.role === "technical-writer")) {
-      const riskReviewerStatus = runLevelAgentStatus(runDirPath, "risk-reviewer", true);
-      agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "risk-reviewer", riskReviewerStatus, "planning-risk-review", [
-        path.join(runDirPath, "agents", "risk-reviewer", "handoff.json")
+      const workflow = workflowState<ExistingProjectActiveDeliveryWorkflow>("existing-project-delivery", "active_delivery");
+      const riskReviewerStatus = runLevelAgentStatus(runDirPath, workflow.risk_review_role, true);
+      agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.risk_review_role, riskReviewerStatus, workflow.risk_review_parallel_group, [
+        path.join(runDirPath, "agents", workflow.risk_review_role, "handoff.json")
       ]));
       actions.push(createAction(cwd, runDirPath, {
         id: "agent-risk-reviewer",
         kind: "agent",
         status: riskReviewerStatus === "completed" ? "done" : riskReviewerStatus,
-        role: "risk-reviewer",
-        reason: "implementation boundary and parallelization risk can be reviewed while task agents work",
+        role: workflow.risk_review_role,
+        reason: workflow.risk_review_reason,
         dependsOn: [],
-        parallelGroup: "planning-risk-review",
-        outputs: [rel(cwd, path.join(runDirPath, "agents", "risk-reviewer", "handoff.json"))]
+        parallelGroup: workflow.risk_review_parallel_group,
+        outputs: [rel(cwd, path.join(runDirPath, "agents", workflow.risk_review_role, "handoff.json"))]
       }));
     }
 
@@ -770,100 +1320,103 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
     if (!hasOpenTaskActions && graph.tasks.every((task) => reviewApproved(runDirPath, task.id) || taskCommitted(runDirPath, task.id))) {
       const hasCommits = Array.isArray(metadata.commit_hashes) && metadata.commit_hashes.length > 0;
       if (!hasCommits) {
-        const committerStatus = runLevelAgentStatus(runDirPath, "committer", true);
-        agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "committer", committerStatus, "commit", [
-          path.join(runDirPath, "agents", "committer", "handoff.json")
+        const workflow = workflowState<ExistingProjectReadyToCommitWorkflow>("existing-project-delivery", "ready_to_commit");
+        const committerStatus = runLevelAgentStatus(runDirPath, workflow.review_role, true);
+        agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.review_role, committerStatus, workflow.parallel_group, [
+          path.join(runDirPath, "agents", workflow.review_role, "handoff.json")
         ]));
         actions.push(createAction(cwd, runDirPath, {
-          id: "agent-committer",
+          id: workflow.review_action_id,
           kind: "agent",
           status: committerStatus === "completed" ? "done" : committerStatus,
-          role: "committer",
-          reason: "commit readiness and mode can be reviewed before runtime materializes git commits",
+          role: workflow.review_role,
+          reason: workflow.review_reason,
           dependsOn: graph.tasks.map((task) => `agent-reviewer-${task.id}`),
-          parallelGroup: "commit",
-          outputs: [rel(cwd, path.join(runDirPath, "agents", "committer", "handoff.json"))]
+          parallelGroup: workflow.parallel_group,
+          outputs: [rel(cwd, path.join(runDirPath, "agents", workflow.review_role, "handoff.json"))]
         }));
         actions.push(createAction(cwd, runDirPath, {
-          id: "runtime-commit-run",
+          id: workflow.runtime_action_id,
           kind: "runtime",
           status: "ready",
           role: "orchestrator",
           command: `imfine commit run ${runId} --mode task`,
-          reason: "all tasks have QA and Review approval but no run commits are recorded",
-          dependsOn: ["agent-committer"],
-          parallelGroup: "commit"
+          reason: workflow.runtime_reason,
+          dependsOn: [workflow.review_action_id],
+          parallelGroup: workflow.parallel_group
         }));
       } else if (!metadata.push_status && !archiveComplete) {
+        const workflow = workflowState<ExistingProjectReadyToPushWorkflow>("existing-project-delivery", "ready_to_push");
         agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "committer", "completed", "commit", [
           path.join(runDirPath, "agents", "committer", "handoff.json")
         ]));
         actions.push(createAction(cwd, runDirPath, {
-          id: "runtime-push-run",
+          id: workflow.runtime_action_id,
           kind: "runtime",
           status: "ready",
           role: "orchestrator",
           command: `imfine push ${runId}`,
-          reason: "commits exist but push status is missing",
-          dependsOn: ["runtime-commit-run"],
-          parallelGroup: "push"
+          reason: workflow.runtime_reason,
+          dependsOn: workflow.depends_on,
+          parallelGroup: workflow.parallel_group
         }));
       } else {
+        const workflow = workflowState<ExistingProjectReadyToArchiveWorkflow>("existing-project-delivery", "ready_to_archive");
         agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "committer", "completed", "commit", [
           path.join(runDirPath, "agents", "committer", "handoff.json")
         ]));
         const technicalWriterStatus = archiveComplete ? "completed" : runLevelAgentStatus(runDirPath, "technical-writer", true);
         const projectKnowledgeStatus = archiveComplete ? "completed" : runLevelAgentStatus(runDirPath, "project-knowledge-updater", true);
-        agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "technical-writer", technicalWriterStatus, "archive", [
+        agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.roles[0], technicalWriterStatus, workflow.parallel_group, [
           path.join(runDirPath, "agents", "technical-writer", "handoff.json"),
           path.join(runDirPath, "archive", "final-summary.md")
         ]));
-        agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, "project-knowledge-updater", projectKnowledgeStatus, "archive", [
+        agentRuns.push(makeRunLevelAgent(cwd, runDirPath, runId, workflow.roles[1], projectKnowledgeStatus, workflow.parallel_group, [
           path.join(runDirPath, "agents", "project-knowledge-updater", "handoff.json"),
           path.join(cwd, ".imfine", "project", "capabilities")
         ]));
         agentRuns.push({
-          id: "archive",
-          role: "archive",
+          id: workflow.roles[2],
+          role: workflow.roles[2],
           status: exists(path.join(runDirPath, "agents", "archive", "handoff.json")) || archiveComplete ? "completed" : "waiting",
-          skills: skillsForRole("archive"),
+          skills: skillsForRole(workflow.roles[2]),
           inputs: [rel(cwd, path.join(runDirPath, "run.json")), rel(cwd, path.join(runDirPath, "evidence"))],
           outputs: [rel(cwd, archiveReport)],
           readScope: [`.imfine/runs/${runId}/**`],
           writeScope: [`.imfine/runs/${runId}/archive/**`, ".imfine/project/**", `.imfine/reports/${runId}.md`],
-          dependsOn: ["runtime-push-run"],
-          parallelGroup: "archive"
+          dependsOn: workflow.depends_on,
+          parallelGroup: workflow.parallel_group
         });
         if (!archiveComplete) {
           actions.push(createAction(cwd, runDirPath, {
-            id: "agent-technical-writer-archive",
+            id: workflow.technical_writer_action_id,
             kind: "agent",
             status: technicalWriterStatus === "completed" ? "done" : technicalWriterStatus,
-            role: "technical-writer",
-            reason: "technical summary can be prepared after push evidence exists",
-            dependsOn: ["runtime-push-run"],
-            parallelGroup: "archive",
+            role: workflow.roles[0],
+            reason: workflow.technical_writer_reason,
+            dependsOn: workflow.depends_on,
+            parallelGroup: workflow.parallel_group,
             outputs: [rel(cwd, path.join(runDirPath, "archive", "final-summary.md"))]
           }));
           actions.push(createAction(cwd, runDirPath, {
-            id: "agent-project-knowledge-updater",
+            id: workflow.project_knowledge_action_id,
             kind: "agent",
             status: projectKnowledgeStatus === "completed" ? "done" : projectKnowledgeStatus,
-            role: "project-knowledge-updater",
-            reason: "project knowledge update can be prepared after push evidence exists",
-            dependsOn: ["runtime-push-run"],
-            parallelGroup: "archive",
+            role: workflow.roles[1],
+            reason: workflow.project_knowledge_reason,
+            dependsOn: workflow.depends_on,
+            parallelGroup: workflow.parallel_group,
             outputs: [rel(cwd, path.join(cwd, ".imfine", "project", "capabilities"))]
           }));
           actions.push(createAction(cwd, runDirPath, {
-            id: "agent-archive",
+            id: workflow.archive_action_id,
             kind: "agent",
             status: "ready",
-            role: "archive",
+            role: workflow.roles[2],
             command: `imfine archive ${runId}`,
-            reason: "push status exists and archive has not completed",
-            dependsOn: ["runtime-push-run", "agent-technical-writer-archive", "agent-project-knowledge-updater"],
-            parallelGroup: "archive",
+            reason: workflow.archive_reason,
+            dependsOn: [...workflow.depends_on, workflow.technical_writer_action_id, workflow.project_knowledge_action_id],
+            parallelGroup: workflow.parallel_group,
             outputs: [rel(cwd, archiveReport)]
           }));
         }
@@ -879,6 +1432,7 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
     status,
     nextActions: actions,
     agentRuns,
+    dispatchContracts: [],
     parallelGroups
   });
 }

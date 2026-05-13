@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { readFixLoopDesignReworkState, readFixLoopRecoveryState } from "./fix-loop.js";
 import { ensureDir, writeText } from "./fs.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph, type TaskGraphTask } from "./plan.js";
@@ -143,6 +144,7 @@ function writeTaskFiles(cwd: string, runId: string, task: TaskGraphTask): void {
 
 function createFixTask(cwd: string, runId: string, sourceTask: TaskGraphTask, reason: "qa_failed" | "review_changes_requested", details: string[]): string {
   const graph = readGraph(cwd, runId);
+  const workflow = readFixLoopRecoveryState(reason);
   const prefix = `FIX-${sourceTask.id}-`;
   const existing = graph.tasks
     .filter((task) => task.id.startsWith(prefix))
@@ -162,7 +164,7 @@ function createFixTask(cwd: string, runId: string, sourceTask: TaskGraphTask, re
     read_scope: Array.from(new Set([...sourceTask.read_scope, `.imfine/runs/${runId}/evidence/**`, `.imfine/runs/${runId}/agents/**`])),
     write_scope: sourceTask.write_scope,
     acceptance: details.length > 0 ? details : [`Resolve ${reason} for ${sourceTask.id}`],
-    dev_plan: [`Inspect ${reason} evidence`, "Apply the smallest scoped fix", "Collect a new patch after changes"],
+    dev_plan: [`Inspect ${reason} evidence`, workflow.reason, "Apply the smallest scoped fix", "Collect a new patch after changes"],
     test_plan: sourceTask.test_plan,
     review_plan: sourceTask.review_plan,
     verification: sourceTask.verification,
@@ -348,6 +350,7 @@ export function reviewTask(cwd: string, runId: string, taskId: string, decision:
 export function requestDesignRework(cwd: string, runId: string, taskId: string, summary: string): DesignReworkResult {
   const graph = readGraph(cwd, runId);
   const task = taskById(graph, taskId);
+  const workflow = readFixLoopDesignReworkState();
   const evidenceFile = path.join(runDir(cwd, runId), "evidence", "design-rework.md");
   const architectDir = path.join(runDir(cwd, runId), "agents", `architect-${taskId}`);
   const plannerDir = path.join(runDir(cwd, runId), "agents", `task-planner-${taskId}`);
@@ -356,30 +359,9 @@ export function requestDesignRework(cwd: string, runId: string, taskId: string, 
 
   const architectInput = path.join(architectDir, "input.md");
   const taskPlannerInput = path.join(plannerDir, "input.md");
-  writeEvidenceSection(evidenceFile, "Design Rework", `## ${taskId}\n\n- status: implementation_blocked_by_design\n- summary: ${summary || "none"}\n\n## Affected Task\n\n- ${task.id}: ${task.title}`);
-  writeText(architectInput, `# Architect Rework Input: ${taskId}\n\n## Reason\n\n${summary || "Implementation is blocked by current design."}\n\n## Current Task\n\n${task.title}\n\n## Required Output\n\n- Update design artifacts if the design is invalid.\n- Produce architecture guidance for Task Planner.\n- Do not change implementation code.\n`);
-  writeText(taskPlannerInput, `# Task Planner Rework Input: ${taskId}\n\n## Reason\n\n${summary || "Implementation is blocked by current design."}\n\n## Current Task Graph\n\n${graphFile(cwd, runId)}\n\n## Required Output\n\n- Re-plan affected tasks after Architect updates design.\n- Preserve valid task boundaries where possible.\n- Do not change implementation code.\n`);
-  writeText(path.join(architectDir, "handoff.json"), `${JSON.stringify({
-    run_id: runId,
-    from: "orchestrator",
-    to: "architect",
-    status: "implementation_blocked_by_design",
-    summary,
-    inputs: [evidenceFile],
-    expected_outputs: [path.join(runDir(cwd, runId), "design", "solution-design.md"), path.join(runDir(cwd, runId), "design", "architecture-decisions.md")],
-    next_state: "needs_design_update"
-  }, null, 2)}\n`);
-  writeText(path.join(plannerDir, "handoff.json"), `${JSON.stringify({
-    run_id: runId,
-    from: "orchestrator",
-    to: "task-planner",
-    status: "waiting_for_architect",
-    summary,
-    inputs: [evidenceFile, graphFile(cwd, runId)],
-    expected_outputs: [graphFile(cwd, runId)],
-    next_state: "needs_task_replan"
-  }, null, 2)}\n`);
-
+  writeEvidenceSection(evidenceFile, "Design Rework", `## ${taskId}\n\n- status: implementation_blocked_by_design\n- summary: ${summary || "none"}\n- workflow_reason: ${workflow.reason}\n\n## Affected Task\n\n- ${task.id}: ${task.title}`);
+  writeText(architectInput, `# Architect Rework Input: ${taskId}\n\n## Reason\n\n${summary || workflow.architect.reason}\n\n## Workflow Reason\n\n${workflow.reason}\n\n## Current Task\n\n${task.title}\n\n## Required Output\n\n- Update design artifacts if the design is invalid.\n- Produce architecture guidance for Task Planner.\n- Do not change implementation code.\n`);
+  writeText(taskPlannerInput, `# Task Planner Rework Input: ${taskId}\n\n## Reason\n\n${summary || workflow.task_planner.reason}\n\n## Workflow Reason\n\n${workflow.reason}\n\n## Current Task Graph\n\n${graphFile(cwd, runId)}\n\n## Required Output\n\n- Re-plan affected tasks after Architect updates design.\n- Preserve valid task boundaries where possible.\n- Do not change implementation code.\n`);
   updateRunStatus(cwd, runId, "needs_design_update", {
     design_rework_requested_at: new Date().toISOString(),
     design_rework_evidence: evidenceFile

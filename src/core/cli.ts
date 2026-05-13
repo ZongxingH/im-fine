@@ -3,17 +3,18 @@ import { executeAgentBatch, prepareAgentExecutions } from "./agent-execution.js"
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
 import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
-import { formatAgentExecute, formatAgentPrepare, formatArchive, formatAutoOrchestrator, formatCommit, formatDeliveryRun, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatNewProjectDelivery, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPlan, formatPush, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
+import { formatAgentExecute, formatAgentPrepare, formatArchive, formatAutoOrchestrator, formatCommit, formatDeliveryRun, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPlan, formatPush, formatRecovery, formatReplan, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
 import { commitResolvedRun, commitRun, commitTask, pushRun, type CommitMode } from "./gitflow.js";
 import { initProject } from "./init.js";
 import { install } from "./install.js";
 import { listLibrary, parseKind, readLibrary, syncLibrary } from "./library.js";
 import { runNewProjectAgentPlanning } from "./new-project-agent-planning.js";
-import { completeNewProjectDelivery, deliverNewProject, ensureGitRepository } from "./new-project.js";
 import { resumeRun } from "./orchestrator.js";
 import { planRun, validateRunTaskGraph } from "./plan.js";
 import { resolveCwd } from "./paths.js";
 import { requestDesignRework, type ReviewDecision, type VerificationStatus, reviewTask, verifyTask } from "./quality.js";
+import { requestTaskPlannerReplan } from "./replan.js";
+import { recoverTask } from "./recovery.js";
 import { createDeliveryRun } from "./run.js";
 import { readReport, status } from "./status.js";
 import { collectPatch, prepareWorktrees, validatePatch } from "./worktree.js";
@@ -24,7 +25,7 @@ function help(program: string): string {
 Usage:
   npx github:<owner>/<repo> install [--target codex|claude|all] [--lang zh|en] [--dry-run] [--json]
   ${program} init [--cwd path] [--json]
-  ${program} run <requirement text|requirement-file> [--plan-only] [--max-iterations n] [--deliver] [--cwd path] [--json]
+  ${program} run <requirement text|requirement-file> [--plan-only] [--max-iterations n] [--cwd path] [--json]
   ${program} resume <run-id> [--cwd path] [--json]
   ${program} orchestrate <run-id> [--executor command] [--max-iterations n] [--dry-run] [--cwd path] [--json]
   ${program} plan <run-id> [--cwd path] [--json]
@@ -36,6 +37,8 @@ Usage:
   ${program} verify <run-id> <task-id> [--status pass|fail|blocked] [--summary text] [--cwd path] [--json]
   ${program} review <run-id> <task-id> --status approved|changes_requested|blocked [--summary text] [--cwd path] [--json]
   ${program} rework design <run-id> <task-id> [--summary text] [--cwd path] [--json]
+  ${program} task-planner replan <run-id> [--summary text] [--cwd path] [--json]
+  ${program} recover task <run-id> <task-id> [--cwd path] [--json]
   ${program} commit task <run-id> <task-id> [--cwd path] [--json]
   ${program} commit run <run-id> [--mode task|integration] [--cwd path] [--json]
   ${program} commit resolved <run-id> [task-id...] [--cwd path] [--json]
@@ -45,10 +48,11 @@ Usage:
   ${program} status [--cwd path] [--json]
   ${program} report <run-id> [--cwd path] [--json]
   ${program} agents list|show <id> [--json]
-  ${program} agents prepare <run-id> [--cwd path] [--json]
-  ${program} agents execute <run-id> [--executor command] [--limit n] [--dry-run] [--cwd path] [--json]
+  ${program} agents prepare <run-id> [--cwd path] [--json]       # legacy debug bridge only
+  ${program} agents execute <run-id> [--executor command] [--limit n] [--dry-run] [--cwd path] [--json]  # legacy test bridge only
   ${program} skills list|show <id> [--json]
   ${program} templates list|show <id> [--json]
+  ${program} workflows list|show <id> [--json]
   ${program} library sync [--cwd path] [--json]
   ${program} help
 
@@ -60,9 +64,10 @@ Phase 5 adds git worktree preparation and patch collection/validation.
 Phase 6 adds QA verification evidence, reviewer decisions, repeated fix-task creation, and design rework routing.
 Phase 7 adds task/integration commits and push evidence for origin imfine/<run-id>.
 Phase 8 adds Archive Agent confirmation, run archive reports, user reports, and long-term project knowledge updates.
-Phase 9 adds new-project full delivery through the internal --deliver debug path. Use --plan-only to stop at planning.
+Phase 9 keeps new-project runs at waiting_for_model until Architect and Task Planner model outputs are written back.
 Orchestrator recovery adds resume <run-id>, queue persistence, infrastructure gate persistence, agent run registry, parallel plan, and Conflict Resolver routing.
-Model agent execution adds agents prepare to create skill-backed prompts for the current Codex/Claude session to execute or dispatch. agents execute --executor remains an internal/testing bridge for non-interactive runners, not a normal /imfine prerequisite.
+True harness orchestration now requires the real provider session to declare IMFINE_PROVIDER=codex|claude and IMFINE_SUBAGENT_SUPPORTED=true. Without native subagent capability, resume/orchestrate is blocked on purpose.
+Legacy bridge commands add agents prepare to create debug-only skill-backed prompt packages. agents execute --executor remains an internal/testing bridge for non-interactive runners and is not part of the true harness path.
 Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables Chinese /imfine entries for both Codex and Claude.
 `;
 }
@@ -131,32 +136,17 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     }
 
     if (command === "run") {
-      if (readBooleanFlag(args, "deliver")) {
-        const result = deliverNewProject(cwd, args.positional.slice(1));
-        print(result, json, () => formatNewProjectDelivery(result));
-        return;
-      }
       const result = createDeliveryRun(cwd, args.positional.slice(1));
-      if (readBooleanFlag(args, "planOnly")) {
-        print(result, json, () => formatDeliveryRun(result));
-        return;
-      }
       if (result.projectKind === "new_project") {
         const planning = runNewProjectAgentPlanning(cwd, result, {
           executor: readStringFlag(args, "executor"),
           dryRun: readBooleanFlag(args, "dryRun")
         });
-        if (planning.status !== "planned") {
-          print(planning, json, () => `new-project agent planning: ${planning.status}\nreport: ${planning.report}\n`);
-          return;
-        }
-        ensureGitRepository(cwd);
-        const auto = await runAutoOrchestrator(cwd, result.runId, {
-          executor: readStringFlag(args, "executor"),
-          dryRun: readBooleanFlag(args, "dryRun"),
-          maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
-        });
-        print(auto, json, () => formatAutoOrchestrator(auto));
+        print(planning, json, () => `new-project agent planning: ${planning.status}\nreport: ${planning.report}\n`);
+        return;
+      }
+      if (readBooleanFlag(args, "planOnly")) {
+        print(result, json, () => formatDeliveryRun(result));
         return;
       }
       const auto = await runAutoOrchestrator(cwd, result.runId, {
@@ -195,9 +185,25 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       return;
     }
 
+    if (command === "task-planner") {
+      if (args.positional[1] !== "replan") throw new Error("Expected task-planner replan <run-id>.");
+      const runId = args.positional[2];
+      if (!runId) throw new Error("Missing <run-id> for task-planner replan.");
+      const result = requestTaskPlannerReplan(cwd, runId, readStringFlag(args, "summary") || "");
+      print(result, json, () => formatReplan(result));
+      return;
+    }
+
     if (command === "task") {
+      if (args.positional[1] === "planner" && args.positional[2] === "replan") {
+        const runId = args.positional[3];
+        if (!runId) throw new Error("Missing <run-id> for task planner replan.");
+        const result = requestTaskPlannerReplan(cwd, runId, readStringFlag(args, "summary") || "");
+        print(result, json, () => formatReplan(result));
+        return;
+      }
       if (args.positional[1] !== "graph" || args.positional[2] !== "validate") {
-        throw new Error("Expected task graph validate <run-id>.");
+        throw new Error("Expected task graph validate <run-id> or task planner replan <run-id>.");
       }
       const runId = args.positional[3];
       if (!runId) throw new Error("Missing <run-id> for task graph validate.");
@@ -258,6 +264,16 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       if (!runId || !taskId) throw new Error("Expected rework design <run-id> <task-id>.");
       const result = requestDesignRework(cwd, runId, taskId, readStringFlag(args, "summary") || "");
       print(result, json, () => formatDesignRework(result));
+      return;
+    }
+
+    if (command === "recover") {
+      if (args.positional[1] !== "task") throw new Error("Expected recover task <run-id> <task-id>.");
+      const runId = args.positional[2];
+      const taskId = args.positional[3];
+      if (!runId || !taskId) throw new Error("Expected recover task <run-id> <task-id>.");
+      const result = recoverTask(cwd, runId, taskId);
+      print(result, json, () => formatRecovery(result));
       return;
     }
 
@@ -322,7 +338,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       return;
     }
 
-    if (command === "agents" || command === "skills" || command === "templates") {
+    if (command === "agents" || command === "skills" || command === "templates" || command === "workflows") {
       const kind = parseKind(command);
       const action = args.positional[1] || "list";
       if (command === "agents" && action === "prepare") {

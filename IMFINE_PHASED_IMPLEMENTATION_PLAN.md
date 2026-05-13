@@ -211,7 +211,6 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
 ```text
 .imfine/
   config.yaml
-  library.md
   project/
     overview.md
     product.md
@@ -224,39 +223,6 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
     risks.md
     capabilities/
       <capability>/spec.md
-  agents/
-    orchestrator.md
-    intake.md
-    project-analyzer.md
-    product-planner.md
-    architect.md
-    task-planner.md
-    dev.md
-    qa.md
-    reviewer.md
-    conflict-resolver.md
-    committer.md
-    archive.md
-    technical-writer.md
-    risk-reviewer.md
-    project-knowledge-updater.md
-  skills/
-    clarify.md
-    project-analysis.md
-    write-delivery-plan.md
-    execute-task-plan.md
-    tdd.md
-    systematic-debugging.md
-    parallel-agent-dispatch.md
-    code-review.md
-    archive-confirmation.md
-  templates/
-    handoff.schema.json
-    task-graph.schema.json
-    requirement-analysis.md
-    solution-design.md
-    task.md
-    archive-report.md
   runs/
     <run-id>/
       run.json
@@ -266,15 +232,12 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
         source.json
       analysis/
         project-context.md
-        requirement-analysis.md
         impact-analysis.md
         risk-analysis.md
-        product-analysis.md
       design/
-        solution-design.md
+        stack-decision.json
         architecture-decisions.md
         technical-solution.md
-        acceptance.md
       planning/
         task-graph.json
         ownership.json
@@ -303,9 +266,14 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
         index.json
       orchestration/
         state.json
+        context.json
+        pending-roles.json
         infrastructure-gate.json
         agent-runs.json
+        dispatch-contracts.json
         parallel-plan.json
+        true-harness-evidence.json
+        true-harness-evidence.md
         action-ledger.json
         timeline.md
         auto-timeline.md
@@ -339,8 +307,10 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
 - `.imfine/project/capabilities` 吸收 OpenSpec 的 capability spec 思想，但不把它作为唯一事实来源。
 - `.imfine/runs/<run-id>/spec-delta/` 保存 run-local proposal/design/tasks delta，归档时由 Archive Agent 消费并沉淀进 capability spec。
 - `.imfine/runs/<run-id>/orchestration/` 保存 Orchestrator 的 action queue、agent registry、parallel plan、action ledger、checkpoint、timeline 和 infrastructure gate。
+- Agent / skill / template / workflow 库默认保留在全局 runtime library 中，不再作为主路径同步到项目 `.imfine/`；`library sync` 仅生成 `.imfine/debug/library-snapshot/` 调试快照。
 - `agents/<agent-run-id>/` 下展示的是常见产物，不同角色可以有不同子结构；例如 Dev Agent 通常包含 `commands.md`、`patch.diff`、`status.json`，QA / Reviewer 以 handoff、status 和 evidence 为主，run-level model execution 会包含 `execution/model-input.md`、`execution-status.json`、stdout/stderr。
 - `evidence/` 下展示的是常见证据类型，不要求每个 run 都生成所有文件；实际生成内容由 Orchestrator action、Agent handoff 和 runtime gate 决定。
+- `orchestration/true-harness-evidence.{json,md}` 是 run 级最终验收证据，显式记录 capability gate、参与角色、并行波次、handoff/evidence 链和 fix-loop 使用事实。
 - 归档时 Archive Agent 会确认 run 产物，并反向更新 `.imfine/project`。
 - `.imfine` 默认可提交进业务仓库。建议提交 `.imfine/config.yaml`、`.imfine/project/**`、`.imfine/reports/**`、归档报告和关键 evidence；大量 agent 中间日志、临时 worktree 索引和可再生成的运行细节可配置忽略。
 
@@ -394,6 +364,7 @@ imfine-runtime library sync
 - `--plan-only` 作为内部调试/明确停在计划阶段的能力保留。
 - deterministic new-project vertical slice 只作为内部 debug/test 路径保留，不作为用户主入口。
 - `/imfine` 安装文档的用户主入口聚焦 `init`、`run`、`status`、`resume`、`report`、`archive`，内部 runtime 命令归入调试/恢复说明。
+- `imfine-runtime agents prepare` / `agents execute` 仅作为 legacy debug/testing bridge 保留；所有 bridge 产物都必须显式标记 `legacy_debug`，不能作为 true harness 已执行的证据。
 
 ## 7. init 和基础设施检查
 
@@ -1077,6 +1048,7 @@ Archive Agent 需要确认：
 - capability spec 区分 `Verified Facts` 和 `Inferences`，避免把推断当作已验证事实。
 - Archive 报告必须只消费真实 QA / Review / commit / push 状态，不能硬编码 `T*=pass`、`T*=approved` 或用 `missing/unknown` 掩盖其实已经明确分类的 push 结果。
 - 长期知识更新必须给出明确结论：要么列出实际更新到 `.imfine/project/**` 和 capability spec 的文件，要么明确说明因为证据缺失而未更新，而不是写成笼统的 `none`。
+- Archive 报告现在必须显式引用 `orchestration/true-harness-evidence.md`，把 capability gate、参与角色、并行波次和 handoff/evidence 链纳入最终归档证据。
 
 ## 18. 分阶段实现路线
 
@@ -1128,7 +1100,7 @@ Archive Agent 需要确认：
 - 每个角色有输入、输出、禁止事项、handoff schema。
 - 每个 skill 有触发条件、步骤、产物和失败处理。
 - `imfine-runtime agents|skills|templates list|show` 可查看库产物。
-- `imfine-runtime library sync` 可把源码级库同步到项目 `.imfine/`。
+- `imfine-runtime library sync` 现在只生成 `.imfine/debug/library-snapshot/` 调试快照，不再把 runtime 库作为主路径资产复制进项目 `.imfine/`。
 - 从阶段 2 开始建设多 Agent 编排能力和 OpenSpec / Superpowers / BMAD 的源码级吸收产物。
 
 当前已落地：
@@ -1160,8 +1132,9 @@ Archive Agent 需要确认：
 
 - `/imfine run` 可从文本或需求文件创建 delivery run。
 - 自动判断 `new_project` / `existing_project`。
-- 生成 request、project context、requirement analysis、impact analysis、risk analysis、product analysis、solution design、architecture decisions、technical solution 和 acceptance。
-- 结论带文件证据或 unknown 标记。
+- runtime 主路径现在只 materialize 输入、项目扫描证据、`project-context`、`impact-analysis`、`risk-analysis`、`orchestration/context.json`、`pending-roles.json`、`state.json` 和 `dispatch-contracts.json`。
+- 新项目路径进入 `waiting_for_model`，由 Architect / Task Planner 先完成模型侧判断；runtime 不再主路径生成 `requirement-analysis`、`product-analysis`、`solution-design`、`technical-solution`、`acceptance` 等语义结论文档。
+- 结论性设计、任务拆解和验收判断必须由多角色 Agent 通过 contract / handoff / evidence 形成，而不是由 runtime 直接写定。
 
 ### 阶段 4：任务图和执行 plan
 
@@ -1313,6 +1286,47 @@ Archive Agent 需要确认：
 - deterministic Node.js vertical slice 仅作为内部 debug/test 路径保留。
 - 新项目 cwd materialization 已被纳入阶段 9 的完成标准，而不再被视为后续体验优化。
 
+### 阶段 10：真正 Harness 主路径收敛
+
+状态：已完成
+
+目标：
+
+- 把系统主路径彻底收敛到：
+  - runtime materializes
+  - orchestrator decides
+  - agents execute and judge
+  - backend verifies
+- 让 `dispatch contract + handoff + evidence + workflow + provider capability gate` 成为 true harness 主路径
+- 清除“runtime 伪多 Agent”“execution package 主路径”“bridge 被误认成正常执行路径”的残留
+
+验收：
+
+- task pipeline 状态显式进入 workflow，并稳定映射到 `dispatch-contracts.json`
+- fix loop、replan、design rework、conflict resolution 使用同一份 workflow 语义
+- new-project contract builder 收敛到 workflow metadata 驱动
+- legacy bridge 显式标记 `legacy_debug`，且有独立测试保护隔离
+- archived run 必须产出 true harness evidence，并在 archive report 中显式引用
+- 有独立验收测试保护：
+  - 无 capability 时 blocked
+  - 有 capability 时 `wave_history`、dispatch contract、handoff、evidence、archive 引用链同时存在
+
+当前已落地：
+
+- runtime 边界已收紧：不再主路径生成需求分析、产品分析、方案设计、架构决策、验收结论等语义文档。
+- `dispatch-contracts.json` 已成为主协议；task pipeline 已显式暴露 `workflow_state`，并由 workflow materialize `role / action id / parallel group / reason`。
+- fix-loop 已统一到 `library/workflows/fix-loop.yaml`，覆盖 `qa_failed`、`review_changes_requested`、`implementation_blocked_by_design`、`needs_conflict_resolution`、`needs_task_replan`。
+- new-project 路径已切成 contract-first；workflow 直接提供 role metadata，contract 不再在单文件里手工拼大段字段。
+- `agents prepare / agents execute` 已收敛为 legacy debug/testing bridge，bridge prompt、dispatch、execution metadata、dry-run status 均显式标记 `legacy_debug`。
+- run 级 `true-harness-evidence.{json,md}` 已成为正式产物，显式记录 capability gate、参与角色、并行波次、handoff/evidence 链和 fix-loop 使用事实。
+- 新增独立验收测试 `test/harness-acceptance.mjs`，专门保护 true harness 主路径和 legacy bridge 隔离。
+
+当前结论：
+
+- `imfine` 现在已经不再是 runtime 驱动的伪多 Agent 流程。
+- `imfine` 已建立真正 harness 的结构主路径，并把多角色、多 agent、skill discipline、并行波次、handoff/evidence 和 capability gate 纳入同一闭环。
+- 在当前实现范围内，true harness 的收尾任务已经完成；后续应以维护、扩展 workflow 覆盖和演进角色库为主，而不是回到旧的 runtime 越权路径。
+
 ## 19. 已确认实现决策
 
 1. imfine runtime 使用 TypeScript/npm 实现和分发。
@@ -1334,6 +1348,9 @@ Archive Agent 需要确认：
 17. 多 Agent 并行包括同一角色的多个 Agent 实例并行；是否并行由边界和依赖决定，不由角色名称决定。
 18. 并行能力的完成标准不是“有多个角色文件”，而是必须同时具备 ready wave、agent-run registry、execution package、并发执行时间线和 handoff 汇聚证据。
 19. orchestration snapshot 的完成标准不是“状态大致对”，而是 `run.json`、`orchestration/state.json`、`queue.json`、`timeline.md` 对同一时刻的可执行动作和最终状态给出一致视图。
+20. `dispatch contract + handoff + evidence + workflow + provider capability gate` 是 true harness 主路径的正式定义；缺任何一项都不能对外声称已经实现真正 harness。
+21. `agents prepare / agents execute` 只保留为 legacy debug/testing bridge；所有 bridge 产物必须显式标记 `legacy_debug`，不能作为 true harness 证据。
+22. `true-harness-evidence.{json,md}` 和 `test/harness-acceptance.mjs` 是最终一致性审查基线；后续扩展不得绕过这两层保护。
 
 ## 20. 参考来源
 

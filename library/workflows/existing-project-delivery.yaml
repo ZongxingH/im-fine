@@ -1,0 +1,103 @@
+{
+  "id": "existing-project-delivery",
+  "states": {
+    "no_task_graph": {
+      "discovery_roles": ["intake", "project-analyzer", "product-planner", "architect"],
+      "planning_roles": ["task-planner", "risk-reviewer"],
+      "planning_runtime_action": "runtime-plan",
+      "parallel_groups": {
+        "discovery": "discovery",
+        "planning": "planning",
+        "planning_finalize": "planning-finalize"
+      }
+    },
+    "active_delivery": {
+      "task_pipeline": {
+        "states": {
+          "implementation_ready": {
+            "roles": ["dev", "technical-writer"],
+            "action_id_pattern": "agent-{role}-{task_id}",
+            "parallel_group_pattern": "task-layer-{layer}",
+            "reason": "task patch is missing or not validated"
+          },
+          "implementation_waiting": {
+            "roles": ["dev", "technical-writer"],
+            "action_id_pattern": "agent-{role}-{task_id}",
+            "parallel_group_pattern": "task-layer-{layer}",
+            "reason": "task dependencies are not ready"
+          },
+          "implementation_done": {
+            "roles": ["dev", "technical-writer"],
+            "action_id_pattern": "agent-{role}-{task_id}",
+            "parallel_group_pattern": "task-layer-{layer}",
+            "reason": "task patch is already validated"
+          },
+          "qa_ready": {
+            "role": "qa",
+            "action_id_pattern": "agent-qa-{task_id}",
+            "parallel_group_pattern": "qa-task-layer-{layer}",
+            "reason": "patch is ready but QA evidence is missing or not passing"
+          },
+          "qa_waiting": {
+            "role": "qa",
+            "action_id_pattern": "agent-qa-{task_id}",
+            "parallel_group_pattern": "qa-task-layer-{layer}",
+            "reason": "patch is not ready for QA yet"
+          },
+          "qa_done": {
+            "role": "qa",
+            "action_id_pattern": "agent-qa-{task_id}",
+            "parallel_group_pattern": "qa-task-layer-{layer}",
+            "reason": "QA evidence is already present"
+          },
+          "review_ready": {
+            "role": "reviewer",
+            "action_id_pattern": "agent-reviewer-{task_id}",
+            "parallel_group_pattern": "review-task-layer-{layer}",
+            "reason": "QA passed but reviewer decision is missing"
+          },
+          "review_waiting": {
+            "role": "reviewer",
+            "action_id_pattern": "agent-reviewer-{task_id}",
+            "parallel_group_pattern": "review-task-layer-{layer}",
+            "reason": "review is waiting for QA evidence"
+          },
+          "review_done": {
+            "role": "reviewer",
+            "action_id_pattern": "agent-reviewer-{task_id}",
+            "parallel_group_pattern": "review-task-layer-{layer}",
+            "reason": "review decision is already present"
+          }
+        }
+      },
+      "risk_review_role": "risk-reviewer",
+      "risk_review_parallel_group": "planning-risk-review",
+      "risk_review_reason": "implementation boundary and parallelization risk can be reviewed while task agents work"
+    },
+    "ready_to_commit": {
+      "review_role": "committer",
+      "review_action_id": "agent-committer",
+      "runtime_action_id": "runtime-commit-run",
+      "parallel_group": "commit",
+      "review_reason": "commit readiness and mode can be reviewed before runtime materializes git commits",
+      "runtime_reason": "all tasks have QA and Review approval but no run commits are recorded"
+    },
+    "ready_to_push": {
+      "runtime_action_id": "runtime-push-run",
+      "parallel_group": "push",
+      "runtime_reason": "commits exist but push status is missing",
+      "depends_on": ["runtime-commit-run"]
+    },
+    "ready_to_archive": {
+      "roles": ["technical-writer", "project-knowledge-updater", "archive"],
+      "parallel_group": "archive",
+      "depends_on": ["runtime-push-run"],
+      "technical_writer_action_id": "agent-technical-writer-archive",
+      "project_knowledge_action_id": "agent-project-knowledge-updater",
+      "archive_action_id": "agent-archive",
+      "technical_writer_reason": "technical summary can be prepared after push evidence exists",
+      "project_knowledge_reason": "project knowledge update can be prepared after push evidence exists",
+      "archive_reason": "push status exists and archive has not completed"
+    }
+  }
+}

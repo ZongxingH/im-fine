@@ -1,16 +1,17 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { DispatchContract } from "./dispatch.js";
 import { ensureDir, writeText } from "./fs.js";
 import { readLibrary } from "./library.js";
-import { resumeRun, type AgentRun, type OrchestratorResult } from "./orchestrator.js";
+import { resumeRun, type OrchestratorResult } from "./orchestrator.js";
 import { acquireLock, releaseLock, writeCheckpoint } from "./reliability.js";
 
 export interface AgentExecutionPackage {
   id: string;
   role: string;
   taskId?: string;
-  status: AgentRun["status"];
+  status: DispatchContract["status"];
   prompt: string;
   agentContract: string;
   skillBundle: string;
@@ -100,30 +101,37 @@ function relative(cwd: string, file: string): string {
   return path.relative(cwd, file) || ".";
 }
 
-function materializePrompt(cwd: string, runId: string, agent: AgentRun, agentContract: string, skillBundle: string): string {
-  const inputSections = agent.inputs.map((input) => {
+function materializePrompt(cwd: string, runId: string, contract: DispatchContract, agentContract: string, skillBundle: string): string {
+  const inputSections = contract.inputs.map((input) => {
     const file = path.resolve(cwd, input);
     const content = readTextIfExists(file);
     return `### ${input}\n\n${content ? `\`\`\`\n${content.trim()}\n\`\`\`` : "- file not found or intentionally external"}`;
   }).join("\n\n");
   const worktreeIndex = path.join(cwd, ".imfine", "runs", runId, "worktrees", "index.json");
   let runWorktreeSection = "";
-  if (agent.role === "technical-writer" && !agent.taskId && fs.existsSync(worktreeIndex)) {
+  if (contract.role === "technical-writer" && !contract.task_id && fs.existsSync(worktreeIndex)) {
     const index = JSON.parse(fs.readFileSync(worktreeIndex, "utf8")) as { run_worktree?: string; worktree_root?: string };
     const worktree = index.run_worktree || (index.worktree_root ? path.join(index.worktree_root, "_run") : "");
     if (worktree) runWorktreeSection = `\n## Worktree\n\n${worktree}\n`;
   }
 
-  return `# imfine Model Agent Execution
+  return `# imfine Legacy Bridge Model Agent Execution
+
+## Bridge Notice
+
+- mode: legacy_bridge
+- usage: debug/testing only
+- not_true_harness_path: true
+- required_true_harness_path: current provider session must orchestrate native subagents from runtime contracts
 
 ## Assignment
 
 - run: ${runId}
-- agent: ${agent.id}
-- role: ${agent.role}
-- task: ${agent.taskId || "run-level"}
-- status: ${agent.status}
-- parallel group: ${agent.parallelGroup}
+- agent: ${contract.id}
+- role: ${contract.role}
+- task: ${contract.task_id || "run-level"}
+- status: ${contract.status}
+- parallel group: ${contract.parallel_group}
 
 ## Agent Contract
 
@@ -138,15 +146,15 @@ ${runWorktreeSection}
 
 ### Read Scope
 
-${agent.readScope.length > 0 ? agent.readScope.map((item) => `- ${item}`).join("\n") : "- none"}
+${contract.read_scope.length > 0 ? contract.read_scope.map((item) => `- ${item}`).join("\n") : "- none"}
 
 ### Write Scope
 
-${agent.writeScope.length > 0 ? agent.writeScope.map((item) => `- ${item}`).join("\n") : "- no business-code writes; evidence and handoff only"}
+${contract.write_scope.length > 0 ? contract.write_scope.map((item) => `- ${item}`).join("\n") : "- no business-code writes; evidence and handoff only"}
 
 ### Dependencies
 
-${agent.dependsOn.length > 0 ? agent.dependsOn.map((item) => `- ${item}`).join("\n") : "- none"}
+${contract.depends_on.length > 0 ? contract.depends_on.map((item) => `- ${item}`).join("\n") : "- none"}
 
 ## Inputs
 
@@ -154,7 +162,7 @@ ${inputSections || "- none"}
 
 ## Required Outputs
 
-${agent.outputs.length > 0 ? agent.outputs.map((item) => `- ${item}`).join("\n") : "- write a structured handoff in the agent directory"}
+${contract.required_outputs.length > 0 ? contract.required_outputs.map((item) => `- ${item}`).join("\n") : "- write a structured handoff in the agent directory"}
 
 ## Execution Rules
 
@@ -166,46 +174,55 @@ ${agent.outputs.length > 0 ? agent.outputs.map((item) => `- ${item}`).join("\n")
 `;
 }
 
-function packageAgent(cwd: string, runId: string, runDir: string, agent: AgentRun): AgentExecutionPackage {
-  const agentDir = path.join(runDir, "agents", agent.id);
+function packageAgent(cwd: string, runId: string, runDir: string, contract: DispatchContract): AgentExecutionPackage {
+  const agentDir = path.join(runDir, "agents", contract.id);
   const executionDir = path.join(agentDir, "execution");
   ensureDir(executionDir);
 
-  const agentContractContent = readLibrary("agents", libraryAgentId(agent.role));
-  const skillIds = existingSkillIds(agent.skills);
+  const agentContractContent = readLibrary("agents", libraryAgentId(contract.role));
+  const skillIds = existingSkillIds(contract.skills);
   const skillBundleContent = skillIds.map((skill) => readLibrary("skills", skill)).join("\n\n---\n\n");
-  const prompt = materializePrompt(cwd, runId, agent, agentContractContent, skillBundleContent);
+  const prompt = materializePrompt(cwd, runId, contract, agentContractContent, skillBundleContent);
 
   const files = {
     prompt: path.join(executionDir, "model-input.md"),
     agentContract: path.join(executionDir, "agent-contract.md"),
     skillBundle: path.join(executionDir, "skill-bundle.md"),
-    execution: path.join(executionDir, "execution.json")
+    execution: path.join(executionDir, "execution.json"),
+    bridgeNotice: path.join(executionDir, "legacy-bridge.md")
   };
 
   writeText(files.prompt, prompt);
   writeText(files.agentContract, agentContractContent);
   writeText(files.skillBundle, skillBundleContent);
+  writeText(files.bridgeNotice, `# Legacy Bridge Notice
+
+- mode: legacy_bridge
+- usage: debug/testing only
+- not_true_harness_path: true
+- expected_orchestrator: current provider session with native subagent capability
+`);
   writeText(files.execution, `${JSON.stringify({
     schema_version: 1,
+    bridge_mode: "legacy_debug",
     run_id: runId,
-    agent_id: agent.id,
-    role: agent.role,
-    task_id: agent.taskId,
+    agent_id: contract.id,
+    role: contract.role,
+    task_id: contract.task_id,
     status: "prepared",
     prepared_at: new Date().toISOString(),
     prompt: files.prompt,
     output_dir: executionDir,
     skills: skillIds,
-    inputs: agent.inputs,
-    outputs: agent.outputs
+    inputs: contract.inputs,
+    outputs: contract.required_outputs
   }, null, 2)}\n`);
 
   return {
-    id: agent.id,
-    role: agent.role,
-    taskId: agent.taskId,
-    status: agent.status,
+    id: contract.id,
+    role: contract.role,
+    taskId: contract.task_id,
+    status: contract.status,
     prompt: files.prompt,
     agentContract: files.agentContract,
     skillBundle: files.skillBundle,
@@ -216,10 +233,12 @@ function packageAgent(cwd: string, runId: string, runDir: string, agent: AgentRu
 
 export function prepareAgentExecutions(cwd: string, runId: string): AgentPrepareResult {
   const orchestration = resumeRun(cwd, runId);
-  const packages = orchestration.agentRuns.map((agent) => packageAgent(cwd, runId, orchestration.runDir, agent));
+  const packages = orchestration.dispatchContracts.map((contract) => packageAgent(cwd, runId, orchestration.runDir, contract));
   const dispatch = path.join(orchestration.runDir, "orchestration", "model-dispatch.json");
   writeText(dispatch, `${JSON.stringify({
     schema_version: 1,
+    bridge_mode: "legacy_debug",
+    bridge_notice: "debug/testing only; not the true harness path",
     run_id: runId,
     prepared_at: new Date().toISOString(),
     packages: packages.map((item) => ({
@@ -246,6 +265,7 @@ async function executeOneAgent(cwd: string, runId: string, executor: string, ite
   const startedAt = new Date().toISOString();
   writeText(executionStatusFile, `${JSON.stringify({
     schema_version: 1,
+    bridge_mode: "legacy_debug",
     run_id: runId,
     agent_id: item.id,
     status: "started",
@@ -378,6 +398,7 @@ export async function executeAgentBatch(cwd: string, runId: string, options: Exe
         const statusFile = path.join(item.outputDir, "execution-status.json");
         writeText(statusFile, `${JSON.stringify({
           schema_version: 1,
+          bridge_mode: "legacy_debug",
           run_id: runId,
           agent_id: item.id,
           status: "dry_run",

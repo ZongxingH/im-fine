@@ -32,6 +32,8 @@ export interface TaskGraphValidation {
   errors: string[];
   parallelGroups: string[][];
   serialTasks: string[];
+  serialReason: string | null;
+  replanRecommended: boolean;
 }
 
 export interface PlanResult {
@@ -221,11 +223,25 @@ export function validateTaskGraph(graph: TaskGraph): TaskGraphValidation {
     }
   }
 
+  const serialReason = errors.some((error) => error.includes("overlapping write_scope"))
+    ? "boundary_conflict: overlapping write_scope prevents safe same-wave execution"
+    : graph.strategy === "serial"
+      ? "task_graph: strategy is serial, so runtime cannot truthfully claim parallel delivery"
+      : graph.strategy === "conflict_resolution"
+        ? "task_graph: conflict resolution flow is intentionally serialized until conflicts are resolved"
+        : parallelCandidates.length <= 1 && graph.tasks.length > 1
+          ? "task_graph: dependencies leave no independently runnable batch"
+          : null;
+  const replanRecommended = graph.strategy === "serial" && graph.tasks.length > 1
+    || errors.some((error) => error.includes("overlapping write_scope"));
+
   return {
     passed: errors.length === 0,
     errors,
     parallelGroups: parallelCandidates.length > 1 && errors.length === 0 ? [parallelCandidates.map((task) => task.id)] : [],
-    serialTasks: graph.tasks.filter((task) => task.depends_on.length > 0 || graph.strategy !== "parallel").map((task) => task.id)
+    serialTasks: graph.tasks.filter((task) => task.depends_on.length > 0 || graph.strategy !== "parallel").map((task) => task.id),
+    serialReason,
+    replanRecommended
   };
 }
 
@@ -237,7 +253,9 @@ export function validateRunTaskGraph(cwd: string, runId: string): TaskGraphValid
       passed: false,
       errors: [`Missing task graph for run: ${runId}`],
       parallelGroups: [],
-      serialTasks: []
+      serialTasks: [],
+      serialReason: "task_graph: missing task graph",
+      replanRecommended: false
     };
   }
   return validateTaskGraph(readJson<TaskGraph>(file));
@@ -266,6 +284,9 @@ function writeTaskPlans(cwd: string, runDir: string, graph: TaskGraph, artifacts
 export function planRun(cwd: string, runId: string): PlanResult {
   const runDir = ensureRunDir(cwd, runId);
   const metadata = readJson<RunMetadata>(path.join(runDir, "run.json"));
+  if (metadata.project_kind === "new_project") {
+    throw new Error("New-project planning is model-owned. Generate Architect and Task Planner outputs instead of running deterministic plan.");
+  }
   const graph = createTaskGraph(runDir, metadata);
   const validation = validateTaskGraph(graph);
   const artifacts: string[] = [];
@@ -289,7 +310,7 @@ export function planRun(cwd: string, runId: string): PlanResult {
   }, null, 2)}\n`);
   artifacts.push(ownershipFile);
 
-  writeText(executionPlanFile, `# Execution Plan\n\n## Strategy\n\n${graph.strategy}\n\n## Parallel Groups\n\n${validation.parallelGroups.length > 0 ? validation.parallelGroups.map((group) => `- ${group.join(", ")}`).join("\n") : "- none"}\n\n## Serial Tasks\n\n${validation.serialTasks.length > 0 ? validation.serialTasks.map((task) => `- ${task}`).join("\n") : "- none"}\n\n## Runtime Validation\n\n- passed: ${validation.passed}\n${validation.errors.map((error) => `- ${error}`).join("\n")}\n`);
+  writeText(executionPlanFile, `# Execution Plan\n\n## Strategy\n\n${graph.strategy}\n\n## Parallel Groups\n\n${validation.parallelGroups.length > 0 ? validation.parallelGroups.map((group) => `- ${group.join(", ")}`).join("\n") : "- none"}\n\n## Serial Tasks\n\n${validation.serialTasks.length > 0 ? validation.serialTasks.map((task) => `- ${task}`).join("\n") : "- none"}\n\n## Parallelism Evidence\n\n- serial_reason: ${validation.serialReason || "none"}\n- replan_recommended: ${validation.replanRecommended}\n\n## Runtime Validation\n\n- passed: ${validation.passed}\n${validation.errors.map((error) => `- ${error}`).join("\n")}\n`);
   artifacts.push(executionPlanFile);
 
   writeText(commitPlanFile, `# Commit Plan\n\n${graph.tasks.map((task) => `## ${task.id}\n\n- Mode: ${task.commit.mode}\n- Message: ${task.commit.message}`).join("\n\n")}\n`);

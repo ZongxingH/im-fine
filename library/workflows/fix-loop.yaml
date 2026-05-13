@@ -1,0 +1,47 @@
+{
+  "id": "fix-loop",
+  "states": {
+    "qa_failed": {
+      "reason": "QA failed and a scoped fix task must return the work to implementation",
+      "recovery_task_state": "ready_for_dev",
+      "recovery_run_state": "infer_dev",
+      "fix_task_required": true
+    },
+    "review_changes_requested": {
+      "reason": "review feedback requested changes and a scoped fix task must return the work to implementation",
+      "recovery_task_state": "ready_for_dev",
+      "recovery_run_state": "infer_dev",
+      "fix_task_required": true
+    },
+    "implementation_blocked_by_design": {
+      "reason": "implementation is blocked by design and must hand off to Architect before Task Planner replans the affected work",
+      "recovery_task_state": "planned",
+      "recovery_run_state": "planned_if_possible",
+      "architect": {
+        "role": "architect",
+        "action_id_pattern": "agent-architect-design-rework-{task_id}",
+        "parallel_group_pattern": "design-rework",
+        "reason": "current implementation is blocked by design and needs updated architecture guidance"
+      },
+      "task_planner": {
+        "role": "task-planner",
+        "action_id_pattern": "agent-task-planner-design-rework-{task_id}",
+        "parallel_group_pattern": "design-rework-replan",
+        "reason": "task replanning waits for architect guidance for the blocked task",
+        "depends_on_pattern": "agent-architect-design-rework-{task_id}"
+      }
+    },
+    "needs_conflict_resolution": {
+      "role": "conflict-resolver",
+      "action_id": "agent-conflict-resolver",
+      "parallel_group": "conflict-resolution",
+      "reason": "run is waiting for conflict resolution"
+    },
+    "needs_task_replan": {
+      "role": "task-planner",
+      "action_id": "agent-task-planner-replan",
+      "parallel_group": "replan",
+      "reason": "run explicitly requested replanning to improve task granularity or restore safe parallel execution"
+    }
+  }
+}

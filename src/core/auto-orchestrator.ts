@@ -46,6 +46,18 @@ interface Handoff {
   evidence?: string[];
 }
 
+interface ParallelExecutionWave {
+  iteration: number;
+  parallel_group: string;
+  action_ids: string[];
+  task_ids: string[];
+  roles: string[];
+  status: "waiting_for_model" | "dispatched" | "completed" | "blocked" | "failed";
+  reason: string;
+  started_at: string;
+  completed_at?: string;
+}
+
 function runDir(cwd: string, runId: string): string {
   const dir = path.join(cwd, ".imfine", "runs", runId);
   if (!fs.existsSync(path.join(dir, "run.json"))) throw new Error(`Run not found: ${runId}`);
@@ -54,6 +66,43 @@ function runDir(cwd: string, runId: string): string {
 
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+}
+
+function parallelPlanFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), "orchestration", "parallel-plan.json");
+}
+
+function recordParallelWave(cwd: string, runId: string, wave: ParallelExecutionWave): void {
+  const file = parallelPlanFile(cwd, runId);
+  const current = fs.existsSync(file)
+    ? readJson<{
+      schema_version?: number;
+      run_id?: string;
+      groups?: unknown[];
+      wave_history?: ParallelExecutionWave[];
+      executed_parallel_groups?: string[];
+      blocked_parallel_groups?: string[];
+    }>(file)
+    : { schema_version: 1, run_id: runId, groups: [] };
+  const waveHistory = Array.isArray(current.wave_history) ? current.wave_history : [];
+  const executed = new Set(Array.isArray(current.executed_parallel_groups) ? current.executed_parallel_groups : []);
+  const blocked = new Set(Array.isArray(current.blocked_parallel_groups) ? current.blocked_parallel_groups : []);
+  waveHistory.push(wave);
+  if (wave.status === "completed") {
+    executed.add(wave.parallel_group);
+    blocked.delete(wave.parallel_group);
+  }
+  if (wave.status === "blocked" || wave.status === "failed") {
+    blocked.add(wave.parallel_group);
+  }
+  writeText(file, `${JSON.stringify({
+    schema_version: current.schema_version || 1,
+    run_id: current.run_id || runId,
+    groups: Array.isArray(current.groups) ? current.groups : [],
+    executed_parallel_groups: Array.from(executed),
+    blocked_parallel_groups: Array.from(blocked),
+    wave_history: waveHistory
+  }, null, 2)}\n`);
 }
 
 function updateRunStatus(cwd: string, runId: string, status: string, extra: Record<string, unknown>): void {
@@ -199,7 +248,7 @@ function writeDevHandoff(cwd: string, runId: string, taskId: string, patch: stri
     files_changed: changedFiles,
     commands: ["git add -N .", "git diff --binary HEAD", "git diff --name-only HEAD"],
     verification: [],
-    patch,
+    evidence: [patch],
     next_state: passed ? "verifying" : "blocked"
   };
   writeText(file, `${JSON.stringify(handoff, null, 2)}\n`);
@@ -444,11 +493,21 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
 
       if (action.kind === "agent") {
         const executor = options.executor || "";
+        const waveStartedAt = new Date().toISOString();
         if (options.dryRun || !executor) {
-          const executed = await executeAgentBatch(cwd, runId, {
-            dryRun: true,
-            limit: undefined,
-            actionIds: batch.map((item) => item.id)
+          const latest = resumeRun(cwd, runId);
+          recordParallelWave(cwd, runId, {
+            iteration,
+            parallel_group: action.parallelGroup,
+            action_ids: batch.map((item) => item.id),
+            task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
+            roles: Array.from(new Set(batch.map((item) => item.role))),
+            status: "waiting_for_model",
+            reason: options.dryRun
+              ? "dry-run stopped before provider dispatch"
+              : "current session must dispatch this ready batch with native subagents",
+            started_at: waveStartedAt,
+            completed_at: new Date().toISOString()
           });
           const step = {
             iteration,
@@ -456,16 +515,26 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
             kind: action.kind,
             status: "waiting_for_model" as const,
             detail: options.dryRun
-              ? `dry-run model dispatch prepared for ${batch.length} agent(s)`
-              : `agent execution packages prepared for ${batch.length} agent(s) in ${action.parallelGroup}`,
-            artifacts: [executed.dispatch]
+              ? `dry-run stopped at dispatch contracts for ${batch.length} agent(s)`
+              : `waiting for current session to dispatch ${batch.length} agent(s) from ${latest.files.dispatchContracts}`,
+            artifacts: [latest.files.dispatchContracts]
           };
           steps.push(step);
           writeCheckpoint(cwd, runId, action.id, "after", "waiting_for_model", step.detail, step.artifacts);
           const timeline = writeAutoTimeline(cwd, runId, steps, "waiting_for_model");
-          return { runId, status: "waiting_for_model", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
+          return { runId, status: "waiting_for_model", iterations: iteration, steps, lastOrchestration: latest, timeline };
         }
 
+        recordParallelWave(cwd, runId, {
+          iteration,
+          parallel_group: action.parallelGroup,
+          action_ids: batch.map((item) => item.id),
+          task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
+          roles: Array.from(new Set(batch.map((item) => item.role))),
+          status: "dispatched",
+          reason: `dispatching ready batch of ${batch.length} agent(s)`,
+          started_at: waveStartedAt
+        });
         const executed = await executeAgentBatch(cwd, runId, {
           dryRun: false,
           executor,
@@ -483,10 +552,22 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         });
         writeCheckpoint(cwd, runId, action.id, "after", batchStatus, `model batch results: ${executed.results.length} agent(s) in ${action.parallelGroup}`, [executed.dispatch]);
         if (batchStatus === "failed") {
+          recordParallelWave(cwd, runId, {
+            iteration,
+            parallel_group: action.parallelGroup,
+            action_ids: batch.map((item) => item.id),
+            task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
+            roles: Array.from(new Set(batch.map((item) => item.role))),
+            status: "failed",
+            reason: "one or more model agents failed before handoff processing",
+            started_at: waveStartedAt,
+            completed_at: new Date().toISOString()
+          });
           updateRunStatus(cwd, runId, "blocked", { auto_failed_at: new Date().toISOString(), auto_failed_reason: "one or more model agents failed" });
           const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");
           return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
         }
+        const processedBatchStatuses: Array<"completed" | "waiting_for_model" | "blocked" | "failed"> = [];
         for (const result of executed.results) {
           if (result.status === "executed") {
             const resultAction = last.nextActions.find((candidate) => candidate.id === `agent-${result.role}-${result.taskId}` || candidate.id === result.id || candidate.role === result.role && candidate.taskId === result.taskId);
@@ -494,7 +575,19 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
               const processed = { ...processExecutedAgent(cwd, runId, last.runDir, resultAction), iteration };
               steps.push(processed);
               writeCheckpoint(cwd, runId, resultAction.id, "after", processed.status, processed.detail, processed.artifacts);
+              processedBatchStatuses.push(processed.status);
               if (processed.status === "blocked" || processed.status === "waiting_for_model") {
+                recordParallelWave(cwd, runId, {
+                  iteration,
+                  parallel_group: action.parallelGroup,
+                  action_ids: batch.map((item) => item.id),
+                  task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
+                  roles: Array.from(new Set(batch.map((item) => item.role))),
+                  status: processed.status,
+                  reason: processed.detail,
+                  started_at: waveStartedAt,
+                  completed_at: new Date().toISOString()
+                });
                 const status = processed.status === "blocked" ? "blocked" : "waiting_for_model";
                 const timeline = writeAutoTimeline(cwd, runId, steps, status);
                 return { runId, status, iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
@@ -502,6 +595,19 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
             }
           }
         }
+        recordParallelWave(cwd, runId, {
+          iteration,
+          parallel_group: action.parallelGroup,
+          action_ids: batch.map((item) => item.id),
+          task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
+          roles: Array.from(new Set(batch.map((item) => item.role))),
+          status: processedBatchStatuses.every((item) => item === "completed") ? "completed" : "blocked",
+          reason: processedBatchStatuses.every((item) => item === "completed")
+            ? `ready batch completed with ${processedBatchStatuses.length} processed agent result(s)`
+            : "one or more agent results did not complete cleanly",
+          started_at: waveStartedAt,
+          completed_at: new Date().toISOString()
+        });
       }
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

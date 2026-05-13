@@ -3,6 +3,17 @@ import path from "node:path";
 import type { DoctorCheck, DoctorReport } from "./types.js";
 import { runCommand } from "./shell.js";
 
+export type ImfineProvider = "codex" | "claude" | "unknown";
+export type SubagentSupport = "supported" | "unsupported" | "unknown";
+
+export interface TrueHarnessCapability {
+  provider: ImfineProvider;
+  subagentSupport: SubagentSupport;
+  entryInstalled: boolean;
+  ready: boolean;
+  reason: string;
+}
+
 function check(id: string, label: string, status: DoctorCheck["status"], detail: string): DoctorCheck {
   return { id, label, status, detail };
 }
@@ -117,12 +128,65 @@ function toolingChecks(cwd: string): DoctorCheck[] {
   return checks;
 }
 
+function normalizeProvider(value: string | undefined): ImfineProvider {
+  if (value === "codex" || value === "claude") return value;
+  return "unknown";
+}
+
+function normalizeSubagentSupport(value: string | undefined): SubagentSupport {
+  if (!value) return "unknown";
+  const normalized = value.toLowerCase();
+  if (normalized === "true" || normalized === "1" || normalized === "supported" || normalized === "yes") return "supported";
+  if (normalized === "false" || normalized === "0" || normalized === "unsupported" || normalized === "no") return "unsupported";
+  return "unknown";
+}
+
+function providerEntryInstalled(provider: ImfineProvider): boolean {
+  if (provider === "codex") return fs.existsSync(path.join(process.env.HOME || "", ".codex", "skills", "imfine", "SKILL.md"));
+  if (provider === "claude") return fs.existsSync(path.join(process.env.HOME || "", ".claude", "commands", "imfine.md"));
+  return false;
+}
+
+export function detectTrueHarnessCapability(): TrueHarnessCapability {
+  const provider = normalizeProvider(process.env.IMFINE_PROVIDER);
+  const subagentSupport = normalizeSubagentSupport(process.env.IMFINE_SUBAGENT_SUPPORTED);
+  const entryInstalled = providerEntryInstalled(provider);
+  if (provider === "unknown") {
+    return {
+      provider,
+      subagentSupport,
+      entryInstalled,
+      ready: false,
+      reason: "current provider is unknown; set IMFINE_PROVIDER=codex or IMFINE_PROVIDER=claude inside the real orchestrating session"
+    };
+  }
+  if (subagentSupport !== "supported") {
+    return {
+      provider,
+      subagentSupport,
+      entryInstalled,
+      ready: false,
+      reason: `current ${provider} session does not declare native subagent support; set IMFINE_SUBAGENT_SUPPORTED=true only when native spawn/subagent is actually available`
+    };
+  }
+  return {
+    provider,
+    subagentSupport,
+    entryInstalled,
+    ready: true,
+    reason: entryInstalled
+      ? `${provider} provider entry is installed and native subagent support is declared`
+      : `${provider} provider is explicitly declared and native subagent support is declared`
+  };
+}
+
 function targetChecks(): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   const codexSkill = path.join(process.env.HOME || "", ".codex", "skills", "imfine", "SKILL.md");
   const claudeCommand = path.join(process.env.HOME || "", ".claude", "commands", "imfine.md");
   const codexInstalled = fs.existsSync(codexSkill);
   const claudeInstalled = fs.existsSync(claudeCommand);
+  const harness = detectTrueHarnessCapability();
   checks.push(check("target.codex", "Codex /imfine skill", codexInstalled ? "pass" : "warn", codexInstalled ? codexSkill : "Codex skill is not installed"));
   checks.push(check("target.claude", "Claude /imfine command", claudeInstalled ? "pass" : "warn", claudeInstalled ? claudeCommand : "Claude command is not installed"));
   checks.push(check("provider.codex.bridge", "Codex provider bridge", codexInstalled ? "pass" : "warn", codexInstalled ? "Codex /imfine entry lets the current Codex session orchestrate imfine agent packages" : "Codex provider bridge is unavailable until /imfine is installed"));
@@ -133,6 +197,9 @@ function targetChecks(): DoctorCheck[] {
   checks.push(check("provider.claude.entry_installed", "Claude provider entry installed", claudeInstalled ? "pass" : "warn", claudeInstalled ? `entry_installed=true path=${claudeCommand}` : "entry_installed=false"));
   checks.push(check("provider.claude.session_orchestrator", "Claude session orchestrator", claudeInstalled ? "pass" : "warn", claudeInstalled ? "session_orchestrator=true; current Claude session executes or dispatches model Agent work" : "session_orchestrator=false"));
   checks.push(check("provider.claude.subagent_supported", "Claude subagent support", "warn", "subagent_supported=unknown; current session must preserve Agent boundaries and execute ready packages deliberately"));
+  checks.push(check("provider.current", "Current provider", harness.provider === "unknown" ? "fail" : "pass", `provider=${harness.provider}`));
+  checks.push(check("provider.current.subagent_supported", "Current provider subagent support", harness.subagentSupport === "supported" ? "pass" : "fail", `subagent_supported=${harness.subagentSupport}`));
+  checks.push(check("provider.current.true_harness_ready", "Current provider true harness readiness", harness.ready ? "pass" : "fail", harness.reason));
   return checks;
 }
 

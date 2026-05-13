@@ -15,9 +15,10 @@ Use when the task graph contains multiple runnable tasks or multiple roles that 
 
 1. Select tasks whose dependencies are satisfied.
 2. Group tasks by non-overlapping write scopes.
-3. Assign agents with explicit inputs, outputs, and boundaries.
-4. Record locks.
-5. Collect handoffs and release locks.
+3. Prefer the largest ready batch that preserves boundary safety.
+4. Assign agents with explicit inputs, outputs, and boundaries.
+5. Record locks.
+6. Collect handoffs and release locks.
 
 ## Outputs
 
@@ -27,9 +28,11 @@ Use when the task graph contains multiple runnable tasks or multiple roles that 
 
 ## Failure Handling
 
-If boundaries overlap, reduce parallelism or ask Task Planner to replan.
+If boundaries overlap, do not serialize by default. First isolate the conflicting tasks, then ask Task Planner to replan the minimum conflicting slice.
 
 ## Prohibited
 
 - Do not dispatch agents without write boundaries.
+- Do not collapse a ready batch into serial execution when write scopes are independent.
+- Do not accept a task graph that marks everything serial without explicit dependency evidence.
 - Do not ask the user to coordinate agents.
