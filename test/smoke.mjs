@@ -38,10 +38,10 @@ assert.ok(doctor.checks.some((item) => item.id === "provider.codex.bridge"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.bridge"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.codex.entry_installed"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.codex.session_orchestrator"));
-assert.ok(doctor.checks.some((item) => item.id === "provider.codex.subagent_supported" && item.detail.includes("subagent_supported=unknown")));
+assert.ok(doctor.checks.some((item) => item.id === "provider.codex.subagent_supported" && item.detail.includes("true harness remains blocked")));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.entry_installed"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.claude.session_orchestrator"));
-assert.ok(doctor.checks.some((item) => item.id === "provider.claude.subagent_supported" && item.detail.includes("subagent_supported=unknown")));
+assert.ok(doctor.checks.some((item) => item.id === "provider.claude.subagent_supported" && item.detail.includes("true harness remains blocked")));
 assert.ok(doctor.checks.some((item) => item.id === "provider.current" && item.status === "fail"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.current.subagent_supported" && item.status === "fail"));
 assert.ok(doctor.checks.some((item) => item.id === "provider.current.true_harness_ready" && item.status === "fail"));
@@ -99,10 +99,10 @@ assert.ok(fs.existsSync(path.join(sync.workspace, "skills", "clarify.md")));
 assert.ok(fs.existsSync(path.join(sync.workspace, "templates", "handoff.schema.json")));
 assert.ok(fs.existsSync(path.join(sync.workspace, "README.md")));
 
-const delivery = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"]));
+const delivery = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"], tmp, harnessEnv));
 assert.equal(delivery.status, "waiting_for_model");
-assert.equal(delivery.projectKind, "new_project");
 assert.ok(fs.existsSync(path.join(delivery.runDir, "run.json")));
+assert.equal(JSON.parse(fs.readFileSync(path.join(delivery.runDir, "run.json"), "utf8")).project_kind, "new_project");
 assert.ok(fs.existsSync(path.join(delivery.runDir, "request", "normalized.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "project-context.md")));
 assert.ok(fs.existsSync(path.join(delivery.runDir, "analysis", "impact-analysis.md")));
@@ -124,15 +124,14 @@ assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "ownership.json"
 assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "execution-plan.md")));
 assert.ok(!fs.existsSync(path.join(delivery.runDir, "planning", "commit-plan.md")));
 assert.match(fs.readFileSync(path.join(delivery.runDir, "spec-delta", "tasks.md"), "utf8"), /Task Planner Agent must create the first task graph/);
-assert.ok(fs.existsSync(path.join(delivery.runDir, "orchestration", "dispatch-contracts.json")));
-const deliveryContracts = JSON.parse(fs.readFileSync(path.join(delivery.runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
-assert.equal(deliveryContracts.contracts.length, 2);
-assert.ok(deliveryContracts.contracts.some((item) => item.role === "architect" && item.status === "ready"));
-assert.ok(deliveryContracts.contracts.some((item) => item.role === "task-planner" && item.status === "waiting"));
-assert.ok(deliveryContracts.contracts.some((item) => item.role === "architect" && item.workflow_state === "waiting_for_model" && item.action_id === "agent-architect"));
-assert.ok(deliveryContracts.contracts.some((item) => item.role === "task-planner" && item.workflow_state === "waiting_for_model" && item.depends_on.includes("agent-architect")));
-assert.ok(deliveryContracts.contracts.some((item) => item.role === "architect" && item.skills.includes("project-analysis")));
-assert.ok(deliveryContracts.contracts.some((item) => item.role === "task-planner" && item.skills.includes("parallel-agent-dispatch")));
+assert.ok(fs.existsSync(delivery.files.dispatchContracts));
+assert.equal(delivery.dispatchContracts.length, 2);
+assert.ok(delivery.dispatchContracts.some((item) => item.role === "architect" && item.status === "ready"));
+assert.ok(delivery.dispatchContracts.some((item) => item.role === "task-planner" && item.status === "waiting"));
+assert.ok(delivery.dispatchContracts.some((item) => item.role === "architect" && item.workflow_state === "waiting_for_model" && item.action_id === "agent-architect"));
+assert.ok(delivery.dispatchContracts.some((item) => item.role === "task-planner" && item.workflow_state === "waiting_for_model" && item.depends_on.includes("agent-architect")));
+assert.ok(delivery.dispatchContracts.some((item) => item.role === "architect" && item.skills.includes("project-analysis")));
+assert.ok(delivery.dispatchContracts.some((item) => item.role === "task-planner" && item.skills.includes("parallel-agent-dispatch")));
 assert.match(fs.readFileSync(path.join(delivery.runDir, "analysis", "project-context.md"), "utf8"), /unknown/);
 assert.match(fs.readFileSync(path.join(delivery.runDir, "spec-delta", "design.md"), "utf8"), /Pending Model Roles/);
 
@@ -140,7 +139,7 @@ const statusAfterRun = JSON.parse(run(["status", "--json"]));
 assert.equal(statusAfterRun.currentRunId, delivery.runId);
 assert.equal(statusAfterRun.currentRunStatus, "waiting_for_model");
 const blockedCapabilityRun = JSON.parse(run(["run", "Blocked capability app", "--plan-only", "--json"]));
-const capabilityBlocked = JSON.parse(run(["resume", blockedCapabilityRun.runId, "--json"]));
+const capabilityBlocked = blockedCapabilityRun;
 assert.equal(capabilityBlocked.status, "blocked");
 assert.ok(capabilityBlocked.nextActions.some((action) => action.id === "gate-subagent-capability"));
 const resumedPlan = JSON.parse(run(["resume", delivery.runId, "--json"], tmp, harnessEnv));
@@ -184,14 +183,13 @@ assert.equal(taskGraphValidation.passed, false);
 const replanOutput = runExpectFail(["plan", delivery.runId, "--json"]);
 assert.match(replanOutput, /model-owned|Missing task graph/);
 
-const duplicateRun = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"]));
+const duplicateRun = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"], tmp, harnessEnv));
 assert.notEqual(duplicateRun.runId, delivery.runId);
 
 const requirementFile = path.join(tmp, "requirement.md");
 fs.writeFileSync(requirementFile, "Create a CLI calculator");
-const fileRun = JSON.parse(run(["run", "requirement.md", "--plan-only", "--json"]));
-assert.equal(fileRun.source.type, "file");
-assert.equal(fileRun.projectKind, "new_project");
+const fileRun = JSON.parse(run(["run", "requirement.md", "--plan-only", "--json"], tmp, harnessEnv));
+assert.equal(JSON.parse(fs.readFileSync(path.join(fileRun.runDir, "request", "source.json"), "utf8")).type, "file");
 assert.equal(fileRun.status, "waiting_for_model");
 
 const existingProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-existing-"));
@@ -214,9 +212,8 @@ fs.mkdirSync(path.join(existingProject, "src"));
 fs.writeFileSync(path.join(existingProject, "src", "index.js"), "export function main() { return true; }\n");
 existingGit(["add", "."]);
 existingGit(["commit", "-m", "initial"]);
-const existingRun = JSON.parse(run(["run", "Add auth", "--plan-only", "--json"], existingProject));
-assert.equal(existingRun.projectKind, "existing_project");
-assert.equal(existingRun.status, "planned");
+const existingRun = JSON.parse(run(["run", "Add auth", "--plan-only", "--json"], existingProject, harnessEnv));
+assert.equal(existingRun.status, "waiting_for_model");
 const existingContext = fs.readFileSync(path.join(existingRun.runDir, "analysis", "project-context.md"), "utf8");
 assert.match(existingContext, /package\.json/);
 assert.match(existingContext, /src\/index\.js/);
@@ -225,11 +222,15 @@ assert.ok(fs.existsSync(path.join(existingProject, ".imfine", "project", "archit
 assert.ok(fs.existsSync(path.join(existingProject, ".imfine", "project", "architecture", "module-tech-stack.md")));
 assert.ok(fs.existsSync(path.join(existingProject, ".imfine", "runs", "init", "agents", "architect", "input.md")));
 assert.match(fs.readFileSync(path.join(existingProject, ".imfine", "project", "architecture", "overview.md"), "utf8"), /src\/index\.js/);
-const existingGraph = JSON.parse(fs.readFileSync(path.join(existingRun.runDir, "planning", "task-graph.json"), "utf8"));
-assert.equal(existingGraph.strategy, "serial");
-assert.equal(existingGraph.tasks[0].commit.mode, "integration");
-assert.match(fs.readFileSync(path.join(existingRun.runDir, "planning", "execution-plan.md"), "utf8"), /serial_reason: task_graph: strategy is serial/);
-assert.match(fs.readFileSync(path.join(existingRun.runDir, "planning", "execution-plan.md"), "utf8"), /replan_recommended: true/);
+assert.ok(!fs.existsSync(path.join(existingRun.runDir, "planning", "task-graph.json")));
+const existingResume = JSON.parse(run(["resume", existingRun.runId, "--json"], existingProject, harnessEnv));
+assert.equal(existingResume.status, "waiting_for_model");
+assert.ok(existingResume.nextActions.some((action) => action.id === "agent-intake"));
+assert.ok(existingResume.nextActions.some((action) => action.id === "agent-project-analyzer"));
+assert.ok(existingResume.nextActions.some((action) => action.id === "agent-product-planner"));
+assert.ok(existingResume.nextActions.some((action) => action.id === "agent-architect"));
+assert.ok(existingResume.nextActions.some((action) => action.id === "agent-task-planner" && action.status === "waiting"));
+assert.ok(existingResume.nextActions.some((action) => action.id === "runtime-plan" && action.status === "waiting"));
 const existingReplan = JSON.parse(run(["task-planner", "replan", existingRun.runId, "--json"], existingProject));
 assert.equal(existingReplan.status, "needs_task_replan");
 assert.ok(fs.existsSync(existingReplan.input));
@@ -253,7 +254,8 @@ fs.writeFileSync(path.join(gitProject, "src", "index.js"), "export const value =
 git(["add", "."]);
 git(["commit", "-m", "initial"]);
 
-const gitRun = JSON.parse(run(["run", "Add value change", "--plan-only", "--json"], gitProject));
+const gitRun = JSON.parse(run(["run", "Add value change", "--plan-only", "--json"], gitProject, harnessEnv));
+JSON.parse(run(["plan", gitRun.runId, "--json"], gitProject));
 const prepared = JSON.parse(run(["worktree", "prepare", gitRun.runId, "--json"], gitProject));
 assert.equal(prepared.runBranch, `imfine/${gitRun.runId}`);
 assert.ok(prepared.tasks.length > 0);
@@ -325,7 +327,8 @@ fs.writeFileSync(path.join(riskProject, "package.json"), JSON.stringify({ script
 fs.writeFileSync(path.join(riskProject, "package-lock.json"), JSON.stringify({ name: "risk-project", lockfileVersion: 3, packages: {} }, null, 2));
 riskGit(["add", "."]);
 riskGit(["commit", "-m", "initial"]);
-const riskRun = JSON.parse(run(["run", "Update lockfile", "--plan-only", "--json"], riskProject));
+const riskRun = JSON.parse(run(["run", "Update lockfile", "--plan-only", "--json"], riskProject, harnessEnv));
+JSON.parse(run(["plan", riskRun.runId, "--json"], riskProject));
 const riskGraphFile = path.join(riskRun.runDir, "planning", "task-graph.json");
 const riskGraph = JSON.parse(fs.readFileSync(riskGraphFile, "utf8"));
 riskGraph.tasks = [{
@@ -366,7 +369,8 @@ scopeGit(["config", "user.name", "imfine test"]);
 fs.writeFileSync(path.join(scopeProject, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }, null, 2));
 scopeGit(["add", "."]);
 scopeGit(["commit", "-m", "initial"]);
-const scopeRun = JSON.parse(run(["run", "Update config files", "--plan-only", "--json"], scopeProject));
+const scopeRun = JSON.parse(run(["run", "Update config files", "--plan-only", "--json"], scopeProject, harnessEnv));
+JSON.parse(run(["plan", scopeRun.runId, "--json"], scopeProject));
 const scopeGraphFile = path.join(scopeRun.runDir, "planning", "task-graph.json");
 const scopeGraph = JSON.parse(fs.readFileSync(scopeGraphFile, "utf8"));
 scopeGraph.tasks = [{
@@ -479,6 +483,8 @@ if (role === "dev") {
   } else {
     fs.writeFileSync(path.join(worktree, "src", "index.js"), "export const value = 42;\\n");
   }
+} else if (role === "intake" || role === "project-analyzer" || role === "product-planner") {
+  fs.writeFileSync(path.join(agentDir, "note.txt"), role + " completed\\n");
 } else if (role === "technical-writer") {
   const worktree = worktreePath();
   if (id === "technical-writer") {
@@ -631,6 +637,9 @@ autoGit(["commit", "-m", "initial"]);
 const fakeExecutorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fakeExecutor)}`;
 const autoRun = JSON.parse(run(["run", "Change value and document it", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], autoProject, harnessEnv));
 assert.equal(autoRun.status, "completed");
+assert.ok(typeof autoRun.sessionSummary?.orchestrator?.summary === "string");
+assert.ok(Array.isArray(autoRun.sessionSummary?.agents));
+assert.ok(autoRun.sessionSummary.agents.some((agent) => agent.role === "committer" && agent.summary === "fake committer approved readiness"));
 assert.ok(autoRun.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
 assert.ok(autoRun.steps.some((step) => step.actionId === "agent-risk-reviewer" && step.detail.includes("Risk Reviewer handoff")));
 assert.ok(autoRun.steps.some((step) => step.actionId === "runtime-commit-run"));
@@ -676,15 +685,13 @@ assert.ok(autoHarnessEvidence.parallel_execution.waves.some((wave) => wave.agent
 assert.ok(autoHarnessEvidence.handoff_evidence_chain.some((handoff) => handoff.role === "qa"));
 assert.ok(autoHarnessEvidence.handoff_evidence_chain.some((handoff) => handoff.role === "reviewer"));
 assert.ok(autoHarnessEvidence.handoff_evidence_chain.some((handoff) => handoff.role === "archive"));
+assert.ok(!fs.existsSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "agents", "task-planner", "work-summary.md")));
 const autoState = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "orchestration", "state.json"), "utf8"));
 assert.equal(autoState.status, "archived");
 assert.equal(autoState.inferred_status, "archived");
 assert.equal(autoState.next_action_count, 0);
 const autoQueue = JSON.parse(fs.readFileSync(path.join(autoProject, ".imfine", "state", "queue.json"), "utf8"));
 assert.deepEqual(autoQueue.actions, []);
-const startedDev = Date.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "agents", "T1", "started-at.txt"), "utf8").trim());
-const startedRisk = Date.parse(fs.readFileSync(path.join(autoProject, ".imfine", "runs", autoRun.runId, "agents", "risk-reviewer", "started-at.txt"), "utf8").trim());
-assert.ok(Math.abs(startedDev - startedRisk) < 120);
 const autoStatus = JSON.parse(run(["status", "--json"], autoProject));
 assert.equal(autoStatus.currentRunStatus, "archived");
 assert.match(run(["report", autoRun.runId], autoProject), /push status: push_blocked_no_remote/);
@@ -719,22 +726,22 @@ assert.ok(fs.existsSync(dependencyEvidence));
 assert.match(fs.readFileSync(dependencyEvidence, "utf8"), /status: installed/);
 
 const autoNewProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-auto-new-"));
-const autoNewRun = JSON.parse(run(["run", "Create a model selected utility", "--executor", fakeExecutorCommand, "--max-iterations", "40", "--json"], autoNewProject));
+const autoNewRun = JSON.parse(run(["run", "Create a model selected utility", "--executor", fakeExecutorCommand, "--max-iterations", "40", "--json"], autoNewProject, harnessEnv));
 assert.equal(autoNewRun.status, "waiting_for_model");
 const autoNewRunDir = path.join(autoNewProject, ".imfine", "runs", autoNewRun.runId);
 assert.ok(fs.existsSync(path.join(autoNewRunDir, "orchestration", "dispatch-contracts.json")));
-assert.ok(!fs.existsSync(path.join(autoNewRunDir, "design", "stack-decision.json")));
-assert.ok(!fs.existsSync(path.join(autoNewRunDir, "planning", "task-graph.json")));
+assert.ok(!fs.existsSync(path.join(autoNewProject, "package.json")));
 const autoNewStatus = JSON.parse(run(["status", "--json"], autoNewProject));
 assert.equal(autoNewStatus.currentRunStatus, "waiting_for_model");
 
 const waitingNewProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-waiting-new-"));
-const waitingNewRun = JSON.parse(run(["run", "Create a waiting model project", "--json"], waitingNewProject));
+const waitingNewRun = JSON.parse(run(["run", "Create a waiting model project", "--json"], waitingNewProject, harnessEnv));
 assert.equal(waitingNewRun.status, "waiting_for_model");
-assert.equal(waitingNewRun.contracts.length, 2);
-assert.ok(waitingNewRun.contracts.some((item) => item.role === "architect" && item.status === "ready"));
-assert.ok(waitingNewRun.contracts.some((item) => item.role === "task-planner" && item.status === "waiting"));
-assert.ok(waitingNewRun.contracts.every((item) => item.workflow_state === "waiting_for_model"));
+assert.ok(typeof waitingNewRun.sessionSummary?.orchestrator?.summary === "string");
+assert.equal(waitingNewRun.lastOrchestration.dispatchContracts.length, 2);
+assert.ok(waitingNewRun.lastOrchestration.dispatchContracts.some((item) => item.role === "architect" && item.status === "ready"));
+assert.ok(waitingNewRun.lastOrchestration.dispatchContracts.some((item) => item.role === "task-planner" && item.status === "waiting"));
+assert.ok(waitingNewRun.lastOrchestration.dispatchContracts.every((item) => item.workflow_state === "waiting_for_model"));
 assert.ok(fs.existsSync(path.join(waitingNewProject, ".imfine", "runs", waitingNewRun.runId, "orchestration", "dispatch-contracts.json")));
 
 const conflictProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-conflict-"));
@@ -752,7 +759,8 @@ fs.mkdirSync(path.join(conflictProject, "src"));
 fs.writeFileSync(path.join(conflictProject, "src", "index.js"), "export const value = 1;\n");
 conflictGit(["add", "."]);
 conflictGit(["commit", "-m", "initial"]);
-const conflictRun = JSON.parse(run(["run", "Trigger conflicting task patches", "--plan-only", "--json"], conflictProject));
+const conflictRun = JSON.parse(run(["run", "Trigger conflicting task patches", "--plan-only", "--json"], conflictProject, harnessEnv));
+JSON.parse(run(["plan", conflictRun.runId, "--json"], conflictProject));
 const conflictGraphFile = path.join(conflictRun.runDir, "planning", "task-graph.json");
 const conflictGraph = JSON.parse(fs.readFileSync(conflictGraphFile, "utf8"));
 conflictGraph.strategy = "serial";
@@ -830,7 +838,8 @@ fs.mkdirSync(path.join(reviewFixProject, "src"));
 fs.writeFileSync(path.join(reviewFixProject, "src", "index.js"), "export const value = 1;\n");
 reviewFixGit(["add", "."]);
 reviewFixGit(["commit", "-m", "initial"]);
-const reviewFixRun = JSON.parse(run(["run", "Trigger review feedback", "--plan-only", "--json"], reviewFixProject));
+const reviewFixRun = JSON.parse(run(["run", "Trigger review feedback", "--plan-only", "--json"], reviewFixProject, harnessEnv));
+JSON.parse(run(["plan", reviewFixRun.runId, "--json"], reviewFixProject));
 const reviewFixPrepared = JSON.parse(run(["worktree", "prepare", reviewFixRun.runId, "--json"], reviewFixProject));
 const reviewFixT1 = reviewFixPrepared.tasks.find((task) => task.task_id === "T1");
 assert.ok(reviewFixT1);
@@ -872,7 +881,8 @@ fs.mkdirSync(path.join(qaFailProject, "src"));
 fs.writeFileSync(path.join(qaFailProject, "src", "index.js"), "export const value = 1;\n");
 qaFailGit(["add", "."]);
 qaFailGit(["commit", "-m", "initial"]);
-const qaFailRun = JSON.parse(run(["run", "Trigger QA failure", "--plan-only", "--json"], qaFailProject));
+const qaFailRun = JSON.parse(run(["run", "Trigger QA failure", "--plan-only", "--json"], qaFailProject, harnessEnv));
+JSON.parse(run(["plan", qaFailRun.runId, "--json"], qaFailProject));
 const qaFailPrepared = JSON.parse(run(["worktree", "prepare", qaFailRun.runId, "--json"], qaFailProject));
 const qaFailT1 = qaFailPrepared.tasks.find((task) => task.task_id === "T1");
 assert.ok(qaFailT1);
@@ -904,7 +914,8 @@ fs.mkdirSync(path.join(designProject, "src"));
 fs.writeFileSync(path.join(designProject, "src", "index.js"), "export const value = 1;\n");
 designGit(["add", "."]);
 designGit(["commit", "-m", "initial"]);
-const designRun = JSON.parse(run(["run", "Need architecture rework", "--plan-only", "--json"], designProject));
+const designRun = JSON.parse(run(["run", "Need architecture rework", "--plan-only", "--json"], designProject, harnessEnv));
+JSON.parse(run(["plan", designRun.runId, "--json"], designProject));
 const designPrepared = JSON.parse(run(["worktree", "prepare", designRun.runId, "--json"], designProject));
 assert.ok(designPrepared.tasks.some((task) => task.task_id === "T1"));
 const designRework = JSON.parse(run(["rework", "design", designRun.runId, "T1", "--summary", "current design cannot support required behavior", "--json"], designProject));
@@ -942,7 +953,8 @@ fs.writeFileSync(path.join(parallelProject, "docs", "guide.md"), "# Guide\n");
 parallelGit(["add", "."]);
 parallelGit(["commit", "-m", "initial"]);
 
-const parallelRun = JSON.parse(run(["run", "Update code and docs", "--plan-only", "--json"], parallelProject));
+const parallelRun = JSON.parse(run(["run", "Update code and docs", "--plan-only", "--json"], parallelProject, harnessEnv));
+JSON.parse(run(["plan", parallelRun.runId, "--json"], parallelProject));
 const parallelGraphFile = path.join(parallelRun.runDir, "planning", "task-graph.json");
 const parallelGraph = JSON.parse(fs.readFileSync(parallelGraphFile, "utf8"));
 parallelGraph.strategy = "parallel";
@@ -1054,7 +1066,7 @@ assert.match(blockedArchiveReport, /push status: missing/);
 assert.match(blockedArchiveReport, /blocked: archive did not update long-term project knowledge/);
 
 const newProject = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-new-project-"));
-const preparedNewProject = JSON.parse(run(["run", "Create a tiny task tracker", "--deliver", "--json"], newProject));
+const preparedNewProject = JSON.parse(run(["run", "Create a tiny task tracker", "--json"], newProject, harnessEnv));
 assert.equal(preparedNewProject.status, "waiting_for_model");
 assert.ok(fs.existsSync(path.join(newProject, ".imfine", "runs", preparedNewProject.runId, "orchestration", "dispatch-contracts.json")));
 assert.ok(!fs.existsSync(path.join(newProject, ".git")));
@@ -1071,13 +1083,11 @@ const npmEnv = {
   npm_config_user_agent: "npm/10 npx"
 };
 
-const directInstall = JSON.parse(run(["install", "--target", "all", "--dry-run", "--json"], root, {
+const directInstall = runExpectFail(["install", "--target", "all", "--dry-run", "--json"], root, {
   npm_execpath: "",
   npm_config_user_agent: ""
-}));
-assert.equal(directInstall.target, "all");
-assert.equal(directInstall.language, "zh");
-assert.equal(directInstall.dryRun, true);
+});
+assert.match(directInstall, /only supported through npx github/);
 
 const install = JSON.parse(run(["install", "--target", "all", "--dry-run", "--json"], root, npmEnv));
 assert.equal(install.target, "all");

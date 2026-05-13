@@ -1,50 +1,41 @@
-# imfine 项目级自主多 Agent Harness 分阶段实现方案
+# imfine 项目级自主多 Agent Harness 实现对齐说明
 
-## 1. 目标定义
+## 1. 当前目标定义
 
-imfine 是一个面向真实软件项目交付的项目级自主多 Agent harness。
+imfine 是一个面向真实软件项目交付的项目级自主多 Agent harness。当前实现以 orchestrator 为中心，围绕 `.imfine/` 工作空间组织 run、evidence、workflow、dispatch contract 和 archive。
 
 它不是规格工具，不是 OpenSpec、Superpowers、BMAD 的运行时 adapter，也不会要求用户先安装这些外部工具。imfine 会基于这些开源项目和公开方法论的源码、prompt、agent、skill、workflow、模板进行源码级吸收和改造，形成自己的 Agent 库、Skill 库、运行时、安装产物和项目工作空间。
 
-最终用户体验：
+当前公开用户入口：
 
 ```text
+/imfine init
 /imfine run "给订单列表增加按支付状态筛选"
+/imfine status
 ```
 
-或：
+当前 `run` 的真实语义：
 
 ```text
 /imfine run docs/requirements/order-filter.md
 ```
 
-imfine 自动完成：
-
 ```text
 需求输入
-  -> 项目识别：新项目 / 已有项目
-  -> 基础设施检查：git、remote、分支、权限、包管理器、测试命令、Codex/Claude 安装目标
-  -> 项目上下文分析
-  -> 需求分析
-  -> 方案设计
-  -> 风险识别
-  -> 任务拆解
-  -> 每个任务生成可执行 plan
-  -> 创建 imfine/<run-id> 分支
-  -> 多 Dev Agent 按边界并行开发
-  -> QA Agent 测试和补充验证
-  -> Review Agent 审查
-  -> 冲突、失败、设计偏差自动返工
-  -> 按任务 commit
-  -> push 到 origin imfine/<run-id>
-  -> Archive Agent 确认并归档
-  -> 更新项目长期知识库
+  -> 创建 delivery run
+  -> provider capability gate
+  -> infrastructure gate
+  -> 进入统一 orchestrator 主路径
+  -> 无 task graph 时走模型主导的 discovery / planning
+  -> 有 task graph 时进入 active delivery
+  -> runtime 校验并物化模型产物
+  -> 在条件满足时推进 QA / Review / commit / push / archive
 ```
 
 imfine 同时支持两类项目：
 
-- 新项目：从一句话、需求文档或 PRD 开始，自动补齐产品分析、技术选型、架构设计、项目初始化、测试体系、首批功能、commit、push 和归档。
-- 已有项目：先从代码、配置、测试、文档中建立项目上下文，再在现有架构和约定内完成需求交付。
+- 新项目：从一句话、需求文档或 PRD 开始进入新项目 workflow。当前实现会先停在模型主导的 Architect / Task Planner 路径，必要时进入 `waiting_for_model`。
+- 已有项目：先进入 discovery / planning workflow，由 Intake、Project Analyzer、Product Planner、Architect、Task Planner、Risk Reviewer 形成后续规划输入，再继续交付。
 
 ## 2. 非目标
 
@@ -106,7 +97,7 @@ imfine 中的改造形态：
 imfine 中的改造形态：
 
 ```text
-imfine/skills/
+library/skills/
   clarify.md
   project-analysis.md
   write-delivery-plan.md
@@ -142,9 +133,10 @@ imfine/skills/
 imfine 中的改造形态：
 
 ```text
-imfine/agents/
+library/agents/
   orchestrator.md
-  intake-analyst.md
+  intake.md
+  project-analyzer.md
   product-planner.md
   architect.md
   task-planner.md
@@ -155,6 +147,8 @@ imfine/agents/
   committer.md
   archive.md
   technical-writer.md
+  risk-reviewer.md
+  project-knowledge-updater.md
 ```
 
 Orchestrator 按项目类型、需求复杂度和风险动态选择角色，不让用户参与角色调度。
@@ -191,7 +185,7 @@ Claude 目标产物：
 ~/.imfine/runtime/
 ```
 
-Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claude Code 的 agent 文件能力对调度有明确收益，再作为增强项加入。
+当前实现里，Claude 只生成 `~/.claude/commands/imfine.md`。如果后续 Claude Code 的 agent 文件能力对调度有明确收益，再作为增强项加入。
 
 设计原则：
 
@@ -200,6 +194,7 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
 - runtime 使用 TypeScript/npm 实现和分发。
 - npm 包主入口为 `imfine`，内部确定性 runtime bin 可命名为 `imfine-runtime`，两者由同一个 TypeScript/npm 包提供。
 - 安装入口只支持 `npx github:<owner>/<repo> install ...` 形态，不支持用户直接运行 `imfine install ...`。
+- 当前实现已进一步收紧：只有受控的 `npx github:<owner>/<repo> install ...` 入口允许执行安装；直接本地 CLI 调用 `imfine install` / `imfine-runtime install` 会被拒绝。
 - Codex 和 Claude 使用两套安装产物，但共享 `.imfine` 项目工作空间和 `~/.imfine/runtime`。
 - 安装产物必须说明如何调用当前工具的子 Agent 能力。
 - 如果当前工具不支持独立子 Agent，默认阻塞，不静默降级为单 Agent 全流程，除非用户明确允许。
@@ -240,9 +235,9 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
         technical-solution.md
       planning/
         task-graph.json
-        ownership.json
-        execution-plan.md
-        commit-plan.md
+        ownership-plan.json
+        execution-plan.json
+        commit-plan.json
       spec-delta/
         proposal.md
         design.md
@@ -269,15 +264,14 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
         context.json
         pending-roles.json
         infrastructure-gate.json
-        agent-runs.json
+        subagent-capability-gate.json
         dispatch-contracts.json
         parallel-plan.json
-        true-harness-evidence.json
-        true-harness-evidence.md
         action-ledger.json
         timeline.md
         auto-timeline.md
         checkpoints/
+      agent-runs.json
       evidence/
         infrastructure.md
         dependency-install.md
@@ -288,6 +282,9 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
         commits.md
         push.md
         patch-risks.md
+        subagent-capability.md
+        true-harness-evidence.json
+        true-harness-evidence.md
       archive/
         archive-report.md
         project-updates.md
@@ -306,11 +303,11 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
 - `.imfine/project` 保存跨 run 的长期项目知识。
 - `.imfine/project/capabilities` 吸收 OpenSpec 的 capability spec 思想，但不把它作为唯一事实来源。
 - `.imfine/runs/<run-id>/spec-delta/` 保存 run-local proposal/design/tasks delta，归档时由 Archive Agent 消费并沉淀进 capability spec。
-- `.imfine/runs/<run-id>/orchestration/` 保存 Orchestrator 的 action queue、agent registry、parallel plan、action ledger、checkpoint、timeline 和 infrastructure gate。
+- `.imfine/runs/<run-id>/orchestration/` 保存 Orchestrator 的 action queue、parallel plan、action ledger、checkpoint、timeline 和 gate 快照。
 - Agent / skill / template / workflow 库默认保留在全局 runtime library 中，不再作为主路径同步到项目 `.imfine/`；`library sync` 仅生成 `.imfine/debug/library-snapshot/` 调试快照。
 - `agents/<agent-run-id>/` 下展示的是常见产物，不同角色可以有不同子结构；例如 Dev Agent 通常包含 `commands.md`、`patch.diff`、`status.json`，QA / Reviewer 以 handoff、status 和 evidence 为主，run-level model execution 会包含 `execution/model-input.md`、`execution-status.json`、stdout/stderr。
 - `evidence/` 下展示的是常见证据类型，不要求每个 run 都生成所有文件；实际生成内容由 Orchestrator action、Agent handoff 和 runtime gate 决定。
-- `orchestration/true-harness-evidence.{json,md}` 是 run 级最终验收证据，显式记录 capability gate、参与角色、并行波次、handoff/evidence 链和 fix-loop 使用事实。
+- `evidence/true-harness-evidence.{json,md}` 是 run 级最终验收证据，显式记录 capability gate、参与角色、并行波次、handoff/evidence 链和 fix-loop 使用事实。
 - 归档时 Archive Agent 会确认 run 产物，并反向更新 `.imfine/project`。
 - `.imfine` 默认可提交进业务仓库。建议提交 `.imfine/config.yaml`、`.imfine/project/**`、`.imfine/reports/**`、归档报告和关键 evidence；大量 agent 中间日志、临时 worktree 索引和可再生成的运行细节可配置忽略。
 
@@ -323,9 +320,6 @@ Claude 第一阶段只生成 `~/.claude/commands/imfine.md`。如果后续 Claud
 /imfine run "需求"
 /imfine run docs/requirements/xxx.md
 /imfine status
-/imfine report <run-id>
-/imfine resume <run-id>
-/imfine archive <run-id>
 ```
 
 内部 runtime 可以有更多命令，但不作为主交互：
@@ -362,8 +356,10 @@ imfine-runtime library sync
 - 用户不需要传 `--executor`；`/imfine` 运行在 Codex / Claude 大模型会话中，由当前主会话读取模型执行包并执行或分发 Agent 工作。`--executor` 只作为非交互 runner 的内部/测试桥接。
 - 用户不需要手动执行 `agents execute`、`orchestrate` 或 `commit resolved`。
 - `--plan-only` 作为内部调试/明确停在计划阶段的能力保留。
+- 当前实现中，`--plan-only` 不再走“创建 run 时顺手 deterministic 生成任务图”的旧路径；它会在 delivery run 创建后立即 materialize orchestration snapshot，然后停在当前可恢复的 orchestrator 状态。
 - deterministic new-project vertical slice 只作为内部 debug/test 路径保留，不作为用户主入口。
-- `/imfine` 安装文档的用户主入口聚焦 `init`、`run`、`status`、`resume`、`report`、`archive`，内部 runtime 命令归入调试/恢复说明。
+- `/imfine` 安装文档和 slash command 主入口只保留 `init`、`run`、`status`。
+- 其余命令即使在 runtime 中存在，也属于内部调试、恢复或非交互测试路径，不作为对外能力说明。
 - `imfine-runtime agents prepare` / `agents execute` 仅作为 legacy debug/testing bridge 保留；所有 bridge 产物都必须显式标记 `legacy_debug`，不能作为 true harness 已执行的证据。
 
 ## 7. init 和基础设施检查
@@ -429,35 +425,31 @@ push 策略采用 `doctor` 前置检查：不是无条件盲目 push，而是在
 - 依赖安装由 Orchestrator 在需要时自动插入内部 `runtime-dependency-install` action。
 - 支持 npm / pnpm / yarn / pip requirements / mvn 等项目内安装命令记录；依赖安装使用长时任务友好的超时窗口，当前为 2 分钟，并把命令、stdout、stderr、exit code 和失败原因写入 `.imfine/runs/<run-id>/evidence/dependency-install.md`。
 - pip 安装要求项目本地 `.venv`；系统级安装、shell 环境修改、数据库、云资源和外部服务不会自动执行。
-- `doctor` 同时检查 Codex / Claude 入口和 provider bridge 能力，并按 `entry_installed`、`session_orchestrator`、`subagent_supported` 分级记录 provider capability；当前无法证明真实子 Agent 能力时记录 `subagent_supported=unknown`，由当前大模型会话保持角色边界执行 ready Agent 工作，或让 run 保持 `waiting_for_model`。
+- `doctor` 同时检查 Codex / Claude 入口和 provider bridge 能力，并按 `entry_installed`、`session_orchestrator`、`subagent_supported` 分级记录 provider capability；当前无法证明真实子 Agent 能力时记录 `subagent_supported=unknown`，并将 true harness 主路径视为 blocked，直到当前大模型会话显式声明原生子 Agent 能力。
+- provider capability 的最终收敛语义已经固定：只有显式 `subagent_supported=supported` 才允许继续 true harness；`unknown` 和 `unsupported` 都不会继续执行真实主路径。
 
 ## 8. Delivery Run 生命周期
 
-核心状态：
+代表性 run 状态：
 
 ```text
 created
-  -> infrastructure_checked
-  -> project_analyzed
-  -> requirement_analyzed
-  -> designed
+  -> blocked
+  -> waiting_for_model
   -> planned
   -> branch_prepared
   -> implementing
-  -> integrating
   -> verifying
   -> reviewing
   -> committing
   -> pushing
-  -> archiving
   -> archived
 ```
 
-异常状态：
+fix-loop / 恢复状态：
 
 ```text
 blocked
-needs_requirement_reanalysis
 needs_design_update
 needs_task_replan
 needs_dev_fix
@@ -467,6 +459,7 @@ needs_infrastructure_action
 
 原则：
 
+- 当前实现不是一条固定线性流水线。run 会根据 gate、task graph、handoff、workflow state 和恢复条件在不同状态之间推进。
 - Agent 决定语义状态是否满足。
 - Runtime 只做状态合法性、文件存在性、边界、命令、证据和 git 操作校验。
 - 失败后由 Orchestrator 自主回流，不默认问用户。
@@ -804,30 +797,21 @@ push blocked 不阻止归档。Archive Agent 可以在报告中明确记录 push
 
 ## 12. 新项目流程
 
-新项目的 `/imfine run "..."` 应自动完成：
+新项目的 `/imfine run "..."` 当前不会在主入口里直接 deterministic 完成端到端脚手架和首批交付。当前真实路径是：
 
 ```text
-产品分析
-  -> 技术栈选择
-  -> 架构设计
-  -> 项目脚手架
-  -> 测试策略
-  -> 首批功能任务图
-  -> 并行开发
-  -> QA / Review
-  -> commit / push
-  -> archive
+创建 delivery run
+  -> capability gate
+  -> infrastructure gate
+  -> workflow: new-project-delivery
+  -> 状态: waiting_for_model
+  -> Architect 生成架构 / 技术方向输入
+  -> Task Planner 生成 task graph
+  -> runtime-plan 校验并物化计划
+  -> 后续再进入 worktree / 实现 / QA / Review / commit / push / archive
 ```
 
-默认生成：
-
-- README。
-- 项目结构。
-- 包管理器配置。
-- 基础测试。
-- lint / format / typecheck / build 命令。
-- `.gitignore`。
-- `.imfine/project` 长期知识库。
+当前实现承诺的是“新项目进入统一 orchestrator 主路径，并围绕 contract、workflow、evidence 和后续恢复继续推进”，而不是“主入口立即完成完整项目创建”。
 
 补充确认的交付约束：
 
@@ -841,7 +825,7 @@ push blocked 不阻止归档。Archive Agent 可以在报告中明确记录 push
 - 涉及真实外部系统的集成。
 - 安全、权限、合规策略。
 
-新项目默认技术栈、框架、目录结构和测试工具完全由 Agent 基于需求自主决策。高风险或无法安全假设项可以由 Agent 给出默认方案，但不得伪造凭据或假装基础设施存在。
+新项目的技术栈、框架、目录结构和测试工具由模型侧角色在 Architect / Task Planner 路径中形成建议；高风险或无法安全假设项可以给出默认方案，但不得伪造凭据或假装基础设施存在。
 
 新项目不自动创建 GitHub、GitLab 或其他远程仓库。imfine 可以自动执行本地 git 初始化、本地分支和本地 commit；如果缺少 remote，则 push 阶段进入 `push_blocked_no_remote`，并在归档中记录后续配置建议。
 
@@ -1036,7 +1020,7 @@ Archive Agent 需要确认：
 - 有哪些遗留风险。
 - 项目长期知识需要怎么更新。
 
-`/imfine run` 默认自动推进归档。若归档失败、中断、证据缺失或需要人工恢复，系统提示用户显式执行 `/imfine archive <run-id>` 继续归档。
+`/imfine run` 默认自动推进归档。若归档失败、中断、证据缺失或需要人工恢复，系统应由内部恢复链路继续推进，不再把归档恢复作为用户主入口命令暴露。
 
 当前实现：
 
@@ -1048,300 +1032,39 @@ Archive Agent 需要确认：
 - capability spec 区分 `Verified Facts` 和 `Inferences`，避免把推断当作已验证事实。
 - Archive 报告必须只消费真实 QA / Review / commit / push 状态，不能硬编码 `T*=pass`、`T*=approved` 或用 `missing/unknown` 掩盖其实已经明确分类的 push 结果。
 - 长期知识更新必须给出明确结论：要么列出实际更新到 `.imfine/project/**` 和 capability spec 的文件，要么明确说明因为证据缺失而未更新，而不是写成笼统的 `none`。
-- Archive 报告现在必须显式引用 `orchestration/true-harness-evidence.md`，把 capability gate、参与角色、并行波次和 handoff/evidence 链纳入最终归档证据。
-
-## 18. 分阶段实现路线
-
-这里不称 MVP，而是按能力闭环分阶段建设。
-
-### 阶段 1：安装形态和项目工作空间
-
-状态：已完成
-
-目标：
-
-- 支持 `npx github:<owner>/<repo> install --target codex|claude|all --lang zh|en`。
-- 支持 `npx github:<owner>/<repo> install`，默认同时安装 Codex 和 Claude 的 `/imfine` 入口。
-- 生成 `/imfine` 两套入口产物。
-- 安装 `~/.imfine/runtime`。
-- 支持 `/imfine init`。
-- 支持 `.imfine/project` 和 `.imfine/runs` 基础结构。
-- 支持基础设施 doctor。
-
-验收：
-
-- Codex 中可通过 `/imfine init` 使用。
-- Claude 中可通过 `/imfine init` 使用。
-- 新项目和已有项目都能生成 `.imfine`。
-- doctor 能指出 git、remote、测试命令、push 权限等状态。
-- 阶段 1 不要求真实多 Agent 并行，只要求安装形态、runtime、项目工作空间和基础设施检查可用。
-
-当前已落地：
-
-- 安装入口只允许 `npx github:<owner>/<repo> install ...`，不支持用户直接 `imfine install ...`。
-- 默认安装 `--target all --lang zh`，支持 Codex skill 和 Claude command 两套产物。
-- `/imfine init` 支持空项目和已有项目；已有项目会生成 `.imfine/project/architecture/` 草稿和 Architect Agent 输入。
-- `doctor` 已覆盖 git、remote、branch、push probe、包管理器、lockfile、测试脚本、Codex / Claude 入口和 provider bridge，并按 `entry_installed`、`session_orchestrator`、`subagent_supported` 记录 provider capability。
-
-### 阶段 2：源码级 Agent / Skill 库
-
-状态：已完成
-
-目标：
-
-- 调研并改造 BMAD agent。
-- 调研并改造 Superpowers skill。
-- 调研并改造 OpenSpec artifact 模板。
-- 形成 imfine 自己的 agents、skills、templates。
-
-验收：
-
-- Orchestrator、Intake、Architect、Task Planner、Dev、QA、Reviewer、Archive 可被 `/imfine` 调用。
-- 每个角色有输入、输出、禁止事项、handoff schema。
-- 每个 skill 有触发条件、步骤、产物和失败处理。
-- `imfine-runtime agents|skills|templates list|show` 可查看库产物。
-- `imfine-runtime library sync` 现在只生成 `.imfine/debug/library-snapshot/` 调试快照，不再把 runtime 库作为主路径资产复制进项目 `.imfine/`。
-- 从阶段 2 开始建设多 Agent 编排能力和 OpenSpec / Superpowers / BMAD 的源码级吸收产物。
-
-当前已落地：
-
-- 核心 agent 已包括 Orchestrator、Intake、Project Analyzer、Product Planner、Architect、Task Planner、Dev、QA、Reviewer、Conflict Resolver、Committer、Archive、Technical Writer、Risk Reviewer、Project Knowledge Updater。
-- skills 已包括 clarify、project-analysis、write-delivery-plan、execute-task-plan、tdd、systematic-debugging、parallel-agent-dispatch、code-review、archive-confirmation。
-- templates 已包括 handoff schema、task graph schema、requirement-analysis、solution-design、task、archive-report。
-
-### 阶段 3：项目分析和需求设计闭环
-
-状态：已完成
-
-目标：
-
-- 支持 `/imfine run` 从一句话或文档创建 run。
-- 自动判断新项目 / 已有项目。
-- 生成需求分析、影响面、设计、验收标准。
-- 新项目能生成产品和技术方案。
-- 已有项目能生成证据化项目上下文。
-
-验收：
-
-- 所有项目结论有文件证据或 unknown 标记。
-- run 产物完整。
-- 不进入开发前能形成可审查设计。
-- 阶段 3 的 `/imfine run` 只生成项目分析、需求分析和设计产物，不生成任务图、不开发、不测试、不 review、不 commit、不 push、不归档。
-
-当前已落地：
-
-- `/imfine run` 可从文本或需求文件创建 delivery run。
-- 自动判断 `new_project` / `existing_project`。
-- runtime 主路径现在只 materialize 输入、项目扫描证据、`project-context`、`impact-analysis`、`risk-analysis`、`orchestration/context.json`、`pending-roles.json`、`state.json` 和 `dispatch-contracts.json`。
-- 新项目路径进入 `waiting_for_model`，由 Architect / Task Planner 先完成模型侧判断；runtime 不再主路径生成 `requirement-analysis`、`product-analysis`、`solution-design`、`technical-solution`、`acceptance` 等语义结论文档。
-- 结论性设计、任务拆解和验收判断必须由多角色 Agent 通过 contract / handoff / evidence 形成，而不是由 runtime 直接写定。
-
-### 阶段 4：任务图和执行 plan
-
-状态：已完成
-
-目标：
-
-- 生成 task graph。
-- 每个任务包含 `read_scope`、`write_scope`、依赖、dev/test/review/commit plan。
-- 判断可并行任务。
-- 对不可拆分任务生成串行或冲突解决策略。
-
-验收：
-
-- Runtime 能校验 task graph。
-- 并行任务边界不重叠。
-- 任务粒度能映射到 commit。
-
-当前已落地：
-
-- runtime 生成并校验 task graph、ownership、execution plan、commit plan 和每个任务的 dev/test/review plan。
-- task graph 校验包含必填字段、依赖存在性、循环、并行任务 `write_scope` 重叠检查。
-- 边界不清或校验失败时 Orchestrator 进入 Task Planner replan，而不是继续执行不安全并行。
-- ready wave 生成和并行组持久化已被纳入阶段 4 的实际完成标准，不能只停留在“逻辑上可并行”的任务图。
-
-### 阶段 5：worktree 并行开发
-
-状态：已完成
-
-目标：
-
-- 创建 `imfine/<run-id>` 分支。
-- 为任务创建独立 worktree。
-- Dev Agent 在独立 worktree 执行。
-- 收集 patch。
-- 校验 patch 越界。
-
-验收：
-
-- 多个非重叠任务可并行完成。
-- 越界 patch 会被发现。
-- 任务输出包含 patch、命令、测试证据。
-
-当前已落地：
-
-- runtime 创建 `imfine/<run-id>` run branch 和 `imfine/<run-id>-<task-id>` task worktree。
-- Dev / Technical Writer Agent 在独立 worktree 中产出 patch。
-- patch collect 会收集 binary diff、commands、task evidence，并校验 `write_scope`。
-- patch risk scanner 会记录高风险变更并生成 Risk Reviewer 输入。
-- `write_scope` glob 匹配已按 planner/validator 同规则固化，并有针对性回归覆盖 `tsconfig*.json`、`vite.config.*` 等模式。
-
-### 阶段 6：QA、Review、返工闭环
-
-状态：已完成
-
-目标：
-
-- QA Agent 独立验证。
-- Reviewer Agent 独立审查。
-- 失败自动生成 fix task。
-- 设计不成立自动回流 Architect / Task Planner。
-
-验收：
-
-- QA 失败可自动返工。
-- Review changes_requested 可自动返工。
-- 重复 QA / Review 失败时持续生成有边界的返工任务，由 Orchestrator 自主推进解决；不因固定重试次数直接阻塞。
-
-当前已落地：
-
-- QA Agent handoff 支持 `pass|fail|blocked`，Reviewer handoff 支持 `approved|changes_requested|blocked`。
-- QA 失败和 Review changes_requested 会生成 scoped fix task，并推进 `needs_dev_fix`。
-- 设计不成立可进入 Architect / Task Planner rework。
-- role-specific handoff gate 防止非法 handoff 推进后续动作；已覆盖 Dev、QA、Reviewer、Archive、Conflict Resolver、Committer、Risk Reviewer、Technical Writer、Project Knowledge Updater。
-- QA / Review / Commit 阶段已补充“不能基于部分证据继续推进”的完成约束，保证 task lifecycle 与 run lifecycle 单调一致。
-
-### 阶段 7：commit 和 push
-
-状态：已完成
-
-目标：
-
-- 支持任务级 commit。
-- 支持集成 commit。
-- 支持 push 到 `origin imfine/<run-id>`。
-- 记录 commit / push 证据。
-
-验收：
-
-- 边界明确任务保留多个 task commit。
-- 冲突场景可由 Conflict Resolver 合并后 commit。
-- 无 remote / 无权限时清晰阻塞。
-
-当前已落地：
-
-- runtime 支持 task commit、integration commit 和 resolved integration commit。
-- Committer Agent 负责 readiness / strategy handoff，runtime 负责实际 git commit / push。
-- Orchestrator 会消费 Committer handoff；只有 `ready` 会推进 runtime commit，`blocked` 会阻止 commit 并保留证据。
-- Conflict Resolver resolved 后自动 QA、Review、commit，并继续 push / archive。
-- push 支持 no remote、permission、network、branch conflict、generic failure 分类和 evidence。
-- resolved integration commit 现在也必须通过 write-scope 和 gate 校验，避免 invalid patch 被 Conflict Resolver 集成。
-
-### 阶段 8：归档和长期知识更新
-
-状态：已完成
-
-目标：
-
-- Archive Agent 确认产物。
-- 生成 run archive。
-- 生成用户报告。
-- 更新 `.imfine/project`。
-
-验收：
-
-- 归档报告能还原完整交付链路。
-- 项目知识库反映新的架构、能力、测试策略和风险。
-
-当前已落地：
-
-- Archive 前会调度 Technical Writer 和 Project Knowledge Updater 支撑整理。
-- Archive 前会消费 Technical Writer / Project Knowledge Updater 的 run-level handoff，确认文档整理和项目知识更新是否 ready、not needed 或 blocked。
-- Archive 确认 requirement、design、task、QA、Review、commit、push evidence。
-- Archive 更新 `.imfine/project/**`、`.imfine/reports/<run-id>.md` 和 `.imfine/project/capabilities/<run-id>/spec.md`。
-- push blocked 时仍可归档，并在报告中记录阻塞原因和用户后续动作。
-- archive/report/state 现在被视为同一条证据链的不同视图，必须建立在统一状态源上，不能分别拼接“局部真相”。
-
-### 阶段 9：新项目完整创建
-
-状态：已完成
-
-目标：
-
-- 从一句话创建新项目。
-- 自动初始化代码、测试、文档、git、`.imfine`。
-- 完成首个 delivery run。
-
-验收：
-
-- 空目录中可完成项目初始化和首批功能交付。
-- 能本地 commit。
-- remote 缺失时 push 阶段明确阻塞。
-
-当前已落地：
-
-- 新项目 `/imfine run "需求"` 默认进入 Architect / Task Planner 模型规划路径。
-- 当前大模型会话尚未执行 Architect / Task Planner 时，runtime 生成执行包并进入 `waiting_for_model`。
-- 当前大模型会话执行并写回 Agent 产物后，可继续完成 stack decision、task graph、worktree、实现、QA、Review、commit、push blocked 记录和 archive。
-- deterministic Node.js vertical slice 仅作为内部 debug/test 路径保留。
-- 新项目 cwd materialization 已被纳入阶段 9 的完成标准，而不再被视为后续体验优化。
-
-### 阶段 10：真正 Harness 主路径收敛
-
-状态：已完成
-
-目标：
-
-- 把系统主路径彻底收敛到：
-  - runtime materializes
-  - orchestrator decides
-  - agents execute and judge
-  - backend verifies
-- 让 `dispatch contract + handoff + evidence + workflow + provider capability gate` 成为 true harness 主路径
-- 清除“runtime 伪多 Agent”“execution package 主路径”“bridge 被误认成正常执行路径”的残留
-
-验收：
-
-- task pipeline 状态显式进入 workflow，并稳定映射到 `dispatch-contracts.json`
-- fix loop、replan、design rework、conflict resolution 使用同一份 workflow 语义
-- new-project contract builder 收敛到 workflow metadata 驱动
-- legacy bridge 显式标记 `legacy_debug`，且有独立测试保护隔离
-- archived run 必须产出 true harness evidence，并在 archive report 中显式引用
-- 有独立验收测试保护：
-  - 无 capability 时 blocked
-  - 有 capability 时 `wave_history`、dispatch contract、handoff、evidence、archive 引用链同时存在
-
-当前已落地：
-
-- runtime 边界已收紧：不再主路径生成需求分析、产品分析、方案设计、架构决策、验收结论等语义文档。
-- `dispatch-contracts.json` 已成为主协议；task pipeline 已显式暴露 `workflow_state`，并由 workflow materialize `role / action id / parallel group / reason`。
-- fix-loop 已统一到 `library/workflows/fix-loop.yaml`，覆盖 `qa_failed`、`review_changes_requested`、`implementation_blocked_by_design`、`needs_conflict_resolution`、`needs_task_replan`。
-- new-project 路径已切成 contract-first；workflow 直接提供 role metadata，contract 不再在单文件里手工拼大段字段。
-- `agents prepare / agents execute` 已收敛为 legacy debug/testing bridge，bridge prompt、dispatch、execution metadata、dry-run status 均显式标记 `legacy_debug`。
-- run 级 `true-harness-evidence.{json,md}` 已成为正式产物，显式记录 capability gate、参与角色、并行波次、handoff/evidence 链和 fix-loop 使用事实。
-- 新增独立验收测试 `test/harness-acceptance.mjs`，专门保护 true harness 主路径和 legacy bridge 隔离。
-
-当前结论：
-
-- `imfine` 现在已经不再是 runtime 驱动的伪多 Agent 流程。
-- `imfine` 已建立真正 harness 的结构主路径，并把多角色、多 agent、skill discipline、并行波次、handoff/evidence 和 capability gate 纳入同一闭环。
-- 在当前实现范围内，true harness 的收尾任务已经完成；后续应以维护、扩展 workflow 覆盖和演进角色库为主，而不是回到旧的 runtime 越权路径。
+- Archive 报告现在必须显式引用 `evidence/true-harness-evidence.md`，把 capability gate、参与角色、并行波次和 handoff/evidence 链纳入最终归档证据。
+
+## 18. 当前实现对齐摘要
+
+本节只保留当前实现已经固定下来的主路径和约束，不再用分阶段目标描述系统。
+
+- 安装入口只允许 `npx github:<owner>/<repo> install ...`；本地 CLI 直接执行 `imfine install` / `imfine-runtime install` 会被拒绝。
+- `/imfine` 的稳定公开入口只有 `init`、`run`、`status`。
+- `/imfine run` 的主语义是“创建 delivery run 并进入统一 orchestrator 主路径”，不是“在入口阶段直接 deterministic 生成任务图”。
+- true harness 必须先通过 provider capability gate；只有显式 `subagent_supported=supported` 才允许继续，`unknown` 和 `unsupported` 都会 blocked。
+- 既有项目和新项目都不再在 run 创建时直接调用 `planRun()` 作为主路径。
+- 新项目无 task graph 时进入 `waiting_for_model`，由 Architect / Task Planner 先产出模型结果，再由 runtime `runtime-plan` 校验并物化。
+- 既有项目无 task graph 时进入 discovery / planning workflow，由 Intake / Project Analyzer / Product Planner / Architect / Task Planner / Risk Reviewer 形成规划输入。
+- `dispatch-contracts.json`、`parallel-plan.json`、`agent-runs.json`、`true-harness-evidence.{json,md}` 和 archive report 构成当前 true harness 证据链。
+- `agents prepare / agents execute` 只保留为 legacy debug/testing bridge，所有 bridge 产物必须显式标记 `legacy_debug`。
+- Archive 报告必须引用真实 QA / Review / commit / push / capability gate / parallel execution 证据，不能用 runtime 假结论替代。
 
 ## 19. 已确认实现决策
 
 1. imfine runtime 使用 TypeScript/npm 实现和分发。
 2. npm 包主入口为 `imfine`，内部确定性 runtime bin 可命名为 `imfine-runtime`。
 3. 安装入口只支持 `npx github:<owner>/<repo> install ...`，不支持直接 `imfine install ...`。
+   当前实现已执行为硬约束：本地 CLI install 会显式报错。
 4. 安装时支持 `--target codex|claude|all` 和 `--lang zh|en`，默认 `--target all --lang zh`。
 5. Codex 的 `/imfine` 按 skill 入口设计。
-6. Claude 的 `/imfine` 第一阶段只生成 `~/.claude/commands/imfine.md`。
+6. 当前实现中，Claude 的 `/imfine` 只生成 `~/.claude/commands/imfine.md`。
 7. 新项目默认技术栈完全由 Agent 决策。
 8. 自动安装依赖默认允许，但只限项目内包管理器命令，且必须记录命令、输出和失败原因。
 9. push 使用 `doctor` 前置检查：检查通过后默认自动 push；检查失败或 push 失败则阻塞并记录原因。
 10. push blocked 不阻止归档，Archive Agent 需要在报告中记录阻塞原因和后续动作。
 11. 新项目不自动创建远程仓库，只做本地 git 初始化、分支和 commit。
 12. `.imfine` 默认可提交进业务仓库；项目知识库和报告建议提交，runs 中的大量 agent 中间日志可配置忽略。
-13. 分阶段实现：阶段 1 不强求真实多 Agent；阶段 2 开始建设 Agent / Skill 库；后续逐步实现真实多角色编排。
+13. 当前文档只记录已实现能力、稳定边界和运行约束，不再用分阶段目标定义系统。
 14. 多 Agent 并行覆盖 Intake、Project Analysis、Architect、Task Planner、Dev、QA、Review、Archive、Technical Writer 等角色，不只限 Dev Agent。
 15. `/imfine init` 是新项目和已有项目的统一初始化入口；已有项目必须生成架构文档草稿，并由 Architect Agent 基于证据补全。
 16. imfine 是应用级、项目级 harness；完整流程是长时任务，默认由 Orchestrator 自主调度、恢复、返工和解决问题，尽量减少人工介入。
@@ -1349,6 +1072,7 @@ Archive Agent 需要确认：
 18. 并行能力的完成标准不是“有多个角色文件”，而是必须同时具备 ready wave、agent-run registry、execution package、并发执行时间线和 handoff 汇聚证据。
 19. orchestration snapshot 的完成标准不是“状态大致对”，而是 `run.json`、`orchestration/state.json`、`queue.json`、`timeline.md` 对同一时刻的可执行动作和最终状态给出一致视图。
 20. `dispatch contract + handoff + evidence + workflow + provider capability gate` 是 true harness 主路径的正式定义；缺任何一项都不能对外声称已经实现真正 harness。
+    当前实现已进一步固定 provider capability 语义：只有显式 `supported` 才能通过该 gate。
 21. `agents prepare / agents execute` 只保留为 legacy debug/testing bridge；所有 bridge 产物必须显式标记 `legacy_debug`，不能作为 true harness 证据。
 22. `true-harness-evidence.{json,md}` 和 `test/harness-acceptance.mjs` 是最终一致性审查基线；后续扩展不得绕过这两层保护。
 

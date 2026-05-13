@@ -8,7 +8,7 @@ import { commitResolvedRun, commitRun, pushRun } from "./gitflow.js";
 import { validateHandoff, type HandoffRole } from "./handoff-validator.js";
 import { acquireLock, isActionCompleted, readLatestCheckpoint, releaseLock, writeCheckpoint } from "./reliability.js";
 import { resumeRun, type OrchestrationAction, type OrchestratorResult } from "./orchestrator.js";
-import { planRun } from "./plan.js";
+import { materializeModelPlan } from "./plan.js";
 import { reviewTask, type ReviewDecision, type VerificationStatus, verifyTask } from "./quality.js";
 import { transitionRunState } from "./state-machine.js";
 import { collectPatch, prepareWorktrees } from "./worktree.js";
@@ -204,8 +204,8 @@ function readyActionBatch(cwd: string, runId: string, orchestration: Orchestrato
 
 function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationAction): AutoOrchestratorStep {
   if (action.id === "runtime-plan") {
-    const result = planRun(cwd, runId);
-    return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: "planned run", artifacts: result.artifacts };
+    const result = materializeModelPlan(cwd, runId);
+    return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: "validated model planning outputs and materialized task artifacts", artifacts: result.artifacts };
   }
   if (action.id === "runtime-worktree-prepare") {
     const result = prepareWorktrees(cwd, runId);

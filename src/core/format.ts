@@ -12,6 +12,7 @@ import type { DesignReworkResult, ReviewResult, VerificationResult } from "./qua
 import type { ReplanResult } from "./replan.js";
 import type { RecoveryResult } from "./recovery.js";
 import type { DeliveryRunResult } from "./run.js";
+import type { SessionSummarizedAutoOrchestratorResult, SessionSummarizedOrchestratorResult } from "./session-summary.js";
 import type { ReportResult, StatusResult } from "./status.js";
 import type { PatchCollectResult, PatchValidationResult, WorktreePrepareResult } from "./worktree.js";
 
@@ -98,7 +99,7 @@ export function formatDeliveryRun(result: DeliveryRunResult): string {
     `run dir: ${result.runDir}`,
     `runtime context: ${result.runDir}/orchestration/context.json`,
     `pending roles: ${result.runDir}/orchestration/pending-roles.json`,
-    `task graph: ${result.plan?.taskGraph || "pending model task planner output"}`,
+    `task graph: pending model task planner output`,
     `artifacts: ${result.artifacts.length}`,
     ""
   ].join("\n");
@@ -260,7 +261,17 @@ export function formatNewProjectDelivery(result: NewProjectDeliveryResult): stri
   ].join("\n");
 }
 
-export function formatOrchestrator(result: OrchestratorResult): string {
+function formatSessionSummary(result: unknown): string[] {
+  const sessionSummary = (result as { sessionSummary?: SessionSummarizedOrchestratorResult["sessionSummary"] | SessionSummarizedAutoOrchestratorResult["sessionSummary"] }).sessionSummary;
+  if (!sessionSummary) return [];
+  return [
+    "session summary:",
+    `- orchestrator: ${sessionSummary.orchestrator.summary}`,
+    ...sessionSummary.agents.map((agent) => `- ${agent.role}${agent.taskId ? `/${agent.taskId}` : ""}: ${agent.summary}`)
+  ];
+}
+
+export function formatOrchestrator(result: OrchestratorResult | SessionSummarizedOrchestratorResult): string {
   return [
     `${result.mode === "resume" ? "resumed" : "orchestrated"} imfine run: ${result.runId}`,
     `status: ${result.status}`,
@@ -276,6 +287,7 @@ export function formatOrchestrator(result: OrchestratorResult): string {
     ...(result.nextActions.length > 0
       ? result.nextActions.map((action) => `- [${action.status}] ${action.id}${action.command ? `: ${action.command}` : ""}`)
       : ["- none"]),
+    ...formatSessionSummary(result),
     ""
   ].join("\n");
 }
@@ -304,7 +316,7 @@ export function formatAgentExecute(result: AgentExecuteResult): string {
   ].join("\n");
 }
 
-export function formatAutoOrchestrator(result: AutoOrchestratorResult): string {
+export function formatAutoOrchestrator(result: AutoOrchestratorResult | SessionSummarizedAutoOrchestratorResult): string {
   return [
     `auto orchestration run: ${result.runId}`,
     `status: ${result.status}`,
@@ -312,6 +324,7 @@ export function formatAutoOrchestrator(result: AutoOrchestratorResult): string {
     `timeline: ${result.timeline}`,
     `steps: ${result.steps.length}`,
     ...result.steps.map((step) => `- ${step.iteration} [${step.status}] ${step.actionId}: ${step.detail}`),
+    ...formatSessionSummary(result),
     ""
   ].join("\n");
 }

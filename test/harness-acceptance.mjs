@@ -67,6 +67,8 @@ function writeHandoff(payload) {
 if (role === "dev") {
   const worktree = worktreePath();
   fs.writeFileSync(path.join(worktree, "src", "index.js"), "export const value = 2;\\n");
+} else if (role === "intake" || role === "project-analyzer" || role === "product-planner") {
+  fs.writeFileSync(path.join(agentDir, "note.txt"), role + " completed\\n");
 } else if (role === "qa") {
   writeHandoff({
     run_id: process.env.IMFINE_RUN_ID,
@@ -142,6 +144,41 @@ if (role === "dev") {
     updated_files: [],
     next_state: "archived"
   });
+} else if (role === "architect") {
+  const runRoot = path.resolve(outputDir, "..", "..", "..");
+  fs.mkdirSync(path.join(runRoot, "design"), { recursive: true });
+  fs.writeFileSync(path.join(runRoot, "design", "stack-decision.json"), JSON.stringify({
+    language: "JavaScript",
+    runtime: "Node.js",
+    package_manager: "npm"
+  }, null, 2) + "\\n");
+  fs.writeFileSync(path.join(runRoot, "design", "technical-solution.md"), "# Technical Solution\\n\\nAcceptance architect output.\\n");
+  fs.writeFileSync(path.join(runRoot, "design", "architecture-decisions.md"), "# Architecture Decisions\\n\\nAcceptance architect output.\\n");
+} else if (role === "task-planner") {
+  const runRoot = path.resolve(outputDir, "..", "..", "..");
+  const runId = process.env.IMFINE_RUN_ID;
+  const graph = {
+    run_id: runId,
+    strategy: "serial",
+    tasks: [
+      {
+        id: "T1",
+        title: "Implement requested change",
+        type: "dev",
+        depends_on: [],
+        read_scope: [".imfine/project/**", ".imfine/runs/" + runId + "/**", "src/**"],
+        write_scope: ["src/**", "test/**"],
+        acceptance: ["requested change implemented"],
+        dev_plan: ["edit source"],
+        test_plan: ["npm run test"],
+        review_plan: ["review source change"],
+        verification: ["npm run test"],
+        commit: { mode: "task", message: "feat: acceptance implementation" }
+      }
+    ]
+  };
+  fs.mkdirSync(path.join(runRoot, "planning"), { recursive: true });
+  fs.writeFileSync(path.join(runRoot, "planning", "task-graph.json"), JSON.stringify(graph, null, 2) + "\\n");
 }
 `);
 
@@ -149,6 +186,9 @@ const harnessProject = makeGitProject("imfine-harness-ok-");
 const fakeExecutorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fakeExecutor)}`;
 const autoRun = JSON.parse(run(["run", "True harness acceptance run", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], harnessProject, harnessEnv));
 assert.equal(autoRun.status, "completed");
+assert.ok(typeof autoRun.sessionSummary?.orchestrator?.summary === "string");
+assert.ok(Array.isArray(autoRun.sessionSummary?.agents));
+assert.ok(autoRun.sessionSummary.agents.some((agent) => agent.role === "reviewer" && agent.summary === "acceptance review approved"));
 const runDir = path.join(harnessProject, ".imfine", "runs", autoRun.runId);
 const parallelPlan = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-plan.json"), "utf8"));
 assert.ok(Array.isArray(parallelPlan.wave_history));

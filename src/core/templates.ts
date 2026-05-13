@@ -18,9 +18,6 @@ The text after \`/imfine\` is the user-facing workflow request. Do not expose ru
 - \`/imfine init\`
 - \`/imfine run <requirement text|requirement-file>\`
 - \`/imfine status\`
-- \`/imfine resume <run-id>\`
-- \`/imfine report <run-id>\`
-- \`/imfine archive <run-id>\`
 
 ## Runtime
 
@@ -32,30 +29,13 @@ Use it only for materializing state, initializing \`.imfine\`, checking infrastr
 node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
 \`\`\`
 
-## Debug / Recovery Runtime Commands
+## Runtime Boundaries
 
-- \`/imfine init\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js init\` from the project root.
-- \`/imfine run <requirement text|requirement-file>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <requirement text|requirement-file>\` from the project root. In an empty new-project directory this completes the first delivery run.
-- \`/imfine run <requirement text|requirement-file> --plan-only\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <requirement text|requirement-file> --plan-only\` when the Agent intentionally wants to stop at planning.
-- \`/imfine resume <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js resume <run-id>\` to infer next actions, persist queue state, and route ready Agent work.
-- \`/imfine agents prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\` only when debugging the legacy model-execution bridge. It is not the target harness path.
-- \`/imfine orchestrate <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id>\` to let runtime progress deterministic actions after this session has completed model Agent work.
-- \`/imfine plan <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js plan <run-id>\` from the project root.
-- \`/imfine worktree prepare <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js worktree prepare <run-id>\` from the project root.
-- \`/imfine patch collect <run-id> <task-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js patch collect <run-id> <task-id>\`.
-- \`/imfine patch validate <run-id> <task-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js patch validate <run-id> <task-id>\`.
-- \`/imfine verify <run-id> <task-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js verify <run-id> <task-id>\`. If verification is model-judged rather than command-based, pass \`--status pass|fail|blocked --summary "<summary>"\` after QA Agent decides.
-- \`/imfine review <run-id> <task-id>\`: after Reviewer Agent makes a decision, run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js review <run-id> <task-id> --status approved|changes_requested|blocked --summary "<summary>"\`.
-- \`/imfine rework design <run-id> <task-id>\`: when implementation is blocked by design, run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js rework design <run-id> <task-id> --summary "<summary>"\`.
-- \`/imfine commit task <run-id> <task-id>\`: after patch validation, QA pass, and Review approval, run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js commit task <run-id> <task-id>\`.
-- \`/imfine commit run <run-id> --mode task|integration\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js commit run <run-id> --mode task|integration\` to preserve task commits or create one integration commit.
-- \`/imfine commit resolved <run-id> [task-id...]\`: after Conflict Resolver has merged changes in the run worktree, run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js commit resolved <run-id> [task-id...]\`.
-- \`/imfine push <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js push <run-id>\` to push \`origin imfine/<run-id>\` and record push evidence.
-- \`/imfine archive <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js archive <run-id>\` to confirm evidence, write archive reports, and update project knowledge.
-- \`/imfine status\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js status\` from the project root.
-- \`/imfine report <run-id>\`: run \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js report <run-id>\` from the project root.
-
-Use \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js doctor\` when infrastructure status is needed.
+- Only \`/imfine init\`, \`/imfine run\`, and \`/imfine status\` are user-facing slash-command entries.
+- Runtime JS commands remain internal deterministic actions and should not be exposed to the user as the normal operating path.
+- \`init\` may call runtime JS to inspect the current project and materialize the workspace.
+- Delivery planning, orchestration, implementation, QA, review, fix loops, and archive decisions are expected to be driven by the current model session through multi-role multi-agent + skill execution.
+- Legacy bridge commands such as \`agents prepare\` or \`agents execute\` are internal debug/testing paths only.
 
 ## Init Workflow
 
@@ -105,15 +85,15 @@ All bridge artifacts must be explicitly treated as \`legacy_debug\` outputs. The
 
 \`/imfine library sync\` is an explicit debug-only snapshot of the global runtime library into \`.imfine/debug/library-snapshot/\`. It is not part of \`init\` and not required for the true harness path.
 
-If native provider subagents are unavailable, the run should be treated as blocked for the true harness path. Do not silently complete the whole workflow as one undifferentiated Agent.
+If native provider subagents are unavailable or unconfirmed, the run should be treated as blocked for the true harness path. Do not silently complete the whole workflow as one undifferentiated Agent.
 
 ## Existing-Project Auto Orchestration
 
-\`/imfine run ...\` and \`/imfine orchestrate <run-id>\` run the autonomous delivery loop for existing projects from inside the current ${toolName} model session.
+\`/imfine run ...\` runs the autonomous delivery loop for existing projects from inside the current ${toolName} model session.
 
 The loop only performs deterministic runtime actions itself: prepare worktrees, collect patches after Dev/Writer agents edit their worktrees, record QA/Review decisions from model handoffs, commit approved patches, push the run branch when possible, and archive verified evidence. Product, architecture, implementation, QA, Review, and conflict decisions remain model Agent responsibilities.
 
-For new projects, the current ${toolName} session first performs Architect and Task Planner model work from the generated packages. Architect must write \`.imfine/runs/<run-id>/design/stack-decision.json\`; Task Planner must write the task graph and execution plan. Runtime validates those model outputs before preparing worktrees.
+For new projects, the same orchestration loop first performs Architect and Task Planner model work from the generated packages. Architect must write \`.imfine/runs/<run-id>/design/stack-decision.json\`; Task Planner must write the task graph. Runtime validates those model outputs and materializes the remaining planning artifacts before preparing worktrees.
 
 ## Phase 3 Run Boundary
 
@@ -123,7 +103,7 @@ Do not claim implementation, task graph generation, commits, push, QA, review, o
 
 ## Phase 4 Plan Boundary
 
-\`/imfine run\` now also creates a runtime-validated task graph, ownership map, execution plan, commit plan, and per-task dev/test/review plans.
+\`/imfine run\` now advances through model planning plus runtime validation/materialization of the task graph, ownership map, execution plan, commit plan, and per-task dev/test/review plans.
 
 Phase 4 still does not create worktrees, implement code, run QA, run review, commit, push, or archive.
 
@@ -159,13 +139,13 @@ Phase 7 still does not archive.
 
 ## Phase 8 Archive Boundary
 
-\`/imfine archive\` runs Archive Agent confirmation. If requirement, design, task, QA, Review, commit, and push evidence are complete, runtime writes the run archive, user report, and updates \`.imfine/project\` long-term knowledge.
+The archive stage runs Archive Agent confirmation. If requirement, design, task, QA, Review, commit, and push evidence are complete, runtime writes the run archive, user report, and updates \`.imfine/project\` long-term knowledge.
 
 If evidence is missing, archive writes a blocked report and handoff, but does not update long-term project knowledge with unverified claims.
 
 ## Phase 9 New Project Waiting Boundary
 
-\`/imfine run ...\` for empty new-project directories only materializes runtime context and waits for Architect and Task Planner model work. Runtime must not generate default project code, tests, docs, task graphs, or verification commands for a new project.
+\`/imfine run ...\` for empty new-project directories enters the same orchestration loop, then waits for Architect and Task Planner model work when needed. Runtime must not generate default project code, tests, docs, or task-graph semantics for a new project.
 
 Do not create GitHub, GitLab, cloud services, databases, production credentials, or external infrastructure.
 
@@ -195,9 +175,6 @@ function chineseBody(toolName: string): string {
 - \`/imfine init\`
 - \`/imfine run <需求文本|需求文件>\`
 - \`/imfine status\`
-- \`/imfine resume <run-id>\`
-- \`/imfine report <run-id>\`
-- \`/imfine archive <run-id>\`
 
 ## Runtime
 
@@ -209,30 +186,13 @@ function chineseBody(toolName: string): string {
 node ~/.imfine/runtime/dist/cli/imfine-runtime.js <command>
 \`\`\`
 
-## 调试 / 恢复 Runtime 命令
+## Runtime 边界
 
-- \`/imfine init\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js init\`。
-- \`/imfine run <需求文本|需求文件>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <需求文本|需求文件>\`。在新的空项目目录中会默认完成首个 delivery run。
-- \`/imfine run <需求文本|需求文件> --plan-only\`：当 Agent 明确只希望停在规划阶段时，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js run <需求文本|需求文件> --plan-only\`。
-- \`/imfine resume <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js resume <run-id>\`，推断下一步、持久化 queue，并路由可执行的 Agent 工作。
-- \`/imfine agents prepare <run-id>\`：仅在调试旧的模型执行桥接路径时执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents prepare <run-id>\`。它不是目标 harness 主路径。
-- \`/imfine orchestrate <run-id>\`：当前会话完成模型 Agent 工作后，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js orchestrate <run-id>\`，由 runtime 推进确定性动作。
-- \`/imfine plan <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js plan <run-id>\`。
-- \`/imfine worktree prepare <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js worktree prepare <run-id>\`。
-- \`/imfine patch collect <run-id> <task-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js patch collect <run-id> <task-id>\`。
-- \`/imfine patch validate <run-id> <task-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js patch validate <run-id> <task-id>\`。
-- \`/imfine verify <run-id> <task-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js verify <run-id> <task-id>\`。如果验证依赖模型判断而不是命令执行，QA Agent 做出结论后传入 \`--status pass|fail|blocked --summary "<摘要>"\`。
-- \`/imfine review <run-id> <task-id>\`：Reviewer Agent 做出结论后，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js review <run-id> <task-id> --status approved|changes_requested|blocked --summary "<摘要>"\`。
-- \`/imfine rework design <run-id> <task-id>\`：实现被设计阻塞时，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js rework design <run-id> <task-id> --summary "<摘要>"\`。
-- \`/imfine commit task <run-id> <task-id>\`：patch validation、QA pass、Review approved 之后执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js commit task <run-id> <task-id>\`。
-- \`/imfine commit run <run-id> --mode task|integration\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js commit run <run-id> --mode task|integration\`，按任务保留多个 commit 或创建一个集成 commit。
-- \`/imfine commit resolved <run-id> [task-id...]\`：Conflict Resolver 已经在 run worktree 合并完成后，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js commit resolved <run-id> [task-id...]\`。
-- \`/imfine push <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js push <run-id>\`，推送 \`origin imfine/<run-id>\` 并记录 push 证据。
-- \`/imfine archive <run-id>\`：执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js archive <run-id>\`，确认证据、生成归档报告并更新项目知识。
-- \`/imfine status\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js status\`。
-- \`/imfine report <run-id>\`：在项目根目录执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js report <run-id>\`。
-
-需要检查基础设施状态时，执行 \`node ~/.imfine/runtime/dist/cli/imfine-runtime.js doctor\`。
+- 只有 \`/imfine init\`、\`/imfine run\`、\`/imfine status\` 是对用户暴露的 slash command 主入口。
+- runtime JS 命令仍然存在，但属于内部确定性 action，不应作为正常使用路径展示给用户。
+- \`init\` 期间允许调用 runtime JS 完成当前项目环境检查和工作区物化。
+- 交付规划、编排推进、实现、QA、Review、fix loop、归档判断等应依赖当前大模型会话，通过多角色多 Agent + skill 执行。
+- \`agents prepare\`、\`agents execute\` 等 legacy bridge 只保留为内部 debug/testing 路径。
 
 ## Init 工作流
 
@@ -286,7 +246,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js library sync
 
 ## 已有项目自动编排
 
-\`/imfine run ...\` 和 \`/imfine orchestrate <run-id>\` 在当前 ${toolName} 大模型会话中对已有项目执行自主交付 loop。
+\`/imfine run ...\` 在当前 ${toolName} 大模型会话中对已有项目执行自主交付 loop。
 
 这个 loop 只自己执行确定性 runtime 动作：准备 worktree、在 Dev/Writer Agent 修改 worktree 后收集 patch、根据模型 handoff 记录 QA/Review、提交已批准 patch、可行时 push run 分支、归档已验证证据。产品、架构、实现、QA、Review 和冲突处理判断仍然由模型 Agent 负责。
 
@@ -336,7 +296,7 @@ QA 或 Review 连续失败时，应继续生成有边界的 fix task，由 Orche
 
 ## 阶段 8 Archive 边界
 
-\`/imfine archive\` 执行 Archive Agent 确认。需求、设计、任务、QA、Review、commit、push 证据完整时，runtime 写入 run archive、用户报告，并更新 \`.imfine/project\` 长期知识库。
+归档阶段执行 Archive Agent 确认。需求、设计、任务、QA、Review、commit、push 证据完整时，runtime 写入 run archive、用户报告，并更新 \`.imfine/project\` 长期知识库。
 
 如果证据缺失，归档会写入 blocked 报告和 handoff，但不会把未验证结论写入长期项目知识。
 

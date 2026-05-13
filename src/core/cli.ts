@@ -8,7 +8,6 @@ import { commitResolvedRun, commitRun, commitTask, pushRun, type CommitMode } fr
 import { initProject } from "./init.js";
 import { install } from "./install.js";
 import { listLibrary, parseKind, readLibrary, syncLibrary } from "./library.js";
-import { runNewProjectAgentPlanning } from "./new-project-agent-planning.js";
 import { resumeRun } from "./orchestrator.js";
 import { planRun, validateRunTaskGraph } from "./plan.js";
 import { resolveCwd } from "./paths.js";
@@ -16,6 +15,7 @@ import { requestDesignRework, type ReviewDecision, type VerificationStatus, revi
 import { requestTaskPlannerReplan } from "./replan.js";
 import { recoverTask } from "./recovery.js";
 import { createDeliveryRun } from "./run.js";
+import { summarizeAutoOrchestratorSession, summarizeOrchestratorSession } from "./session-summary.js";
 import { readReport, status } from "./status.js";
 import { collectPatch, prepareWorktrees, validatePatch } from "./worktree.js";
 
@@ -26,48 +26,12 @@ Usage:
   npx github:<owner>/<repo> install [--target codex|claude|all] [--lang zh|en] [--dry-run] [--json]
   ${program} init [--cwd path] [--json]
   ${program} run <requirement text|requirement-file> [--plan-only] [--max-iterations n] [--cwd path] [--json]
-  ${program} resume <run-id> [--cwd path] [--json]
-  ${program} orchestrate <run-id> [--executor command] [--max-iterations n] [--dry-run] [--cwd path] [--json]
-  ${program} plan <run-id> [--cwd path] [--json]
-  ${program} plan validate <run-id> [--cwd path] [--json]
-  ${program} task graph validate <run-id> [--cwd path] [--json]
-  ${program} worktree prepare <run-id> [--cwd path] [--json]
-  ${program} patch collect <run-id> <task-id> [--cwd path] [--json]
-  ${program} patch validate <run-id> <task-id> [--cwd path] [--json]
-  ${program} verify <run-id> <task-id> [--status pass|fail|blocked] [--summary text] [--cwd path] [--json]
-  ${program} review <run-id> <task-id> --status approved|changes_requested|blocked [--summary text] [--cwd path] [--json]
-  ${program} rework design <run-id> <task-id> [--summary text] [--cwd path] [--json]
-  ${program} task-planner replan <run-id> [--summary text] [--cwd path] [--json]
-  ${program} recover task <run-id> <task-id> [--cwd path] [--json]
-  ${program} commit task <run-id> <task-id> [--cwd path] [--json]
-  ${program} commit run <run-id> [--mode task|integration] [--cwd path] [--json]
-  ${program} commit resolved <run-id> [task-id...] [--cwd path] [--json]
-  ${program} push <run-id> [--cwd path] [--json]
-  ${program} archive <run-id> [--cwd path] [--json]
-  ${program} doctor [--cwd path] [--json]
   ${program} status [--cwd path] [--json]
-  ${program} report <run-id> [--cwd path] [--json]
-  ${program} agents list|show <id> [--json]
-  ${program} agents prepare <run-id> [--cwd path] [--json]       # legacy debug bridge only
-  ${program} agents execute <run-id> [--executor command] [--limit n] [--dry-run] [--cwd path] [--json]  # legacy test bridge only
-  ${program} skills list|show <id> [--json]
-  ${program} templates list|show <id> [--json]
-  ${program} workflows list|show <id> [--json]
-  ${program} library sync [--cwd path] [--json]
   ${program} help
 
-Phase 1 implements installation, workspace initialization, and infrastructure doctor checks.
-Phase 2 adds source-level imfine agents, skills, and artifact templates.
-Phase 3 adds requirement-to-design delivery run creation.
-Phase 4 adds task graph and execution planning.
-Phase 5 adds git worktree preparation and patch collection/validation.
-Phase 6 adds QA verification evidence, reviewer decisions, repeated fix-task creation, and design rework routing.
-Phase 7 adds task/integration commits and push evidence for origin imfine/<run-id>.
-Phase 8 adds Archive Agent confirmation, run archive reports, user reports, and long-term project knowledge updates.
-Phase 9 keeps new-project runs at waiting_for_model until Architect and Task Planner model outputs are written back.
-Orchestrator recovery adds resume <run-id>, queue persistence, infrastructure gate persistence, agent run registry, parallel plan, and Conflict Resolver routing.
-True harness orchestration now requires the real provider session to declare IMFINE_PROVIDER=codex|claude and IMFINE_SUBAGENT_SUPPORTED=true. Without native subagent capability, resume/orchestrate is blocked on purpose.
-Legacy bridge commands add agents prepare to create debug-only skill-backed prompt packages. agents execute --executor remains an internal/testing bridge for non-interactive runners and is not part of the true harness path.
+Public slash-command surface is intentionally limited to init, run, and status.
+All planning, orchestration, QA, review, commit, push, archive, recovery, and bridge commands remain internal runtime actions or debug/testing hooks.
+Outside init-time environment inspection and deterministic runtime materialization, delivery work is expected to be handled by model-led multi-role multi-agent + skill execution in the current provider session.
 Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables Chinese /imfine entries for both Codex and Claude.
 `;
 }
@@ -111,6 +75,12 @@ function print(value: unknown, json: boolean, textFormatter: () => string): void
   }
 }
 
+function installInvocationAllowed(): boolean {
+  const userAgent = process.env.npm_config_user_agent || "";
+  const execPath = process.env.npm_execpath || "";
+  return /\bnpx\b/i.test(userAgent) || execPath.length > 0;
+}
+
 export async function runCli(program: string, argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const command = args.positional[0] || "help";
@@ -124,6 +94,9 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     }
 
     if (command === "install") {
+      if (!installInvocationAllowed()) {
+        throw new Error("Install entry is only supported through npx github:<owner>/<repo> install ...");
+      }
       const result = install(readStringFlag(args, "target"), readStringFlag(args, "lang"), readBooleanFlag(args, "dryRun"));
       print(result, json, () => formatInstall(result));
       return;
@@ -137,23 +110,16 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
 
     if (command === "run") {
       const result = createDeliveryRun(cwd, args.positional.slice(1));
-      if (result.projectKind === "new_project") {
-        const planning = runNewProjectAgentPlanning(cwd, result, {
-          executor: readStringFlag(args, "executor"),
-          dryRun: readBooleanFlag(args, "dryRun")
-        });
-        print(planning, json, () => `new-project agent planning: ${planning.status}\nreport: ${planning.report}\n`);
-        return;
-      }
       if (readBooleanFlag(args, "planOnly")) {
-        print(result, json, () => formatDeliveryRun(result));
+        const orchestration = summarizeOrchestratorSession(cwd, resumeRun(cwd, result.runId));
+        print(orchestration, json, () => formatOrchestrator(orchestration));
         return;
       }
-      const auto = await runAutoOrchestrator(cwd, result.runId, {
+      const auto = summarizeAutoOrchestratorSession(cwd, await runAutoOrchestrator(cwd, result.runId, {
         executor: readStringFlag(args, "executor"),
         dryRun: readBooleanFlag(args, "dryRun"),
         maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
-      });
+      }));
       print(auto, json, () => formatAutoOrchestrator(auto));
       return;
     }
@@ -161,11 +127,11 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     if (command === "orchestrate") {
       const runId = args.positional[1];
       if (!runId) throw new Error("Expected orchestrate <run-id>.");
-      const result = await runAutoOrchestrator(cwd, runId, {
+      const result = summarizeAutoOrchestratorSession(cwd, await runAutoOrchestrator(cwd, runId, {
         executor: readStringFlag(args, "executor"),
         dryRun: readBooleanFlag(args, "dryRun"),
         maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
-      });
+      }));
       print(result, json, () => formatAutoOrchestrator(result));
       return;
     }
@@ -385,7 +351,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     if (command === "resume") {
       const runId = args.positional[1];
       if (!runId) throw new Error("Expected resume <run-id>.");
-      const result = resumeRun(cwd, runId);
+      const result = summarizeOrchestratorSession(cwd, resumeRun(cwd, runId));
       print(result, json, () => formatOrchestrator(result));
       return;
     }

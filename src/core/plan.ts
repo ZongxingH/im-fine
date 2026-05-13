@@ -183,6 +183,25 @@ function createTaskGraph(runDir: string, metadata: RunMetadata): TaskGraph {
   };
 }
 
+function graphTaskSummary(graph: TaskGraph): Array<{ id: string; title: string; type: string; write_scope: string[]; acceptance: string[] }> {
+  return graph.tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    type: task.type,
+    write_scope: task.write_scope,
+    acceptance: task.acceptance
+  }));
+}
+
+function writeSpecDeltaTasks(runDir: string, graph: TaskGraph): string {
+  const file = path.join(runDir, "spec-delta", "tasks.md");
+  writeText(file, `# Task Delta
+
+${graphTaskSummary(graph).map((task) => `## ${task.id}: ${task.title}\n\n- type: ${task.type}\n- write scope: ${task.write_scope.join(", ")}\n- acceptance: ${task.acceptance.join("; ")}`).join("\n\n")}
+`);
+  return file;
+}
+
 function scopeOverlaps(left: string, right: string): boolean {
   const normalize = (value: string) => value.replace(/\/\*\*$/, "").replace(/\/\*$/, "");
   const a = normalize(left);
@@ -281,16 +300,13 @@ function writeTaskPlans(cwd: string, runDir: string, graph: TaskGraph, artifacts
   }
 }
 
-export function planRun(cwd: string, runId: string): PlanResult {
-  const runDir = ensureRunDir(cwd, runId);
-  const metadata = readJson<RunMetadata>(path.join(runDir, "run.json"));
-  if (metadata.project_kind === "new_project") {
-    throw new Error("New-project planning is model-owned. Generate Architect and Task Planner outputs instead of running deterministic plan.");
-  }
-  const graph = createTaskGraph(runDir, metadata);
+function materializePlanningFiles(cwd: string, runId: string, runDir: string, graph: TaskGraph): PlanResult {
   const validation = validateTaskGraph(graph);
-  const artifacts: string[] = [];
+  if (!validation.passed) {
+    throw new Error(`Task graph validation failed for run ${runId}: ${validation.errors.join("; ")}`);
+  }
 
+  const artifacts: string[] = [];
   const planningDir = path.join(runDir, "planning");
   const taskGraphFile = path.join(planningDir, "task-graph.json");
   const ownershipFile = path.join(planningDir, "ownership.json");
@@ -310,14 +326,40 @@ export function planRun(cwd: string, runId: string): PlanResult {
   }, null, 2)}\n`);
   artifacts.push(ownershipFile);
 
-  writeText(executionPlanFile, `# Execution Plan\n\n## Strategy\n\n${graph.strategy}\n\n## Parallel Groups\n\n${validation.parallelGroups.length > 0 ? validation.parallelGroups.map((group) => `- ${group.join(", ")}`).join("\n") : "- none"}\n\n## Serial Tasks\n\n${validation.serialTasks.length > 0 ? validation.serialTasks.map((task) => `- ${task}`).join("\n") : "- none"}\n\n## Parallelism Evidence\n\n- serial_reason: ${validation.serialReason || "none"}\n- replan_recommended: ${validation.replanRecommended}\n\n## Runtime Validation\n\n- passed: ${validation.passed}\n${validation.errors.map((error) => `- ${error}`).join("\n")}\n`);
+  writeText(executionPlanFile, `# Execution Plan
+
+## Strategy
+
+${graph.strategy}
+
+## Parallel Groups
+
+${validation.parallelGroups.length > 0 ? validation.parallelGroups.map((group) => `- ${group.join(", ")}`).join("\n") : "- none"}
+
+## Serial Tasks
+
+${validation.serialTasks.length > 0 ? validation.serialTasks.map((task) => `- ${task}`).join("\n") : "- none"}
+
+## Parallelism Evidence
+
+- serial_reason: ${validation.serialReason || "none"}
+- replan_recommended: ${validation.replanRecommended}
+
+## Runtime Validation
+
+- passed: ${validation.passed}
+${validation.errors.map((error) => `- ${error}`).join("\n")}
+`);
   artifacts.push(executionPlanFile);
 
-  writeText(commitPlanFile, `# Commit Plan\n\n${graph.tasks.map((task) => `## ${task.id}\n\n- Mode: ${task.commit.mode}\n- Message: ${task.commit.message}`).join("\n\n")}\n`);
+  writeText(commitPlanFile, `# Commit Plan
+
+${graph.tasks.map((task) => `## ${task.id}\n\n- Mode: ${task.commit.mode}\n- Message: ${task.commit.message}`).join("\n\n")}
+`);
   artifacts.push(commitPlanFile);
 
   writeTaskPlans(cwd, runDir, graph, artifacts);
-
+  artifacts.push(writeSpecDeltaTasks(runDir, graph));
   assertTransitionAccepted(transitionRunState(cwd, runId, "planned", { planned_at: new Date().toISOString() }), `plan run ${runId}`);
 
   return {
@@ -330,4 +372,24 @@ export function planRun(cwd: string, runId: string): PlanResult {
     validation,
     artifacts
   };
+}
+
+export function materializeModelPlan(cwd: string, runId: string): PlanResult {
+  const runDir = ensureRunDir(cwd, runId);
+  const graphFile = path.join(runDir, "planning", "task-graph.json");
+  if (!fs.existsSync(graphFile)) {
+    throw new Error(`Missing model-produced task graph for run: ${runId}`);
+  }
+  const graph = readJson<TaskGraph>(graphFile);
+  return materializePlanningFiles(cwd, runId, runDir, graph);
+}
+
+export function planRun(cwd: string, runId: string): PlanResult {
+  const runDir = ensureRunDir(cwd, runId);
+  const metadata = readJson<RunMetadata>(path.join(runDir, "run.json"));
+  if (metadata.project_kind === "new_project") {
+    throw new Error("New-project planning is model-owned. Generate Architect and Task Planner outputs instead of running deterministic plan.");
+  }
+  const graph = createTaskGraph(runDir, metadata);
+  return materializePlanningFiles(cwd, runId, runDir, graph);
 }

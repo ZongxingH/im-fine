@@ -3,7 +3,6 @@ import path from "node:path";
 import { doctor } from "./doctor.js";
 import { ensureDir, writeText } from "./fs.js";
 import { initProject } from "./init.js";
-import { planRun, type PlanResult } from "./plan.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 
 export interface DeliveryRunResult {
@@ -17,8 +16,7 @@ export interface DeliveryRunResult {
     value: string;
   };
   artifacts: string[];
-  status: "planned" | "waiting_for_model";
-  plan?: PlanResult;
+  status: "waiting_for_model";
 }
 
 interface Evidence {
@@ -329,36 +327,21 @@ ${lines(analysis.unknowns)}
 
 ${readyRoles.map((role) => `- ${role}`).join("\n")}
 `, artifacts);
-  if (analysis.kind === "new_project") {
-    writeArtifact(path.join(runDir, "spec-delta", "tasks.md"), `# Task Delta
+  writeArtifact(path.join(runDir, "spec-delta", "tasks.md"), `# Task Delta
 
-- pending: Task Planner Agent must create the first task graph for this new project.
+- pending: Task Planner Agent must create the first task graph for this ${analysis.kind === "new_project" ? "new project" : "existing project run"}.
 - required outputs:
   - planning/task-graph.json
   - planning/ownership.json
   - planning/execution-plan.md
   - planning/commit-plan.md
 `, artifacts);
-    return {
-      runId,
-      cwd,
-      workspace,
-      runDir,
-      projectKind: analysis.kind,
-      source: sourceInfo,
-      artifacts,
-      status: "waiting_for_model"
-    };
-  }
-
-  const plan = planRun(cwd, runId);
-  artifacts.push(...plan.artifacts);
-  const plannedGraph = JSON.parse(fs.readFileSync(plan.taskGraph, "utf8")) as { tasks: Array<{ id: string; title: string; type: string; write_scope: string[]; acceptance: string[] }> };
-  writeArtifact(path.join(runDir, "spec-delta", "tasks.md"), `# Task Delta
-
-${plannedGraph.tasks.map((task) => `## ${task.id}: ${task.title}\n\n- type: ${task.type}\n- write scope: ${task.write_scope.join(", ")}\n- acceptance: ${task.acceptance.join("; ")}`).join("\n\n")}
-`, artifacts);
-
+  assertTransitionAccepted(transitionRunState(cwd, runId, "waiting_for_model", {
+    waiting_for_model_at: new Date().toISOString(),
+    waiting_for_model_reason: analysis.kind === "new_project"
+      ? "new project requires Architect and Task Planner model outputs before runtime planning"
+      : "existing project requires discovery and Task Planner model outputs before runtime planning"
+  }), `run ${runId} waiting for model`);
   return {
     runId,
     cwd,
@@ -367,7 +350,6 @@ ${plannedGraph.tasks.map((task) => `## ${task.id}: ${task.title}\n\n- type: ${ta
     projectKind: analysis.kind,
     source: sourceInfo,
     artifacts,
-    status: "planned",
-    plan
+    status: "waiting_for_model"
   };
 }
