@@ -26,10 +26,13 @@ imfine 当前是一套面向真实软件项目交付的项目级自主多 Agent 
   -> 物化 request / analysis / orchestration 上下文
   -> 当前会话中的 orchestrator agent 读取上下文
   -> orchestrator agent 写出 orchestrator-session.json
-  -> runtime 校验并物化 planning / dispatch / execution 产物
+  -> runtime 读取并校验 orchestrator-session.json
+  -> runtime 物化 planning / dispatch / execution 产物
   -> auto orchestrator 按 agent 决策推进执行
   -> archive 写出报告和 true harness evidence
 ```
+
+如果 `orchestrator-session.json` 尚未存在，run 会停在 `waiting_for_agent_output`，等待当前会话中的 orchestrator agent 补齐决策；runtime 不会自动退化为单 Agent 全流程。
 
 当前实现同时适用于两类项目：
 
@@ -47,6 +50,8 @@ imfine 当前是一套面向真实软件项目交付的项目级自主多 Agent 
 - 不让 runtime 代替 orchestrator agent 推导任务、角色或并行策略
 - 不让 planning 产物伪装成 execution 证据
 - 不把任务总结落成 `.imfine` 文档产物
+- 不承诺仓库内所有 runtime 子命令都是用户公开接口
+- 不承诺没有 orchestrator session 时自动继续执行
 
 ## 3. 外部项目能力吸收策略
 
@@ -206,6 +211,9 @@ Claude:
         orchestrator-session.json
         state.json
         queue.json
+        state-transitions.jsonl
+        action-ledger.json
+        checkpoints/
         dispatch-contracts.json
         agent-runs.json
         parallel-plan.json
@@ -220,13 +228,14 @@ Claude:
         commit-plan.md
       agents/
         <agent-id>/
-          execution/
-            model-input.md
-            agent-contract.md
-            skill-bundle.md
-            execution.json
-            execution-status.json
+          input.md
+          output.md
+          commands.md
+          status.json
+          patch.diff
           handoff.json
+          execution/
+            execution-status.json
       evidence/
       worktrees/
         index.json
@@ -262,8 +271,16 @@ Claude:
 - `commit`
 - `push`
 - `archive`
+- `agents`
+- `skills`
+- `templates`
+- `workflows`
+- `library`
+- `resume`
 
 这些命令属于 runtime 内部动作或测试分发器，不属于用户公开契约。
+
+`--plan-only` 也走 `/imfine run` 的同一条主路径：它只创建 run、物化上下文并返回当前 orchestrator 快照，不切换到另一套 planning runtime。
 
 ## 7. init 和基础设施检查
 
@@ -352,9 +369,9 @@ Claude:
 同时给出：
 
 - `status`
-- `summary`
 - `next_actions`
 - `agent_runs`
+- 可选的 `summary`
 
 runtime 不再替它推导 workflow、role、action 或并行边界。
 
@@ -441,6 +458,7 @@ runtime 不再替它推导 workflow、role、action 或并行边界。
 
 - 判断是否满足提交条件
 - 输出 commit 准备结论
+- 不直接执行 git commit；确定性 git 操作由 runtime 执行
 
 ### 9.13 Archive / Risk Reviewer / Technical Writer / Project Knowledge Updater
 
@@ -508,6 +526,8 @@ runtime 只消费这些边界，不推导新的并行波次。
 
 是否进入 commit / push 阶段，由 orchestrator agent 和 handoff 结果决定；具体 git 操作由 runtime 执行。
 
+merge-agent 必须声明合并结果，runtime 只消费已声明的合并事实并执行后续确定性 commit / push。
+
 ## 12. 新项目流程
 
 新项目和已有项目使用同一条主路径。
@@ -569,6 +589,8 @@ agent 负责：
 
 高层决策和原生子 Agent 调度都只来自 agent，runtime 只负责确定性后端动作。
 
+如果当前 provider 会话不能启动独立原生子 Agent，orchestrator agent 应把 run 标记为 `blocked`，而不是静默压缩成单会话代偿路径。
+
 ## 15. Gate 体系
 
 ### 15.1 Orchestrator Gate
@@ -579,6 +601,8 @@ agent 负责：
 - 是否显式声明 `decision_source=orchestrator_agent`
 - 是否显式声明 `execution_mode=true_harness`
 - 是否显式声明 `harness_classification=true_harness`
+- 是否声明有效 run status
+- 是否提供 `next_actions` 与 `agent_runs` 数组
 
 不满足时，run 保持在 `waiting_for_agent_output` 或进入 `blocked`。
 
@@ -597,6 +621,8 @@ agent 负责：
 - task graph 与 ownership
 - patch 校验结果
 - QA / review / archive handoff 结果
+- commit / push / archive evidence
+- `true-harness-evidence` 对显式声明、dispatch、wave、handoff 的综合判断
 
 这些 gate 只表达执行前置条件，不表达第二套运行语义。
 
@@ -642,6 +668,13 @@ archive 的最终状态只有：
 - harness classification
 - true harness evidence 结论
 
+true harness 不是 runtime 猜出来的，而是以下事实共同成立：
+
+- orchestrator agent 显式声明 `true_harness`
+- 存在 dispatch contract
+- 存在真实 execution wave
+- 存在 agent handoff evidence chain
+
 ## 18. 当前实现摘要
 
 当前实现的关键事实是：
@@ -651,11 +684,15 @@ archive 的最终状态只有：
 - 唯一执行模式是 `true_harness`
 - 唯一编排决策源是当前会话中的 `orchestrator agent`
 - `run` 创建后固定进入 `waiting_for_agent_output`
+- `--plan-only` 不走另一套 planning 路径，只返回当前 run 的 orchestrator 快照
+- `doctor` 是 advisory fact source，不再裁决主路径
 - runtime 只消费 `orchestrator-session.json`
+- runtime 不替代当前会话发起原生子 Agent 调度
 - planning 产物与 execution 证据严格分层
 - `parallel-plan.json` 只表达规划
 - `parallel-execution.json` 只表达真实执行
 - agent summary 只输出到当前会话
+- fix loop 状态已经进入 run 状态机，用于恢复、失败追踪和 archive 前审计
 - true harness evidence 只按显式声明与真实 dispatch / wave / handoff 事实判断
 
 ## 19. 已确认实现决策
@@ -664,6 +701,8 @@ archive 的最终状态只有：
 - `decision_source` 必须是 `orchestrator_agent`
 - `execution_mode` 必须是 `true_harness`
 - `harness_classification` 必须是 `true_harness`
+- 当前实现不支持 `single_session_fallback` 作为第二执行模式
+- debug / internal runtime 命令不构成用户公开工作流
 - `plan` 不属于公开命令
 - runtime 不再自己生成 task graph 主语义
 - task 终态是 `completed`
@@ -676,10 +715,17 @@ archive 的最终状态只有：
 - Superpowers：clarify、plan、execute、review、debug、archive 工作纪律
 - BMAD：多角色 agent 体系与项目上下文工程
 - 当前仓库代码实现：
+  - `src/core/cli.ts`
   - `src/core/run.ts`
   - `src/core/orchestrator.ts`
   - `src/core/auto-orchestrator.ts`
   - `src/core/plan.ts`
+  - `src/core/dispatch.ts`
   - `src/core/archive.ts`
   - `src/core/true-harness-evidence.ts`
   - `src/core/state-machine.ts`
+  - `src/core/quality.ts`
+  - `src/core/worktree.ts`
+  - `src/core/gitflow.ts`
+  - `src/core/doctor.ts`
+  - `src/core/session-summary.ts`

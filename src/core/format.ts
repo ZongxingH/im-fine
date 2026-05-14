@@ -78,6 +78,7 @@ export function formatStatus(result: StatusResult): string {
     `current run status: ${result.currentRunStatus || "none"}`,
     `current run execution mode: ${result.currentRunExecutionMode || "none"}`,
     `current run branch: ${result.currentRunBranch || "none"}`,
+    `runs: ${result.runs.length === 0 ? "none" : result.runs.map((run) => `${run.runId}(${run.relation}:${run.status})`).join(", ")}`,
     `reports: ${result.reports.length === 0 ? "none" : result.reports.join(", ")}`,
     ""
   ].join("\n");

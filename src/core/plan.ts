@@ -6,7 +6,7 @@ import { assertTransitionAccepted, transitionRunState, transitionTaskState } fro
 export interface TaskGraphTask {
   id: string;
   title: string;
-  type: "dev" | "qa" | "review" | "archive" | "docs";
+  type: "dev" | "docs" | "qa" | "qa_gate" | "review" | "review_gate" | "archive" | "delivery_gate";
   depends_on: string[];
   read_scope: string[];
   write_scope: string[];

@@ -189,6 +189,19 @@ function writeOrchestratorSession(runDir, runId) {
         writeScope: [".imfine/runs/" + runId + "/agents/project-knowledge-updater/**"],
         dependsOn: ["runtime-push-run"],
         parallelGroup: "archive-prep"
+      },
+      {
+        id: "archive",
+        role: "archive",
+        status: "ready",
+        workflowState: "ready_to_archive",
+        skills: ["archive"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "archive", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**"],
+        writeScope: [".imfine/runs/" + runId + "/agents/archive/**", ".imfine/runs/" + runId + "/archive/**"],
+        dependsOn: ["agent-technical-writer", "agent-project-knowledge-updater"],
+        parallelGroup: "archive"
       }
     ]
   }, null, 2)}\n`);
@@ -209,6 +222,7 @@ function writeQaHandoff(runDir, runId) {
   writeJson(file, {
     run_id: runId,
     task_id: "T1",
+    role: "qa",
     from: "qa",
     to: "reviewer",
     status: "pass",
@@ -225,10 +239,12 @@ function writeReviewerHandoff(runDir, runId) {
   writeJson(file, {
     run_id: runId,
     task_id: "T1",
+    role: "reviewer",
     from: "reviewer",
     to: "orchestrator",
     status: "approved",
     summary: "review approved",
+    commands: [],
     findings: [],
     evidence: [file],
     next_state: "committing"
@@ -239,11 +255,14 @@ function writeCommitterHandoff(runDir, runId) {
   const file = path.join(runDir, "agents", "committer", "handoff.json");
   writeJson(file, {
     run_id: runId,
+    task_id: "run",
+    role: "committer",
     from: "committer",
     to: "orchestrator",
     status: "ready",
     summary: "commit approved",
     commit_mode: "task",
+    commands: [],
     evidence: [file],
     next_state: "committing"
   });
@@ -254,6 +273,7 @@ function writeMergeAgentHandoff(runDir, runId) {
   writeJson(file, {
     run_id: runId,
     task_id: "T1",
+    role: "merge-agent",
     from: "merge-agent",
     to: "committer",
     status: "ready",
@@ -269,11 +289,14 @@ function writeTechnicalWriterHandoff(runDir, runId) {
   const file = path.join(runDir, "agents", "technical-writer", "handoff.json");
   writeJson(file, {
     run_id: runId,
+    task_id: "run",
+    role: "technical-writer",
     from: "technical-writer",
     to: "archive",
     status: "ready",
     summary: "final summary ready",
     docs_changed: [],
+    commands: [],
     evidence: [file],
     reason: "archive summary prepared",
     next_state: "archiving"
@@ -284,10 +307,13 @@ function writeProjectKnowledgeHandoff(runDir, runId) {
   const file = path.join(runDir, "agents", "project-knowledge-updater", "handoff.json");
   writeJson(file, {
     run_id: runId,
+    task_id: "run",
+    role: "project-knowledge-updater",
     from: "project-knowledge-updater",
     to: "archive",
     status: "ready",
     summary: "project knowledge ready",
+    commands: [],
     evidence: [file],
     updated_files: [],
     next_state: "completed"
@@ -298,10 +324,13 @@ function writeArchiveHandoff(runDir, runId) {
   const file = path.join(runDir, "agents", "archive", "handoff.json");
   writeJson(file, {
     run_id: runId,
+    task_id: "run",
+    role: "archive",
     from: "archive",
     to: "orchestrator",
     status: "completed",
     summary: "archive completed",
+    commands: [],
     archive_report: path.join(runDir, "archive", "archive-report.md"),
     project_updates: [],
     blocked_items: [],
@@ -315,7 +344,7 @@ const created = JSON.parse(run(["run", "Implement the requested change", "--plan
 writeTaskGraph(created.runDir, created.runId);
 writeOrchestratorSession(created.runDir, created.runId);
 
-let auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+let auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 assert.ok(auto.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
 
@@ -323,28 +352,28 @@ const taskWorktree = readWorktreePath(created.runDir, "T1");
 fs.writeFileSync(path.join(taskWorktree, "src", "index.js"), "export const value = 2;\n");
 fs.writeFileSync(path.join(taskWorktree, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 writeQaHandoff(created.runDir, created.runId);
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 writeReviewerHandoff(created.runDir, created.runId);
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 fs.writeFileSync(path.join(project, "src", "index.js"), "export const value = 2;\n");
 fs.writeFileSync(path.join(project, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
 writeMergeAgentHandoff(created.runDir, created.runId);
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 writeCommitterHandoff(created.runDir, created.runId);
 writeTechnicalWriterHandoff(created.runDir, created.runId);
 writeProjectKnowledgeHandoff(created.runDir, created.runId);
 writeArchiveHandoff(created.runDir, created.runId);
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "completed");
 assert.equal(auto.lastOrchestration.executionMode, "true_harness");
 assert.ok(auto.sessionSummary.orchestrator.summary.includes("completed"));
@@ -363,7 +392,7 @@ assert.ok(Array.isArray(parallelExecution.wave_history));
 assert.ok(parallelExecution.wave_history.length > 0);
 
 const dispatchContracts = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
-assert.ok(dispatchContracts.contracts.length >= 6);
+assert.ok(dispatchContracts.contracts.length >= 7);
 
 const session = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8"));
 assert.equal(session.decision_source, "orchestrator_agent");
@@ -375,11 +404,43 @@ assert.equal(evidence.harness_classification, "true_harness");
 assert.equal(evidence.orchestrator_declaration.passed, true);
 assert.equal(evidence.true_harness_passed, true);
 assert.ok(evidence.parallel_execution.wave_count > 0);
+assert.equal(evidence.parallel_execution.all_contracts_have_completed_wave, true);
+assert.deepEqual(evidence.parallel_execution.missing_completed_wave_contracts, []);
+assert.equal(evidence.handoff_validation.required_agent_count, dispatchContracts.contracts.length);
+assert.equal(evidence.handoff_validation.valid_agent_count, dispatchContracts.contracts.length);
 assert.ok(evidence.handoff_evidence_chain.length > 0);
 
 const archive = JSON.parse(fs.readFileSync(path.join(runDir, "agents", "archive", "status.json"), "utf8"));
 assert.equal(archive.status, "completed");
 assert.ok(fs.existsSync(path.join(runDir, "archive", "archive-report.md")));
 assert.ok(fs.existsSync(path.join(project, ".imfine", "reports", `${created.runId}.md`)));
+
+for (const contract of dispatchContracts.contracts) {
+  const candidates = [
+    path.join(runDir, "agents", contract.id, "handoff.json"),
+    contract.task_id ? path.join(runDir, "agents", contract.task_id, "handoff.json") : undefined,
+    contract.task_id ? path.join(runDir, "agents", `${contract.role}-${contract.task_id}`, "handoff.json") : undefined,
+    path.join(runDir, "agents", contract.role, "handoff.json")
+  ].filter(Boolean);
+  const file = candidates.find((candidate) => fs.existsSync(candidate));
+  assert.ok(file, `missing handoff for ${contract.id}`);
+  const handoff = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(handoff.role, contract.role);
+  assert.equal(handoff.task_id, contract.task_id || "run");
+  assert.ok(Array.isArray(handoff.commands));
+  assert.ok(Array.isArray(handoff.evidence));
+  assert.equal(typeof handoff.next_state, "string");
+}
+
+const finalGates = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "final-gates.json"), "utf8"));
+assert.equal(finalGates.generated_by, "imfine-runtime");
+assert.equal(finalGates.source, "derived_from_standard_evidence");
+assert.equal(finalGates.gates.qa, "pass");
+assert.equal(finalGates.gates.review, "pass");
+assert.equal(finalGates.gates.committer, "pass");
+assert.equal(finalGates.gates.archive, "pass");
+for (const id of ["run-level.qa-evidence", "run-level.review-evidence", "run-level.committer-handoff", "run-level.archive-status", "run-level.archive-handoff"]) {
+  assert.ok(finalGates.checks.some((check) => check.id === id && check.status === "pass"), `missing final gate check ${id}`);
+}
 
 console.log("harness acceptance ok");

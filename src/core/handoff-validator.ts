@@ -1,4 +1,18 @@
-export type HandoffRole = "dev" | "qa" | "reviewer" | "merge-agent" | "archive" | "committer" | "risk-reviewer" | "technical-writer" | "project-knowledge-updater";
+export type HandoffRole =
+  | "architect"
+  | "task-planner"
+  | "intake"
+  | "project-analyzer"
+  | "product-planner"
+  | "dev"
+  | "qa"
+  | "reviewer"
+  | "merge-agent"
+  | "archive"
+  | "committer"
+  | "risk-reviewer"
+  | "technical-writer"
+  | "project-knowledge-updater";
 
 export interface HandoffValidationResult {
   passed: boolean;
@@ -48,18 +62,20 @@ function statusField(input: JsonObject, allowed: string[], errors: string[]): st
 function checkRunAndTask(input: JsonObject, runId: string, taskId: string | undefined, errors: string[]): void {
   const handoffRunId = stringField(input, "run_id", errors);
   if (handoffRunId && handoffRunId !== runId) errors.push(`run_id mismatch: ${handoffRunId}`);
-  if (taskId) {
-    const handoffTaskId = optionalStringField(input, "task_id", errors);
-    if (handoffTaskId && handoffTaskId !== taskId) errors.push(`task_id mismatch: ${handoffTaskId}`);
-  }
+  const expectedTaskId = taskId || "run";
+  const handoffTaskId = stringField(input, "task_id", errors);
+  if (handoffTaskId && handoffTaskId !== expectedTaskId) errors.push(`task_id mismatch: ${handoffTaskId}`);
 }
 
 function requireCommon(input: JsonObject, runId: string, taskId: string | undefined, errors: string[]): void {
   checkRunAndTask(input, runId, taskId, errors);
+  stringField(input, "role", errors);
   stringField(input, "from", errors);
   stringField(input, "to", errors);
   stringField(input, "summary", errors);
+  arrayField(input, "commands", errors);
   arrayField(input, "evidence", errors);
+  stringField(input, "next_state", errors);
 }
 
 export function validateHandoff(role: HandoffRole, value: unknown, runId: string, taskId?: string): HandoffValidationResult {
@@ -68,50 +84,53 @@ export function validateHandoff(role: HandoffRole, value: unknown, runId: string
 
   requireCommon(value, runId, taskId, errors);
 
-  if (role === "dev") {
+  const from = typeof value.from === "string" ? value.from : "";
+  if (from && from !== role) errors.push(`from mismatch: ${from}`);
+  const handoffRole = typeof value.role === "string" ? value.role : "";
+  if (handoffRole && handoffRole !== role) errors.push(`role mismatch: ${handoffRole}`);
+
+  if (role === "architect") {
+    statusField(value, ["ready", "blocked", "needs_design_update"], errors);
+    arrayField(value, "design_files", errors);
+  } else if (role === "task-planner") {
+    statusField(value, ["ready", "blocked", "needs_replan"], errors);
+    stringField(value, "task_graph", errors);
+    arrayField(value, "parallel_groups", errors);
+    arrayField(value, "serial_tasks", errors);
+  } else if (role === "intake" || role === "project-analyzer" || role === "product-planner") {
+    statusField(value, ["ready", "blocked"], errors);
+  } else if (role === "dev") {
     statusField(value, ["ready", "blocked"], errors);
     arrayField(value, "files_changed", errors);
-    arrayField(value, "commands", errors);
     arrayField(value, "verification", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "qa") {
     statusField(value, ["pass", "fail", "blocked"], errors);
-    arrayField(value, "commands", errors);
     arrayField(value, "failures", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "reviewer") {
     statusField(value, ["approved", "changes_requested", "blocked"], errors);
     arrayField(value, "findings", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "merge-agent") {
     statusField(value, ["ready", "blocked"], errors);
     arrayField(value, "merged_files", errors);
-    arrayField(value, "commands", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "archive") {
     statusField(value, ["completed", "blocked"], errors);
     stringField(value, "archive_report", errors);
     arrayField(value, "project_updates", errors);
     arrayField(value, "blocked_items", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "committer") {
     statusField(value, ["ready", "blocked"], errors);
     stringField(value, "commit_mode", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "risk-reviewer") {
     statusField(value, ["ready", "blocked", "needs_replan"], errors);
     arrayField(value, "risks", errors);
     arrayField(value, "required_changes", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "technical-writer") {
     statusField(value, ["ready", "not_needed", "blocked"], errors);
     arrayField(value, "docs_changed", errors);
     stringField(value, "reason", errors);
-    stringField(value, "next_state", errors);
   } else if (role === "project-knowledge-updater") {
     statusField(value, ["ready", "blocked"], errors);
     arrayField(value, "updated_files", errors);
-    stringField(value, "next_state", errors);
   }
 
   return { passed: errors.length === 0, errors };

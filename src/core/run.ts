@@ -4,7 +4,7 @@ import { doctor } from "./doctor.js";
 import type { ExecutionMode } from "./execution-mode.js";
 import { ensureDir, writeText } from "./fs.js";
 import { initProject } from "./init.js";
-import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
+import { assertTransitionAccepted, isRunState, transitionRunState, type RunState } from "./state-machine.js";
 
 export interface DeliveryRunResult {
   runId: string;
@@ -17,8 +17,9 @@ export interface DeliveryRunResult {
     value: string;
   };
   artifacts: string[];
-  status: "waiting_for_agent_output";
+  status: RunState;
   executionMode: ExecutionMode;
+  reusedExisting?: boolean;
 }
 
 interface Evidence {
@@ -39,6 +40,10 @@ interface RequirementSource {
   value: string;
   content: string;
   absoluteFile?: string;
+}
+
+export interface CreateDeliveryRunOptions {
+  allowNew?: boolean;
 }
 
 function slugify(value: string): string {
@@ -197,7 +202,46 @@ function updateCurrentRun(workspace: string, runId: string): void {
   }, null, 2)}\n`);
 }
 
-export function createDeliveryRun(cwd: string, requirementArgs: string[]): DeliveryRunResult {
+function currentRunId(workspace: string): string | null {
+  const file = path.join(workspace, "state", "current.json");
+  if (!fs.existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { current_run_id?: unknown };
+    return typeof parsed.current_run_id === "string" ? parsed.current_run_id : null;
+  } catch {
+    return null;
+  }
+}
+
+function activeRunForRequirement(workspace: string, source: RequirementSource): { runId: string; runDir: string; status: RunState; executionMode: ExecutionMode; projectKind: ProjectAnalysis["kind"]; artifacts: string[] } | null {
+  const runId = currentRunId(workspace);
+  if (!runId) return null;
+  const runDir = path.join(workspace, "runs", runId);
+  const runFile = path.join(runDir, "run.json");
+  if (!fs.existsSync(runFile)) return null;
+  const run = JSON.parse(fs.readFileSync(runFile, "utf8")) as {
+    status?: string;
+    execution_mode?: ExecutionMode;
+    project_kind?: ProjectAnalysis["kind"];
+    source?: { value?: string; type?: string };
+  };
+  if (run.status === "completed" || run.status === "blocked") return null;
+  if (run.source?.value !== source.value || run.source?.type !== source.type) return null;
+  return {
+    runId,
+    runDir,
+    status: typeof run.status === "string" && isRunState(run.status) ? run.status : "waiting_for_agent_output",
+    executionMode: run.execution_mode || "true_harness",
+    projectKind: run.project_kind || "existing_project",
+    artifacts: [
+      path.join(runDir, "run.json"),
+      path.join(runDir, "orchestration", "orchestrator-input.md"),
+      path.join(runDir, "orchestration", "orchestrator-session.json")
+    ].filter((file) => fs.existsSync(file))
+  };
+}
+
+export function createDeliveryRun(cwd: string, requirementArgs: string[], options: CreateDeliveryRunOptions = {}): DeliveryRunResult {
   initProject(cwd);
 
   const source = readRequirement(cwd, requirementArgs);
@@ -205,6 +249,21 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
   if (source.absoluteFile) ignoredProjectFiles.add(source.absoluteFile);
   const analysis = projectAnalysis(cwd, ignoredProjectFiles);
   const workspace = path.join(cwd, ".imfine");
+  const active = options.allowNew ? null : activeRunForRequirement(workspace, source);
+  if (active) {
+    return {
+      runId: active.runId,
+      cwd,
+      workspace,
+      runDir: active.runDir,
+      projectKind: active.projectKind,
+      source: { type: source.type, value: source.value },
+      artifacts: active.artifacts,
+      status: active.status,
+      executionMode: active.executionMode,
+      reusedExisting: true
+    };
+  }
   const runId = uniqueRunId(workspace, source.content);
   const runDir = path.join(workspace, "runs", runId);
   const artifacts: string[] = [];

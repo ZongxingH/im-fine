@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { validateAgentHandoff } from "./handoff-evidence.js";
 
 interface RunMetadata {
   run_id: string;
@@ -19,7 +20,15 @@ interface AgentRunRecord {
   executedBy?: string;
   executionStatus?: string;
   workflowState?: string;
+  handoffFile?: string;
   skills?: string[];
+}
+
+interface DispatchContractRecord {
+  id?: string;
+  role?: string;
+  task_id?: string;
+  status?: string;
 }
 
 interface ParallelPlanWave {
@@ -150,6 +159,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     executed_parallel_groups?: string[];
     blocked_parallel_groups?: string[];
   }>(path.join(orchestrationDir, "parallel-execution.json"));
+  const dispatchContracts = optionalJson<{ contracts?: DispatchContractRecord[] }>(path.join(orchestrationDir, "dispatch-contracts.json"));
   const orchestratorSessionFile = path.join(orchestrationDir, "orchestrator-session.json");
   const orchestratorSession = optionalJson<OrchestratorSessionRecord>(orchestratorSessionFile);
   const handoffs = collectHandoffs(runDirPath, cwd);
@@ -162,12 +172,50 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const waves = Array.isArray(parallelExecution?.wave_history) ? parallelExecution.wave_history : [];
   const agentRecords = Array.isArray(agentRuns?.agents) ? agentRuns.agents : [];
   const hasTrueHarnessAgent = agentRecords.some((agent) => agent.executionSource === "true_harness");
+  const hasDispatchContract = Array.isArray(dispatchContracts?.contracts) && dispatchContracts.contracts.length > 0;
   const hasCompletedWave = waves.some((wave) => wave.status === "completed");
   const hasHandoffChain = handoffs.length > 0;
+  const contractTargets = Array.isArray(dispatchContracts?.contracts)
+    ? dispatchContracts.contracts.map((contract) => ({
+      id: typeof contract.id === "string" ? contract.id : "",
+      role: typeof contract.role === "string" ? contract.role : "",
+      taskId: typeof contract.task_id === "string" ? contract.task_id : undefined
+    })).filter((contract) => contract.id && contract.role)
+    : [];
+  const handoffValidations = contractTargets.map((contract) => validateAgentHandoff(contract, runDirPath, runId));
+  const allContractHandoffsPassed = hasDispatchContract
+    && handoffValidations.length === contractTargets.length
+    && handoffValidations.every((item) => item.passed);
+  const completedWaveActionIds = new Set(waves
+    .filter((wave) => wave.status === "completed")
+    .flatMap((wave) => wave.action_ids));
+  const archiveStatus = optionalJson<{ status?: string }>(path.join(runDirPath, "agents", "archive", "status.json"))?.status;
+  const archiveReadyForCompletion = archiveStatus === "completed";
+  const waveRequiredContracts = archiveReadyForCompletion
+    ? contractTargets
+    : contractTargets.filter((contract) => contract.role !== "archive");
+  const missingCompletedWaveContracts = waveRequiredContracts
+    .filter((contract) => {
+      const actionIds = [
+        contract.id,
+        `agent-${contract.id}`,
+        `agent-${contract.role}`,
+        contract.taskId ? `agent-${contract.role}-${contract.taskId}` : undefined
+      ].filter((item): item is string => Boolean(item));
+      return !actionIds.some((id) => completedWaveActionIds.has(id));
+    })
+    .map((contract) => contract.id);
+  const allContractsHaveCompletedWave = hasDispatchContract && missingCompletedWaveContracts.length === 0;
   const orchestratorDeclaredTrueHarness = orchestratorSession?.decision_source === "orchestrator_agent"
     && orchestratorSession.execution_mode === "true_harness"
     && orchestratorSession.harness_classification === "true_harness";
-  const passed = orchestratorDeclaredTrueHarness && hasTrueHarnessAgent && hasCompletedWave && hasHandoffChain;
+  const passed = orchestratorDeclaredTrueHarness
+    && hasTrueHarnessAgent
+    && hasDispatchContract
+    && hasCompletedWave
+    && allContractsHaveCompletedWave
+    && hasHandoffChain
+    && allContractHandoffsPassed;
 
   const payload = {
     schema_version: 1,
@@ -191,9 +239,12 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     participating_roles: participatingRoles,
     task_count: graphTaskIds.length,
     parallel_execution: {
+      dispatch_contract_count: Array.isArray(dispatchContracts?.contracts) ? dispatchContracts.contracts.length : 0,
       executed_parallel_groups: Array.isArray(parallelExecution?.executed_parallel_groups) ? parallelExecution.executed_parallel_groups : [],
       blocked_parallel_groups: Array.isArray(parallelExecution?.blocked_parallel_groups) ? parallelExecution.blocked_parallel_groups : [],
       wave_count: waves.length,
+      all_contracts_have_completed_wave: allContractsHaveCompletedWave,
+      missing_completed_wave_contracts: missingCompletedWaveContracts,
       waves: waves.map((wave) => ({
         iteration: wave.iteration,
         parallel_group: wave.parallel_group,
@@ -204,6 +255,20 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
         started_at: wave.started_at,
         completed_at: wave.completed_at || null
       }))
+    },
+    handoff_validation: {
+      passed: allContractHandoffsPassed,
+      required_agent_count: contractTargets.length,
+      valid_agent_count: handoffValidations.filter((item) => item.passed).length,
+      invalid: handoffValidations
+        .filter((item) => !item.passed)
+        .map((item) => ({
+          agent_id: item.agentId,
+          role: item.role,
+          task_id: item.taskId || null,
+          handoff_file: item.file,
+          errors: item.errors
+        }))
     },
     handoff_evidence_chain: handoffs.map((handoff) => ({
       agent_id: handoff.agent_id,
@@ -256,10 +321,21 @@ ${payload.participating_roles.length > 0 ? payload.participating_roles.map((role
 ## Parallel Execution
 
 - wave count: ${payload.parallel_execution.wave_count}
+- dispatch contracts: ${payload.parallel_execution.dispatch_contract_count}
 - executed parallel groups: ${payload.parallel_execution.executed_parallel_groups.length}
 - blocked parallel groups: ${payload.parallel_execution.blocked_parallel_groups.length}
+- all contracts have completed wave: ${payload.parallel_execution.all_contracts_have_completed_wave ? "yes" : "no"}
+- missing completed wave contracts: ${payload.parallel_execution.missing_completed_wave_contracts.length > 0 ? payload.parallel_execution.missing_completed_wave_contracts.join(", ") : "none"}
 
 ${payload.parallel_execution.waves.length > 0 ? payload.parallel_execution.waves.map((wave) => `- iteration ${wave.iteration} / ${wave.parallel_group}: ${wave.agent_count} agent(s), status=${wave.status}, roles=${wave.roles.join(", ") || "none"}`).join("\n") : "- no wave history"}
+
+## Handoff Validation
+
+- passed: ${payload.handoff_validation.passed ? "yes" : "no"}
+- required agent count: ${payload.handoff_validation.required_agent_count}
+- valid agent count: ${payload.handoff_validation.valid_agent_count}
+
+${payload.handoff_validation.invalid.length > 0 ? payload.handoff_validation.invalid.map((item) => `- invalid ${item.agent_id}: ${item.errors.join("; ")}`).join("\n") : "- invalid: none"}
 
 ## Handoff Evidence Chain
 

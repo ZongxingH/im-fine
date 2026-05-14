@@ -247,7 +247,14 @@ function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationA
     return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: `push status: ${result.status}`, artifacts: [result.evidence] };
   }
   if (action.id === "agent-archive") {
-    const result = archiveRun(cwd, runId);
+    const result = archiveRun(cwd, runId, {
+      archiveAction: {
+        id: action.id,
+        role: action.role,
+        taskId: action.taskId,
+        parallelGroup: action.parallelGroup
+      }
+    });
     const archiveHandoff = readHandoff(path.join(runDir(cwd, runId), "agents", "archive", "handoff.json"));
     const gate = validateRoleHandoff("archive", archiveHandoff, runId);
     if (gate.errors.length > 0) {
@@ -264,6 +271,7 @@ function writeDevHandoff(cwd: string, runId: string, taskId: string, patch: stri
   const handoff = {
     run_id: runId,
     task_id: taskId,
+    role: "dev",
     from: "dev",
     to: "qa",
     status: passed ? "ready" : "blocked",

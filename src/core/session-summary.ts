@@ -87,8 +87,8 @@ function roleSummary(result: OrchestratorResult, agent: AgentRun): { summary: st
   }
   return {
     summary: agent.status === "completed"
-      ? `${agent.role} completed without a model-authored summary`
-      : `${agent.role} is ${agent.status}; waiting for model-authored summary`,
+      ? `assumption: ${agent.role} is marked completed but has no validated handoff summary`
+      : `blocked item: ${agent.role} is ${agent.status}; waiting for model-authored handoff summary`,
     details: [`parallel group: ${agent.parallelGroup}`]
   };
 }

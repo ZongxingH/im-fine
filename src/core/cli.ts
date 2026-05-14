@@ -23,7 +23,7 @@ function help(program: string): string {
 Usage:
   npx github:<owner>/<repo> install [--target codex|claude|all] [--lang zh|en] [--dry-run] [--json]
   ${program} init [--cwd path] [--json]
-  ${program} run <requirement text|requirement-file> [--plan-only] [--max-iterations n] [--cwd path] [--json]
+  ${program} run <requirement text|requirement-file> [--plan-only] [--new] [--max-iterations n] [--cwd path] [--json]
   ${program} status [--cwd path] [--json]
   ${program} help
 
@@ -72,6 +72,35 @@ function installInvocationAllowed(): boolean {
   return /\bnpx\b/i.test(userAgent) || execPath.length > 0;
 }
 
+function isInternalCommand(command: string): boolean {
+  return [
+    "orchestrate",
+    "task-planner",
+    "task",
+    "worktree",
+    "patch",
+    "verify",
+    "review",
+    "rework",
+    "recover",
+    "commit",
+    "push",
+    "archive",
+    "doctor",
+    "report",
+    "agents",
+    "skills",
+    "templates",
+    "workflows",
+    "library",
+    "resume"
+  ].includes(command);
+}
+
+function internalInvocationAllowed(): boolean {
+  return process.env.IMFINE_INTERNAL === "1" || process.env.IMFINE_RUNTIME_INTERNAL === "1";
+}
+
 export async function runCli(program: string, argv: string[]): Promise<void> {
   const args = parseArgs(argv);
   const command = args.positional[0] || "help";
@@ -100,7 +129,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     }
 
     if (command === "run") {
-      const result = createDeliveryRun(cwd, args.positional.slice(1));
+      const result = createDeliveryRun(cwd, args.positional.slice(1), { allowNew: readBooleanFlag(args, "new") });
       if (readBooleanFlag(args, "planOnly")) {
         const orchestration = summarizeOrchestratorSession(cwd, resumeRun(cwd, result.runId));
         print(orchestration, json, () => formatOrchestrator(orchestration));
@@ -112,6 +141,10 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       }));
       print(auto, json, () => formatAutoOrchestrator(auto));
       return;
+    }
+
+    if (isInternalCommand(command) && !internalInvocationAllowed()) {
+      throw new Error(`${command} is an internal runtime action. Use /imfine init, /imfine run, or /imfine status from the public workflow.`);
     }
 
     if (command === "orchestrate") {

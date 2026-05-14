@@ -9,6 +9,13 @@ export interface StatusResult {
   currentRunStatus: string | null;
   currentRunExecutionMode: string | null;
   currentRunBranch: string | null;
+  runs: Array<{
+    runId: string;
+    status: string;
+    source: string;
+    relation: "current" | "active" | "completed" | "blocked";
+    updatedAt: string | null;
+  }>;
   reports: string[];
 }
 
@@ -40,6 +47,42 @@ export function status(cwd: string): StatusResult {
   const reports = fs.existsSync(reportsDir)
     ? fs.readdirSync(reportsDir).filter((item) => item.endsWith(".md")).sort()
     : [];
+  const runsDir = path.join(workspace, "runs");
+  const runs = fs.existsSync(runsDir)
+    ? fs.readdirSync(runsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const runFile = path.join(runsDir, entry.name, "run.json");
+        if (!fs.existsSync(runFile)) return null;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(runFile, "utf8")) as {
+            status?: unknown;
+            source?: { value?: unknown };
+            updated_at?: unknown;
+            created_at?: unknown;
+          };
+          const runStatus = typeof parsed.status === "string" ? parsed.status : "unknown";
+          const relation: "current" | "active" | "completed" | "blocked" = entry.name === currentRunId
+            ? "current"
+            : runStatus === "completed"
+              ? "completed"
+              : runStatus === "blocked"
+                ? "blocked"
+                : "active";
+          return {
+            runId: entry.name,
+            status: runStatus,
+            source: typeof parsed.source?.value === "string" ? parsed.source.value : "unknown",
+            relation,
+            updatedAt: typeof parsed.updated_at === "string" ? parsed.updated_at : typeof parsed.created_at === "string" ? parsed.created_at : null
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((item): item is NonNullable<typeof item> => Boolean(item))
+      .sort((left, right) => (right.updatedAt || "").localeCompare(left.updatedAt || ""))
+    : [];
 
   if (currentRunId) {
     const runFile = path.join(workspace, "runs", currentRunId, "run.json");
@@ -64,6 +107,7 @@ export function status(cwd: string): StatusResult {
     currentRunStatus,
     currentRunExecutionMode,
     currentRunBranch,
+    runs,
     reports
   };
 }

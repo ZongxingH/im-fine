@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { buildDispatchContracts, type DispatchContract } from "./dispatch.js";
 import { ensureDir, writeText } from "./fs.js";
+import { agentHandoffCandidates, validateAgentHandoff } from "./handoff-evidence.js";
 import { isRunState, normalizeRunState, transitionRunState, type RunState } from "./state-machine.js";
 import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import type { ExecutionMode } from "./execution-mode.js";
@@ -104,6 +105,8 @@ interface AgentAuthoredSession {
   agent_runs?: AgentRun[];
 }
 
+type JsonObject = Record<string, unknown>;
+
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 }
@@ -116,24 +119,125 @@ function exists(file: string): boolean {
   return fs.existsSync(file);
 }
 
-function rel(cwd: string, file: string): string {
-  return path.relative(cwd, file) || ".";
-}
-
 function runDir(cwd: string, runId: string): string {
   const dir = path.join(cwd, ".imfine", "runs", runId);
   if (!exists(path.join(dir, "run.json"))) throw new Error(`Run not found: ${runId}`);
   return dir;
 }
 
+function isObject(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(value: JsonObject, field: string, pathName: string, errors: string[]): string | undefined {
+  const item = value[field];
+  if (typeof item !== "string" || item.trim().length === 0) {
+    errors.push(`${pathName}.${field} is required`);
+    return undefined;
+  }
+  return item;
+}
+
+function optionalStringField(value: JsonObject, field: string, pathName: string, errors: string[]): string | undefined {
+  const item = value[field];
+  if (item === undefined) return undefined;
+  if (typeof item !== "string" || item.trim().length === 0) {
+    errors.push(`${pathName}.${field} must be a non-empty string`);
+    return undefined;
+  }
+  return item;
+}
+
+function stringArrayField(value: JsonObject, field: string, pathName: string, errors: string[]): string[] {
+  const item = value[field];
+  if (!Array.isArray(item)) {
+    errors.push(`${pathName}.${field} is required`);
+    return [];
+  }
+  const strings = item.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
+  if (strings.length !== item.length) errors.push(`${pathName}.${field} must contain only non-empty strings`);
+  return strings;
+}
+
+function validateAction(value: unknown, index: number, ids: Set<string>, errors: string[]): OrchestrationAction | null {
+  const pathName = `next_actions[${index}]`;
+  if (!isObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  const id = stringField(value, "id", pathName, errors);
+  if (id) {
+    if (ids.has(id)) errors.push(`${pathName}.id duplicates ${id}`);
+    ids.add(id);
+  }
+  const kind = stringField(value, "kind", pathName, errors);
+  if (kind && kind !== "runtime" && kind !== "agent") errors.push(`${pathName}.kind must be runtime or agent`);
+  const status = stringField(value, "status", pathName, errors);
+  if (status && !["ready", "waiting", "blocked", "done"].includes(status)) {
+    errors.push(`${pathName}.status must be ready, waiting, blocked, or done`);
+  }
+  stringField(value, "role", pathName, errors);
+  optionalStringField(value, "taskId", pathName, errors);
+  optionalStringField(value, "command", pathName, errors);
+  stringField(value, "reason", pathName, errors);
+  stringArrayField(value, "inputs", pathName, errors);
+  stringArrayField(value, "outputs", pathName, errors);
+  stringArrayField(value, "dependsOn", pathName, errors);
+  stringField(value, "parallelGroup", pathName, errors);
+  return value as unknown as OrchestrationAction;
+}
+
+function validateAgentRun(value: unknown, index: number, ids: Set<string>, errors: string[]): AgentRun | null {
+  const pathName = `agent_runs[${index}]`;
+  if (!isObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  const id = stringField(value, "id", pathName, errors);
+  if (id) {
+    if (ids.has(id)) errors.push(`${pathName}.id duplicates ${id}`);
+    ids.add(id);
+  }
+  stringField(value, "role", pathName, errors);
+  optionalStringField(value, "taskId", pathName, errors);
+  optionalStringField(value, "workflowState", pathName, errors);
+  const status = stringField(value, "status", pathName, errors);
+  if (status && !["ready", "waiting", "planned", "completed"].includes(status)) {
+    errors.push(`${pathName}.status must be ready, waiting, planned, or completed`);
+  }
+  stringArrayField(value, "skills", pathName, errors);
+  stringArrayField(value, "inputs", pathName, errors);
+  stringArrayField(value, "outputs", pathName, errors);
+  stringArrayField(value, "readScope", pathName, errors);
+  stringArrayField(value, "writeScope", pathName, errors);
+  stringArrayField(value, "dependsOn", pathName, errors);
+  stringField(value, "parallelGroup", pathName, errors);
+  return value as unknown as AgentRun;
+}
+
+function actionMatchesAgent(action: OrchestrationAction, agent: AgentRun): boolean {
+  const derivedId = action.taskId
+    ? action.role === "dev" || action.role === "technical-writer"
+      ? action.taskId
+      : `${action.role}-${action.taskId}`
+    : action.role;
+  return action.role === agent.role
+    && (action.taskId || "") === (agent.taskId || "")
+    && (action.parallelGroup === agent.parallelGroup || derivedId === agent.id);
+}
+
 function executionMetadata(runDirPath: string, agentId: string): ExecutionMetadata | null {
   return optionalJson<ExecutionMetadata>(path.join(runDirPath, "agents", agentId, "execution", "execution-status.json"));
 }
 
-function withRuntimeExecution(agent: AgentRun, runDirPath: string): AgentRun {
+function withRuntimeExecution(agent: AgentRun, runDirPath: string, runId: string): AgentRun {
   const metadata = executionMetadata(runDirPath, agent.id);
+  const handoff = validateAgentHandoff(agent, runDirPath, runId);
+  const hasHandoff = handoff.passed;
+  const status = agent.status === "completed" || hasHandoff ? "completed" : agent.status;
   return {
     ...agent,
+    status,
     executionSource: "true_harness",
     executedBy: "native_agent",
     executionStatus: metadata?.status === "executed"
@@ -142,7 +246,7 @@ function withRuntimeExecution(agent: AgentRun, runDirPath: string): AgentRun {
         ? "failed"
         : metadata?.status === "dry_run"
           ? "waiting_for_agent_output"
-          : agent.status === "completed"
+          : status === "completed"
             ? "completed"
             : "waiting_for_agent_output",
     outputDir: metadata?.output_dir || agent.outputDir,
@@ -151,6 +255,33 @@ function withRuntimeExecution(agent: AgentRun, runDirPath: string): AgentRun {
     startedAt: metadata?.started_at || agent.startedAt,
     completedAt: metadata?.completed_at || agent.completedAt
   };
+}
+
+function invalidExistingHandoffs(nextActions: OrchestrationAction[], agentRuns: AgentRun[], runDirPath: string, runId: string): string[] {
+  const errors: string[] = [];
+  for (const action of nextActions) {
+    if (action.kind !== "agent" || action.status !== "done") continue;
+    const agent = agentRuns.find((item) => actionMatchesAgent(action, item));
+    if (!agent) continue;
+    const validation = validateAgentHandoff(agent, runDirPath, runId);
+    if (!validation.passed) {
+      errors.push(`next_actions.${action.id}.handoff is required for done agent action: ${validation.errors.join("; ")}`);
+    }
+  }
+  for (const agent of agentRuns) {
+    const hasFile = agentHandoffCandidates(agent, runDirPath).some((file) => fs.existsSync(file));
+    if (!hasFile) {
+      if (agent.status === "completed" || agent.executionStatus === "completed") {
+        errors.push(`agent_runs.${agent.id}.handoff is required for completed agent`);
+      }
+      continue;
+    }
+    const validation = validateAgentHandoff(agent, runDirPath, runId);
+    if (!validation.passed) {
+      errors.push(`agent_runs.${agent.id}.handoff invalid at ${validation.file || "missing"}: ${validation.errors.join("; ")}`);
+    }
+  }
+  return errors;
 }
 
 function groupActions(actions: OrchestrationAction[]): ParallelGroup[] {
@@ -177,28 +308,59 @@ function groupActions(actions: OrchestrationAction[]): ParallelGroup[] {
   }));
 }
 
-function validateSession(session: AgentAuthoredSession, runId: string): void {
+function validateSession(session: AgentAuthoredSession, runId: string): string[] {
+  const errors: string[] = [];
   if (session.decision_source !== "orchestrator_agent") {
-    throw new Error("orchestrator-session.json must declare decision_source=orchestrator_agent");
+    errors.push("decision_source must be orchestrator_agent");
   }
   if (session.run_id !== runId) {
-    throw new Error(`orchestrator-session.json run_id mismatch: expected ${runId}`);
+    errors.push(`run_id mismatch: expected ${runId}`);
   }
   if (session.execution_mode !== "true_harness") {
-    throw new Error("orchestrator-session.json must declare execution_mode=true_harness");
+    errors.push("execution_mode must be true_harness");
   }
   if (session.harness_classification !== "true_harness") {
-    throw new Error("orchestrator-session.json must declare harness_classification=true_harness");
+    errors.push("harness_classification must be true_harness");
   }
   if (!session.status || !isRunState(session.status)) {
-    throw new Error("orchestrator-session.json must declare a valid run status");
+    errors.push("status must be a valid run state");
   }
   if (!Array.isArray(session.next_actions)) {
-    throw new Error("orchestrator-session.json must define next_actions");
+    errors.push("next_actions is required");
   }
   if (!Array.isArray(session.agent_runs)) {
-    throw new Error("orchestrator-session.json must define agent_runs");
+    errors.push("agent_runs is required");
   }
+
+  const actionIds = new Set<string>();
+  const actions = Array.isArray(session.next_actions)
+    ? session.next_actions.map((action, index) => validateAction(action, index, actionIds, errors)).filter((item): item is OrchestrationAction => Boolean(item))
+    : [];
+  const agentIds = new Set<string>();
+  const agents = Array.isArray(session.agent_runs)
+    ? session.agent_runs.map((agent, index) => validateAgentRun(agent, index, agentIds, errors)).filter((item): item is AgentRun => Boolean(item))
+    : [];
+
+  for (const action of actions) {
+    for (const dependency of action.dependsOn) {
+      if (!actionIds.has(dependency)) errors.push(`next_actions.${action.id}.dependsOn references unknown action ${dependency}`);
+    }
+    if (action.kind === "agent" && !agents.some((agent) => actionMatchesAgent(action, agent))) {
+      errors.push(`next_actions.${action.id} has no matching agent_run`);
+    }
+  }
+
+  for (const agent of agents) {
+    for (const dependency of agent.dependsOn) {
+      if (!actionIds.has(dependency) && !agentIds.has(dependency)) {
+        errors.push(`agent_runs.${agent.id}.dependsOn references unknown action or agent ${dependency}`);
+      }
+    }
+    if (!actions.some((action) => action.kind === "agent" && actionMatchesAgent(action, agent))) {
+      errors.push(`agent_runs.${agent.id} has no matching agent action`);
+    }
+  }
+  return errors;
 }
 
 function effectiveStatus(current: RunState, sessionStatus: RunState): RunState {
@@ -261,7 +423,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     parallelExecution: path.join(orchestrationDir, "parallel-execution.json"),
     timeline: path.join(orchestrationDir, "auto-timeline.md")
   };
-  const dispatchContracts = exists(files.session)
+  const dispatchContracts = exists(files.session) && result.nextActions.length > 0 && result.agentRuns.length > 0
     ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
     : [];
   const actionable = result.nextActions.filter((action) => action.status !== "done");
@@ -346,7 +508,32 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
   }
 
   const session = readJson<AgentAuthoredSession>(sessionFile);
-  validateSession(session, runId);
+  const validationErrors = validateSession(session, runId);
+  if (validationErrors.length > 0) {
+    writeText(path.join(runDirPath, "orchestration", "session-validation.json"), `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status: "blocked",
+      errors: validationErrors,
+      validated_at: new Date().toISOString()
+    }, null, 2)}\n`);
+    transitionRunState(cwd, runId, "blocked", {
+      blocked_at: new Date().toISOString(),
+      blocked_reason: "orchestrator-session schema validation failed",
+      session_validation_errors: validationErrors
+    });
+    return {
+      runId,
+      runDir: runDirPath,
+      mode,
+      status: "blocked",
+      executionMode: "true_harness",
+      nextActions: [],
+      agentRuns: [],
+      dispatchContracts: [],
+      parallelGroups: []
+    };
+  }
 
   const metadata = readJson<RunMetadata>(path.join(runDirPath, "run.json"));
   const currentStatus = normalizeRunState(metadata.status);
@@ -359,7 +546,33 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
   }
 
   const nextActions = session.next_actions || [];
-  const agentRuns = (session.agent_runs || []).map((agent) => withRuntimeExecution(agent, runDirPath));
+  const agentRuns = (session.agent_runs || []).map((agent) => withRuntimeExecution(agent, runDirPath, runId));
+  const handoffErrors = invalidExistingHandoffs(nextActions, agentRuns, runDirPath, runId);
+  if (handoffErrors.length > 0) {
+    writeText(path.join(runDirPath, "orchestration", "handoff-validation.json"), `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status: "blocked",
+      errors: handoffErrors,
+      validated_at: new Date().toISOString()
+    }, null, 2)}\n`);
+    transitionRunState(cwd, runId, "blocked", {
+      blocked_at: new Date().toISOString(),
+      blocked_reason: "agent handoff schema validation failed",
+      handoff_validation_errors: handoffErrors
+    });
+    return {
+      runId,
+      runDir: runDirPath,
+      mode,
+      status: "blocked",
+      executionMode: "true_harness",
+      nextActions: [],
+      agentRuns: [],
+      dispatchContracts: [],
+      parallelGroups: []
+    };
+  }
   const parallelGroups = groupActions(nextActions);
 
   return {

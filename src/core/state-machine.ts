@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { validateAgentHandoff } from "./handoff-evidence.js";
 
 export type RunState =
   | "created"
@@ -160,6 +161,128 @@ function recordBlocker(cwd: string, runId: string, blocker: Record<string, unkno
   return file;
 }
 
+function completionEvidence(cwd: string, runId: string): { passed: boolean; reason?: string; blockerDetail?: Record<string, unknown> } {
+  const dir = runDir(cwd, runId);
+  const harnessFile = path.join(dir, "orchestration", "true-harness-evidence.json");
+  if (!fs.existsSync(harnessFile)) {
+    return {
+      passed: false,
+      reason: "missing true harness evidence",
+      blockerDetail: { missing: harnessFile }
+    };
+  }
+  let harness: { true_harness_passed?: unknown };
+  try {
+    harness = readJson<{ true_harness_passed?: unknown }>(harnessFile);
+  } catch {
+    return {
+      passed: false,
+      reason: "invalid true harness evidence",
+      blockerDetail: { invalid: harnessFile }
+    };
+  }
+  if (harness.true_harness_passed !== true) {
+    return {
+      passed: false,
+      reason: "true harness evidence has not passed",
+      blockerDetail: { evidence: harnessFile, true_harness_passed: harness.true_harness_passed }
+    };
+  }
+
+  const archiveStatusFile = path.join(dir, "agents", "archive", "status.json");
+  if (!fs.existsSync(archiveStatusFile)) {
+    return {
+      passed: false,
+      reason: "missing archive status",
+      blockerDetail: { missing: archiveStatusFile }
+    };
+  }
+  const archiveStatus = readJson<{ status?: unknown }>(archiveStatusFile);
+  if (archiveStatus.status !== "completed") {
+    return {
+      passed: false,
+      reason: "archive status is not completed",
+      blockerDetail: { status_file: archiveStatusFile, status: archiveStatus.status }
+    };
+  }
+
+  const archiveValidation = validateAgentHandoff({ id: "archive", role: "archive" }, dir, runId);
+  if (!archiveValidation.file) {
+    return {
+      passed: false,
+      reason: "missing archive handoff",
+      blockerDetail: { missing: path.join(dir, "agents", "archive", "handoff.json") }
+    };
+  }
+  if (!archiveValidation.passed) {
+    return {
+      passed: false,
+      reason: "invalid archive handoff",
+      blockerDetail: { handoff_file: archiveValidation.file, errors: archiveValidation.errors }
+    };
+  }
+  const archiveHandoff = readJson<{ status?: unknown }>(archiveValidation.file);
+  if (archiveHandoff.status !== "completed") {
+    return {
+      passed: false,
+      reason: "archive handoff is not completed",
+      blockerDetail: { handoff_file: archiveValidation.file, status: archiveHandoff.status }
+    };
+  }
+
+  return { passed: true };
+}
+
+function committerEvidence(cwd: string, runId: string): { passed: boolean; reason?: string; blockerDetail?: Record<string, unknown> } {
+  const dir = runDir(cwd, runId);
+  const validation = validateAgentHandoff({ id: "committer", role: "committer" }, dir, runId);
+  if (!validation.file) {
+    return {
+      passed: false,
+      reason: "missing committer handoff",
+      blockerDetail: { missing: path.join(dir, "agents", "committer", "handoff.json") }
+    };
+  }
+  if (!validation.passed) {
+    return {
+      passed: false,
+      reason: "invalid committer handoff",
+      blockerDetail: { handoff_file: validation.file, errors: validation.errors }
+    };
+  }
+  const handoff = readJson<{ status?: unknown }>(validation.file);
+  if (handoff.status !== "ready") {
+    return {
+      passed: false,
+      reason: "committer handoff is not ready",
+      blockerDetail: { handoff_file: validation.file, status: handoff.status }
+    };
+  }
+  return { passed: true };
+}
+
+function archivingEvidence(cwd: string, runId: string): { passed: boolean; reason?: string; blockerDetail?: Record<string, unknown> } {
+  const dir = runDir(cwd, runId);
+  const run = readJson<{ commit_hashes?: unknown; commit_blocked_reason?: unknown; push_status?: unknown }>(path.join(dir, "run.json"));
+  const testResults = path.join(dir, "evidence", "test-results.md");
+  if (!fs.existsSync(testResults)) {
+    return { passed: false, reason: "missing QA evidence", blockerDetail: { missing: testResults } };
+  }
+  const review = path.join(dir, "evidence", "review.md");
+  if (!fs.existsSync(review)) {
+    return { passed: false, reason: "missing review evidence", blockerDetail: { missing: review } };
+  }
+  const commitOutcomeKnown = Array.isArray(run.commit_hashes) && run.commit_hashes.length > 0 || typeof run.commit_blocked_reason === "string";
+  if (!commitOutcomeKnown) {
+    return { passed: false, reason: "missing commit outcome", blockerDetail: { run_file: path.join(dir, "run.json") } };
+  }
+  const push = path.join(dir, "evidence", "push.md");
+  if (typeof run.push_status !== "string" || !fs.existsSync(push)) {
+    return { passed: false, reason: "missing push outcome", blockerDetail: { evidence: push, push_status: run.push_status } };
+  }
+  return { passed: true };
+}
+
 function isLegalRunTransition(from: RunState, to: RunState): boolean {
   if (from === to) return true;
   if (from === "completed") return to === "completed";
@@ -251,6 +374,51 @@ export function transitionRunState(cwd: string, runId: string, to: string, extra
       recorded_at: new Date().toISOString()
     });
     return { accepted: false, from, to, reason: "illegal run transition", blocker };
+  }
+
+  if (to === "committing") {
+    const gate = committerEvidence(cwd, runId);
+    if (!gate.passed) {
+      const blocker = recordBlocker(cwd, runId, {
+        type: "missing_committing_evidence",
+        from,
+        to,
+        reason: gate.reason || "committing evidence gate failed",
+        ...gate.blockerDetail,
+        recorded_at: new Date().toISOString()
+      });
+      return { accepted: false, from, to, reason: gate.reason || "committing evidence gate failed", blocker };
+    }
+  }
+
+  if (to === "archiving") {
+    const gate = archivingEvidence(cwd, runId);
+    if (!gate.passed) {
+      const blocker = recordBlocker(cwd, runId, {
+        type: "missing_archiving_evidence",
+        from,
+        to,
+        reason: gate.reason || "archiving evidence gate failed",
+        ...gate.blockerDetail,
+        recorded_at: new Date().toISOString()
+      });
+      return { accepted: false, from, to, reason: gate.reason || "archiving evidence gate failed", blocker };
+    }
+  }
+
+  if (to === "completed") {
+    const gate = completionEvidence(cwd, runId);
+    if (!gate.passed) {
+      const blocker = recordBlocker(cwd, runId, {
+        type: "missing_completion_evidence",
+        from,
+        to,
+        reason: gate.reason || "completion evidence gate failed",
+        ...gate.blockerDetail,
+        recorded_at: new Date().toISOString()
+      });
+      return { accepted: false, from, to, reason: gate.reason || "completion evidence gate failed", blocker };
+    }
   }
 
   const now = new Date().toISOString();

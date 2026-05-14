@@ -216,6 +216,19 @@ function mergeHandoffFile(cwd: string, runId: string, taskId: string): string {
   return path.join(runDir(cwd, runId), "agents", `merge-agent-${taskId}`, "handoff.json");
 }
 
+function committerHandoffFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), "agents", "committer", "handoff.json");
+}
+
+function requireCommitterHandoff(cwd: string, runId: string): void {
+  const file = committerHandoffFile(cwd, runId);
+  if (!fs.existsSync(file)) throw new Error("Missing committer handoff for run commit");
+  const parsed = readJson<unknown>(file);
+  const validation = validateHandoff("committer", parsed, runId);
+  if (!validation.passed) throw new Error(`Invalid committer handoff for run commit: ${validation.errors.join("; ")}`);
+  if ((parsed as { status?: unknown }).status !== "ready") throw new Error("Committer handoff is not ready");
+}
+
 function requireValidatedHandoff(cwd: string, runId: string, role: HandoffRole, taskId: string): void {
   const file = handoffFile(cwd, runId, role as "qa" | "reviewer", taskId);
   if (!fs.existsSync(file)) throw new Error(`Missing ${role} handoff for task ${taskId}`);
@@ -429,6 +442,7 @@ export function commitTask(cwd: string, runId: string, taskId: string): CommitRe
 }
 
 export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?: string[]): CommitResult {
+  requireCommitterHandoff(cwd, runId);
   const graph = readGraph(cwd, runId);
   const selectedTaskIds = taskIds && taskIds.length > 0 ? taskIds : graph.tasks.map((task) => task.id);
   const tasks = orderedTasks(graph, selectedTaskIds);

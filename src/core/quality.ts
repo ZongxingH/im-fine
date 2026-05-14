@@ -253,6 +253,8 @@ export function verifyTask(cwd: string, runId: string, taskId: string, agentStat
   writeText(agentOutput, `# QA Output: ${taskId}\n\n- status: ${status}\n- summary: ${summary || "none"}\n- evidence: ${evidenceFile}\n- fix task: ${fixTaskId || "none"}\n`);
   writeText(handoff, `${JSON.stringify({
     run_id: runId,
+    task_id: taskId,
+    role: "qa",
     from: "qa",
     to: status === "pass" ? "review" : "dev",
     status,
@@ -323,10 +325,13 @@ export function reviewTask(cwd: string, runId: string, taskId: string, decision:
   writeText(agentOutput, `# Review Output: ${taskId}\n\n- status: ${status}\n- summary: ${summary || "none"}\n- evidence: ${evidenceFile}\n- fix task: ${fixTaskId || "none"}\n`);
   writeText(handoff, `${JSON.stringify({
     run_id: runId,
+    task_id: taskId,
+    role: "reviewer",
     from: "reviewer",
     to: status === "approved" ? "archive" : "dev",
     status,
     summary,
+    commands: [],
     findings: status === "changes_requested" ? [{ severity: "medium", file: "unknown", line: 1, issue: summary, required_change: summary }] : [],
     evidence: [evidenceFile],
     next_state: status === "approved" ? "committing" : status === "changes_requested" ? "needs_dev_fix" : "blocked",
