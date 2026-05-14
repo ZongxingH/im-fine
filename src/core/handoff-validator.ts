@@ -1,4 +1,4 @@
-export type HandoffRole = "dev" | "qa" | "reviewer" | "archive" | "conflict-resolver" | "committer" | "risk-reviewer" | "technical-writer" | "project-knowledge-updater";
+export type HandoffRole = "dev" | "qa" | "reviewer" | "merge-agent" | "archive" | "committer" | "risk-reviewer" | "technical-writer" | "project-knowledge-updater";
 
 export interface HandoffValidationResult {
   passed: boolean;
@@ -83,17 +83,16 @@ export function validateHandoff(role: HandoffRole, value: unknown, runId: string
     statusField(value, ["approved", "changes_requested", "blocked"], errors);
     arrayField(value, "findings", errors);
     stringField(value, "next_state", errors);
+  } else if (role === "merge-agent") {
+    statusField(value, ["ready", "blocked"], errors);
+    arrayField(value, "merged_files", errors);
+    arrayField(value, "commands", errors);
+    stringField(value, "next_state", errors);
   } else if (role === "archive") {
-    statusField(value, ["archived", "blocked"], errors);
+    statusField(value, ["completed", "blocked"], errors);
     stringField(value, "archive_report", errors);
     arrayField(value, "project_updates", errors);
     arrayField(value, "blocked_items", errors);
-    stringField(value, "next_state", errors);
-  } else if (role === "conflict-resolver") {
-    statusField(value, ["resolved", "blocked"], errors);
-    arrayField(value, "resolved_files", errors);
-    arrayField(value, "commands", errors);
-    arrayField(value, "evidence", errors);
     stringField(value, "next_state", errors);
   } else if (role === "committer") {
     statusField(value, ["ready", "blocked"], errors);

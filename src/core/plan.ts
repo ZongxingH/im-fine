@@ -24,6 +24,8 @@ export interface TaskGraphTask {
 export interface TaskGraph {
   run_id: string;
   strategy: "parallel" | "serial" | "conflict_resolution";
+  artifact_type?: "planning";
+  execution_status?: "not_executed";
   tasks: TaskGraphTask[];
 }
 
@@ -47,15 +49,6 @@ export interface PlanResult {
   artifacts: string[];
 }
 
-interface RunMetadata {
-  run_id: string;
-  project_kind: "new_project" | "existing_project";
-  source?: {
-    type?: string;
-    value?: string;
-  };
-}
-
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 }
@@ -66,121 +59,6 @@ function ensureRunDir(cwd: string, runId: string): string {
     throw new Error(`Run not found: ${runId}`);
   }
   return runDir;
-}
-
-function readRequirement(runDir: string): string {
-  const normalized = path.join(runDir, "request", "normalized.md");
-  if (!fs.existsSync(normalized)) return "unknown requirement";
-  return fs.readFileSync(normalized, "utf8")
-    .replace(/^# Normalized Requirement\s*/i, "")
-    .split("\n## Source")[0]
-    .trim() || "unknown requirement";
-}
-
-function readTestCommands(runDir: string): string[] {
-  const projectContext = path.join(runDir, "analysis", "project-context.md");
-  if (!fs.existsSync(projectContext)) return [];
-  const content = fs.readFileSync(projectContext, "utf8");
-  const section = content.split("## Test Commands")[1]?.split("\n## ")[0] || "";
-  return section
-    .split("\n")
-    .map((line) => line.replace(/^- /, "").trim())
-    .filter((line) => line && line !== "unknown");
-}
-
-function makeCommitMessage(prefix: string, requirement: string): string {
-  const short = requirement
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 60)
-    .toLowerCase();
-  return `${prefix}: ${short || "planned imfine task"}`;
-}
-
-function createTaskGraph(runDir: string, metadata: RunMetadata): TaskGraph {
-  const requirement = readRequirement(runDir);
-  const testCommands = readTestCommands(runDir);
-  const verification = testCommands.length > 0 ? testCommands : metadata.project_kind === "new_project"
-    ? ["npm run test", "npm run lint", "npm run format", "npm run typecheck", "npm run build"]
-    : ["test command unknown; define verification before implementation"];
-  const commonReadScope = [
-    ".imfine/project/**",
-    `.imfine/runs/${metadata.run_id}/request/**`,
-    `.imfine/runs/${metadata.run_id}/analysis/**`,
-    `.imfine/runs/${metadata.run_id}/design/**`
-  ];
-
-  if (metadata.project_kind === "new_project") {
-    return {
-      run_id: metadata.run_id,
-      strategy: "parallel",
-      tasks: [
-        {
-          id: "T1",
-          title: "Create project foundation",
-          type: "dev",
-          depends_on: [],
-          read_scope: commonReadScope,
-          write_scope: [".gitignore", "README.md", "package.json", "src/**", "test/**"],
-          acceptance: ["Project structure supports the requested product direction", "Initial test command is defined"],
-          dev_plan: ["Create project foundation", "Define initial source and test layout", "Record setup commands"],
-          test_plan: verification,
-          review_plan: ["Review project structure", "Review setup and test command", "Review scope against requirement"],
-          verification,
-          commit: { mode: "task", message: makeCommitMessage("feat(project)", requirement) }
-        },
-        {
-          id: "T2",
-          title: "Document project usage and setup",
-          type: "docs",
-          depends_on: ["T1"],
-          read_scope: [...commonReadScope, "README.md", "package.json"],
-          write_scope: ["README.md", "docs/**"],
-          acceptance: ["Setup and usage documentation reflect the generated project"],
-          dev_plan: ["Update setup and usage documentation", "Keep docs aligned with generated project"],
-          test_plan: ["documentation review"],
-          review_plan: ["Review docs for accuracy", "Verify docs describe implemented project only"],
-          verification: ["documentation review"],
-          commit: { mode: "task", message: makeCommitMessage("docs(project)", requirement) }
-        }
-      ]
-    };
-  }
-
-  return {
-    run_id: metadata.run_id,
-    strategy: "serial",
-    tasks: [
-      {
-        id: "T1",
-        title: "Implement requested behavior in existing project",
-        type: "dev",
-        depends_on: [],
-        read_scope: [...commonReadScope, "src/**", "lib/**", "app/**", "package.json"],
-        write_scope: ["src/**", "lib/**", "app/**", "test/**", "__tests__/**"],
-        acceptance: ["Implementation satisfies normalized requirement", "Existing behavior remains compatible"],
-        dev_plan: ["Inspect affected modules", "Implement within existing architecture", "Add or update tests"],
-        test_plan: verification,
-        review_plan: ["Review requirement alignment", "Review write scope compliance", "Review compatibility risks"],
-        verification,
-        commit: { mode: "integration", message: makeCommitMessage("feat", requirement) }
-      },
-      {
-        id: "T2",
-        title: "Update affected documentation if needed",
-        type: "docs",
-        depends_on: ["T1"],
-        read_scope: [...commonReadScope, "README.md", "docs/**"],
-        write_scope: ["README.md", "docs/**"],
-        acceptance: ["Documentation is updated or explicitly marked not needed"],
-        dev_plan: ["Inspect docs for affected behavior", "Update docs or record no-docs-needed reason"],
-        test_plan: ["documentation review"],
-        review_plan: ["Review docs for accuracy", "Confirm no unimplemented behavior is documented"],
-        verification: ["documentation review"],
-        commit: { mode: "integration", message: makeCommitMessage("docs", requirement) }
-      }
-    ]
-  };
 }
 
 function graphTaskSummary(graph: TaskGraph): Array<{ id: string; title: string; type: string; write_scope: string[]; acceptance: string[] }> {
@@ -264,22 +142,6 @@ export function validateTaskGraph(graph: TaskGraph): TaskGraphValidation {
   };
 }
 
-export function validateRunTaskGraph(cwd: string, runId: string): TaskGraphValidation {
-  const runDir = ensureRunDir(cwd, runId);
-  const file = path.join(runDir, "planning", "task-graph.json");
-  if (!fs.existsSync(file)) {
-    return {
-      passed: false,
-      errors: [`Missing task graph for run: ${runId}`],
-      parallelGroups: [],
-      serialTasks: [],
-      serialReason: "task_graph: missing task graph",
-      replanRecommended: false
-    };
-  }
-  return validateTaskGraph(readJson<TaskGraph>(file));
-}
-
 function writeTaskPlans(cwd: string, runDir: string, graph: TaskGraph, artifacts: string[]): void {
   for (const task of graph.tasks) {
     const taskDir = path.join(runDir, "tasks", task.id);
@@ -313,9 +175,15 @@ function materializePlanningFiles(cwd: string, runId: string, runDir: string, gr
   const executionPlanFile = path.join(planningDir, "execution-plan.md");
   const commitPlanFile = path.join(planningDir, "commit-plan.md");
 
-  writeText(taskGraphFile, `${JSON.stringify(graph, null, 2)}\n`);
+  writeText(taskGraphFile, `${JSON.stringify({
+    artifact_type: "planning",
+    execution_status: "not_executed",
+    ...graph
+  }, null, 2)}\n`);
   artifacts.push(taskGraphFile);
   writeText(ownershipFile, `${JSON.stringify({
+    artifact_type: "planning",
+    execution_status: "not_executed",
     run_id: runId,
     tasks: graph.tasks.map((task) => ({
       task_id: task.id,
@@ -327,6 +195,12 @@ function materializePlanningFiles(cwd: string, runId: string, runDir: string, gr
   artifacts.push(ownershipFile);
 
   writeText(executionPlanFile, `# Execution Plan
+
+## Artifact Boundary
+
+- artifact_type: planning
+- execution_status: not_executed
+- note: this file describes intended dispatch order only; it is not proof that any agent ran
 
 ## Strategy
 
@@ -354,6 +228,12 @@ ${validation.errors.map((error) => `- ${error}`).join("\n")}
 
   writeText(commitPlanFile, `# Commit Plan
 
+## Artifact Boundary
+
+- artifact_type: planning
+- execution_status: not_executed
+- note: commit messages here are planned outputs, not completed commit evidence
+
 ${graph.tasks.map((task) => `## ${task.id}\n\n- Mode: ${task.commit.mode}\n- Message: ${task.commit.message}`).join("\n\n")}
 `);
   artifacts.push(commitPlanFile);
@@ -374,22 +254,12 @@ ${graph.tasks.map((task) => `## ${task.id}\n\n- Mode: ${task.commit.mode}\n- Mes
   };
 }
 
-export function materializeModelPlan(cwd: string, runId: string): PlanResult {
+export function materializeTaskGraphArtifacts(cwd: string, runId: string): PlanResult {
   const runDir = ensureRunDir(cwd, runId);
   const graphFile = path.join(runDir, "planning", "task-graph.json");
   if (!fs.existsSync(graphFile)) {
     throw new Error(`Missing model-produced task graph for run: ${runId}`);
   }
   const graph = readJson<TaskGraph>(graphFile);
-  return materializePlanningFiles(cwd, runId, runDir, graph);
-}
-
-export function planRun(cwd: string, runId: string): PlanResult {
-  const runDir = ensureRunDir(cwd, runId);
-  const metadata = readJson<RunMetadata>(path.join(runDir, "run.json"));
-  if (metadata.project_kind === "new_project") {
-    throw new Error("New-project planning is model-owned. Generate Architect and Task Planner outputs instead of running deterministic plan.");
-  }
-  const graph = createTaskGraph(runDir, metadata);
   return materializePlanningFiles(cwd, runId, runDir, graph);
 }

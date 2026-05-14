@@ -31,12 +31,6 @@
         "depends_on_pattern": "agent-architect-design-rework-{task_id}"
       }
     },
-    "needs_conflict_resolution": {
-      "role": "conflict-resolver",
-      "action_id": "agent-conflict-resolver",
-      "parallel_group": "conflict-resolution",
-      "reason": "run is waiting for conflict resolution"
-    },
     "needs_task_replan": {
       "role": "task-planner",
       "action_id": "agent-task-planner-replan",

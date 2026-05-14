@@ -30,11 +30,11 @@ transitionRunState(cwd, runId, "reviewing");
 transitionRunState(cwd, runId, "committing");
 transitionRunState(cwd, runId, "pushing");
 transitionRunState(cwd, runId, "archiving");
-transitionRunState(cwd, runId, "archived");
+transitionRunState(cwd, runId, "completed");
 const illegalRunTransition = transitionRunState(cwd, runId, "implementing");
 assert.equal(illegalRunTransition.accepted, false);
 assert.ok(fs.existsSync(path.join(runDir, "orchestration", "state-blockers.json")));
-assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8")).status, "archived");
+assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8")).status, "completed");
 
 const taskTransition = transitionTaskState(cwd, runId, "T1", "planned");
 assert.equal(taskTransition.accepted, true);

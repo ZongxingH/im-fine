@@ -55,14 +55,21 @@ interface AgentStatus {
   };
 }
 
-interface RunMetadata {
-  project_kind?: "new_project" | "existing_project";
-}
-
 interface RuntimeVerification {
   taskId: string;
   command: string;
   code: number | null;
+}
+
+interface StatusLine {
+  code: string;
+  file: string;
+}
+
+interface MergeAgentHandoff {
+  status: "ready" | "blocked";
+  mergedFiles: string[];
+  evidence: string[];
 }
 
 function readJson<T>(file: string): T {
@@ -115,6 +122,25 @@ function writeIndex(cwd: string, runId: string, index: WorktreeIndex): void {
   writeText(indexFile(cwd, runId), `${JSON.stringify(index, null, 2)}\n`);
 }
 
+function statusLines(cwd: string): StatusLine[] {
+  return runGit(cwd, ["status", "--porcelain"])
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => ({
+      code: line.slice(0, 2),
+      file: line.slice(3).trim()
+    }));
+}
+
+function isRuntimeOwnedStatusFile(file: string): boolean {
+  return file === ".imfine" || file.startsWith(".imfine/");
+}
+
+function nonRuntimeOwnedStatusLines(cwd: string): StatusLine[] {
+  return statusLines(cwd).filter((line) => !isRuntimeOwnedStatusFile(line.file));
+}
+
 function taskById(graph: TaskGraph, taskId: string): TaskGraphTask {
   const task = graph.tasks.find((item) => item.id === taskId);
   if (!task) throw new Error(`Unknown task ${taskId} in run ${graph.run_id}`);
@@ -141,12 +167,21 @@ function appendEvidence(file: string, title: string, section: string): void {
 function ensureRunWorktree(cwd: string, runId: string): { index: WorktreeIndex; runBranch: string; runWorktree: string } {
   const index = readIndex(cwd, runId);
   const runBranch = index.run_branch || `imfine/${runId}`;
-  const runWorktree = index.run_worktree || path.join(index.worktree_root, "_run");
+  const runWorktree = cwd;
+  const currentBranch = runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
 
-  if (!fs.existsSync(runWorktree)) {
-    runGit(cwd, ["worktree", "add", runWorktree, runBranch]);
-  } else if (!fs.existsSync(path.join(runWorktree, ".git"))) {
-    throw new Error(`Run worktree path exists but is not a git worktree: ${runWorktree}`);
+  if (currentBranch !== runBranch) {
+    const dirty = nonRuntimeOwnedStatusLines(cwd);
+    if (dirty.length > 0) {
+      throw new Error(`Current project directory has uncommitted source changes and cannot switch to ${runBranch}: ${dirty.map((line) => line.file).join(", ")}`);
+    }
+
+    const branchExists = optionalGit(cwd, ["rev-parse", "--verify", runBranch]).code === 0;
+    if (branchExists) {
+      runGit(cwd, ["checkout", runBranch]);
+    } else {
+      runGit(cwd, ["checkout", "-b", runBranch]);
+    }
   }
 
   if (index.run_worktree !== runWorktree) {
@@ -175,6 +210,10 @@ function reviewerStatusFile(cwd: string, runId: string, taskId: string): string 
 
 function handoffFile(cwd: string, runId: string, role: "qa" | "reviewer", taskId: string): string {
   return path.join(runDir(cwd, runId), "agents", `${role}-${taskId}`, "handoff.json");
+}
+
+function mergeHandoffFile(cwd: string, runId: string, taskId: string): string {
+  return path.join(runDir(cwd, runId), "agents", `merge-agent-${taskId}`, "handoff.json");
 }
 
 function requireValidatedHandoff(cwd: string, runId: string, role: HandoffRole, taskId: string): void {
@@ -215,6 +254,41 @@ function requireReadyToCommit(cwd: string, runId: string, taskId: string): void 
   const review = readJson<AgentStatus>(reviewPath);
   if (review.status !== "approved") throw new Error(`Task ${taskId} Review status is not approved`);
   requireValidatedHandoff(cwd, runId, "reviewer", taskId);
+
+  const mergePath = mergeHandoffFile(cwd, runId, taskId);
+  if (!fs.existsSync(mergePath)) throw new Error(`Missing Merge Agent handoff for task ${taskId}`);
+  const mergeHandoff = readJson<unknown>(mergePath);
+  const mergeValidation = validateHandoff("merge-agent", mergeHandoff, runId, taskId);
+  if (!mergeValidation.passed) throw new Error(`Invalid Merge Agent handoff for task ${taskId}: ${mergeValidation.errors.join("; ")}`);
+  const mergeStatus = (mergeHandoff as { status?: unknown }).status;
+  if (mergeStatus !== "ready") throw new Error(`Task ${taskId} Merge Agent status is not ready`);
+  const mergeEvidence = (mergeHandoff as { evidence?: unknown[] }).evidence || [];
+  for (const item of mergeEvidence) {
+    if (typeof item !== "string" || !fs.existsSync(item)) {
+      throw new Error(`Missing Merge Agent evidence for task ${taskId}: ${String(item)}`);
+    }
+  }
+}
+
+function readMergeAgentHandoff(cwd: string, runId: string, taskId: string): MergeAgentHandoff {
+  const file = mergeHandoffFile(cwd, runId, taskId);
+  if (!fs.existsSync(file)) throw new Error(`Missing Merge Agent handoff for task ${taskId}`);
+  const payload = readJson<Record<string, unknown>>(file);
+  const validation = validateHandoff("merge-agent", payload, runId, taskId);
+  if (!validation.passed) throw new Error(`Invalid Merge Agent handoff for task ${taskId}: ${validation.errors.join("; ")}`);
+  if (payload.status !== "ready") throw new Error(`Task ${taskId} Merge Agent status is not ready`);
+  const mergedFiles = Array.isArray(payload.merged_files)
+    ? payload.merged_files.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  if (mergedFiles.length === 0) throw new Error(`Task ${taskId} Merge Agent merged_files is empty`);
+  const evidence = Array.isArray(payload.evidence)
+    ? payload.evidence.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  return {
+    status: "ready",
+    mergedFiles,
+    evidence
+  };
 }
 
 function orderedTasks(graph: TaskGraph, taskIds: string[]): TaskGraphTask[] {
@@ -255,13 +329,26 @@ function matchesScope(file: string, scope: string): boolean {
   return new RegExp(`^${pattern}$`).test(file);
 }
 
-function validateResolvedRunScope(runWorktree: string, tasks: TaskGraphTask[]): string[] {
-  const changed = runGit(runWorktree, ["diff", "--cached", "--name-only", "HEAD"])
+function changedSourceFiles(runWorktree: string): string[] {
+  runGit(runWorktree, ["add", "-N", "."]);
+  return runGit(runWorktree, ["diff", "--name-only", "HEAD"])
     .split("\n")
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter((item) => Boolean(item) && !isRuntimeOwnedStatusFile(item));
+}
+
+function validateResolvedRunScope(changed: string[], tasks: TaskGraphTask[]): string[] {
   const allowedScopes = tasks.flatMap((task) => task.write_scope);
   return changed.filter((file) => !allowedScopes.some((scope) => matchesScope(file, scope)));
+}
+
+function validateDeclaredMergedFiles(changed: string[], declared: string[]): { undeclared: string[]; declaredButUnchanged: string[] } {
+  const changedSet = new Set(changed);
+  const declaredSet = new Set(declared);
+  return {
+    undeclared: changed.filter((file) => !declaredSet.has(file)),
+    declaredButUnchanged: declared.filter((file) => !changedSet.has(file))
+  };
 }
 
 function commitMessage(runId: string, tasks: TaskGraphTask[], mode: CommitMode, runtimeVerification: RuntimeVerification[]): string {
@@ -293,126 +380,11 @@ function commitMessage(runId: string, tasks: TaskGraphTask[], mode: CommitMode, 
   ].join("\n");
 }
 
-function ensureCleanRunWorktree(runWorktree: string): void {
-  const status = runGit(runWorktree, ["status", "--porcelain"]);
-  if (status.trim()) {
-    throw new Error(`Run worktree has uncommitted changes: ${runWorktree}`);
-  }
-}
-
-function runMetadata(cwd: string, runId: string): RunMetadata {
-  return readJson<RunMetadata>(path.join(runDir(cwd, runId), "run.json"));
-}
-
-function syncDirectory(source: string, target: string, preserve: Set<string>): void {
-  const sourceEntries = new Set(fs.readdirSync(source, { withFileTypes: true }).map((entry) => entry.name));
-
-  for (const entry of fs.readdirSync(target, { withFileTypes: true })) {
-    if (preserve.has(entry.name)) continue;
-    if (!sourceEntries.has(entry.name)) {
-      fs.rmSync(path.join(target, entry.name), { recursive: true, force: true });
-    }
-  }
-
-  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
-    if (preserve.has(entry.name)) continue;
-    const sourcePath = path.join(source, entry.name);
-    const targetPath = path.join(target, entry.name);
-    if (entry.isDirectory()) {
-      fs.mkdirSync(targetPath, { recursive: true });
-      syncDirectory(sourcePath, targetPath, new Set());
-      continue;
-    }
-    if (entry.isSymbolicLink()) {
-      fs.rmSync(targetPath, { recursive: true, force: true });
-      fs.symlinkSync(fs.readlinkSync(sourcePath), targetPath);
-      continue;
-    }
-    fs.copyFileSync(sourcePath, targetPath);
-  }
-}
-
-function finalizeWorkspaceIfNeeded(cwd: string, runId: string, runBranch: string, runWorktree: string): void {
-  const metadata = runMetadata(cwd, runId);
-  if (metadata.project_kind !== "new_project") return;
-
-  syncDirectory(runWorktree, cwd, new Set([".git", ".imfine"]));
-  updateRun(cwd, runId, "committing", {
-    finalized_at: new Date().toISOString(),
-    finalized_branch: runBranch,
-    finalized_from_worktree: runWorktree,
-    finalized_to_cwd: cwd
-  });
-}
-
-function applyPatch(runWorktree: string, patch: string, taskId: string): void {
-  const check = optionalGit(runWorktree, ["apply", "--check", patch]);
-  if (check.code !== 0) {
-    throw new Error(check.stderr || `Patch for task ${taskId} cannot be applied cleanly`);
-  }
-  runGit(runWorktree, ["apply", "--index", patch]);
-}
-
-function recordConflictResolverHandoff(cwd: string, runId: string, task: TaskGraphTask, mode: CommitMode, runBranch: string, runWorktree: string, patch: string, reason: string): void {
-  const dir = runDir(cwd, runId);
-  const agentDir = path.join(dir, "agents", "conflict-resolver");
-  const evidence = evidenceFile(cwd, runId, "conflicts.md");
-  const now = new Date().toISOString();
-  ensureDir(agentDir);
-
-  appendEvidence(evidence, "Conflict Evidence", `## ${task.id}\n\n- detected_at: ${now}\n- mode: ${mode}\n- run_branch: ${runBranch}\n- run_worktree: ${runWorktree}\n- patch: ${patch}\n- reason: ${reason.trim() || "patch cannot be applied cleanly"}`);
-
-  writeText(path.join(agentDir, "input.md"), `# Conflict Resolver Input\n\n## Run\n\n- run: ${runId}\n- branch: ${runBranch}\n- worktree: ${runWorktree}\n- mode: ${mode}\n\n## Blocked Task\n\n- id: ${task.id}\n- title: ${task.title}\n- write scope: ${task.write_scope.join(", ")}\n- patch: ${patch}\n\n## Reason\n\n${reason.trim() || "Patch cannot be applied cleanly."}\n\n## Required Output\n\n- Resolve conflicts in the run worktree without expanding task write boundaries.\n- Re-run verification for affected tasks.\n- Request Review again before \`imfine commit resolved ${runId}\`.\n`);
-
-  writeText(path.join(agentDir, "status.json"), `${JSON.stringify({
-    run_id: runId,
-    task_id: task.id,
-    status: "ready",
-    detected_at: now,
-    mode,
-    evidence
-  }, null, 2)}\n`);
-
-  writeText(path.join(agentDir, "handoff.json"), `${JSON.stringify({
-    schema_version: 1,
-    from: "runtime-commit",
-    to: "conflict-resolver",
-    run_id: runId,
-    task_id: task.id,
-    status: "needs_conflict_resolution",
-    reason: reason.trim() || "patch cannot be applied cleanly",
-    inputs: {
-      patch,
-      evidence,
-      run_worktree: runWorktree,
-      run_branch: runBranch
-    },
-    next_runtime_action: `imfine commit resolved ${runId} ${task.id}`
-  }, null, 2)}\n`);
-
-  updateTask(cwd, runId, task.id, "needs_conflict_resolution", {
-    conflict_detected_at: now,
-    conflict_evidence: evidence,
-    conflict_resolver_input: path.join(agentDir, "input.md")
-  });
-  updateRun(cwd, runId, "needs_conflict_resolution", {
-    conflict_detected_at: now,
-    conflict_task_id: task.id,
-    conflict_evidence: evidence,
-    conflict_resolver_input: path.join(agentDir, "input.md"),
-    run_branch: runBranch,
-    run_worktree: runWorktree
-  });
-}
-
-function applyPatchOrRecordConflict(cwd: string, runId: string, task: TaskGraphTask, mode: CommitMode, runBranch: string, runWorktree: string): void {
-  const patch = patchFile(cwd, runId, task.id);
-  try {
-    applyPatch(runWorktree, patch, task.id);
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    recordConflictResolverHandoff(cwd, runId, task, mode, runBranch, runWorktree, patch, reason);
-    throw new Error(`Task ${task.id} requires Conflict Resolver before commit: ${reason}`);
+function ensureNoUntrackedRunFiles(runWorktree: string): void {
+  const status = nonRuntimeOwnedStatusLines(runWorktree);
+  const untracked = status.filter((line) => line.code === "??");
+  if (untracked.length > 0) {
+    throw new Error(`Run worktree has untracked source files before commit: ${untracked.map((line) => line.file).join(", ")}`);
   }
 }
 
@@ -442,6 +414,11 @@ function runPreCommitVerification(cwd: string, runId: string, runWorktree: strin
   return results;
 }
 
+function stageFiles(runWorktree: string, files: string[]): void {
+  if (files.length === 0) throw new Error("No merged source files were provided for commit staging");
+  runGit(runWorktree, ["add", "--", ...files]);
+}
+
 function createCommit(runWorktree: string, message: string): string {
   runGit(runWorktree, ["commit", "-m", message]);
   return runGit(runWorktree, ["rev-parse", "HEAD"]);
@@ -456,16 +433,48 @@ export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?
   const selectedTaskIds = taskIds && taskIds.length > 0 ? taskIds : graph.tasks.map((task) => task.id);
   const tasks = orderedTasks(graph, selectedTaskIds);
   for (const task of tasks) requireReadyToCommit(cwd, runId, task.id);
+  const mergeHandoffs = new Map(tasks.map((task) => [task.id, readMergeAgentHandoff(cwd, runId, task.id)]));
 
   const { runBranch, runWorktree } = ensureRunWorktree(cwd, runId);
-  ensureCleanRunWorktree(runWorktree);
+  ensureNoUntrackedRunFiles(runWorktree);
 
   const evidence = evidenceFile(cwd, runId, "commits.md");
   const commits: CommitRecord[] = [];
 
   if (mode === "task") {
     for (const task of tasks) {
-      applyPatchOrRecordConflict(cwd, runId, task, "task", runBranch, runWorktree);
+      const changed = changedSourceFiles(runWorktree);
+      const merge = mergeHandoffs.get(task.id);
+      if (!merge) throw new Error(`Missing Merge Agent handoff cache for task ${task.id}`);
+      const declared = validateDeclaredMergedFiles(changed, merge.mergedFiles);
+      if (declared.undeclared.length > 0) {
+        updateRun(cwd, runId, "blocked", {
+          commit_blocked_at: new Date().toISOString(),
+          commit_blocked_reason: "merge_agent_undeclared_files",
+          commit_blocked_files: declared.undeclared,
+          commit_blocked_task: task.id
+        });
+        throw new Error(`Merge Agent changed files without declaring them for ${task.id}: ${declared.undeclared.join(", ")}`);
+      }
+      if (declared.declaredButUnchanged.length > 0) {
+        updateRun(cwd, runId, "blocked", {
+          commit_blocked_at: new Date().toISOString(),
+          commit_blocked_reason: "merge_agent_declared_but_unchanged_files",
+          commit_blocked_files: declared.declaredButUnchanged,
+          commit_blocked_task: task.id
+        });
+        throw new Error(`Merge Agent declared unchanged files for ${task.id}: ${declared.declaredButUnchanged.join(", ")}`);
+      }
+      const scopeViolations = validateResolvedRunScope(merge.mergedFiles, [task]);
+      if (scopeViolations.length > 0) {
+        updateRun(cwd, runId, "blocked", {
+          commit_blocked_at: new Date().toISOString(),
+          commit_blocked_reason: "merge_agent_outside_write_scope",
+          commit_blocked_files: scopeViolations
+        });
+        throw new Error(`Merge Agent changed files outside write_scope for ${task.id}: ${scopeViolations.join(", ")}`);
+      }
+      stageFiles(runWorktree, merge.mergedFiles);
       const runtimeVerification = runPreCommitVerification(cwd, runId, runWorktree, [task], evidence);
       const message = commitMessage(runId, [task], "task", runtimeVerification);
       const hash = createCommit(runWorktree, message);
@@ -474,7 +483,38 @@ export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?
       appendEvidence(evidence, "Commit Evidence", `## ${task.id}\n\n- mode: task\n- hash: ${hash}\n- branch: ${runBranch}\n- worktree: ${runWorktree}\n- message: ${task.commit.message}`);
     }
   } else {
-    for (const task of tasks) applyPatchOrRecordConflict(cwd, runId, task, "integration", runBranch, runWorktree);
+    const changed = changedSourceFiles(runWorktree);
+    const mergedFiles = Array.from(new Set(tasks.flatMap((task) => {
+      const merge = mergeHandoffs.get(task.id);
+      return merge ? merge.mergedFiles : [];
+    })));
+    const declared = validateDeclaredMergedFiles(changed, mergedFiles);
+    if (declared.undeclared.length > 0) {
+      updateRun(cwd, runId, "blocked", {
+        commit_blocked_at: new Date().toISOString(),
+        commit_blocked_reason: "merge_agent_undeclared_files",
+        commit_blocked_files: declared.undeclared
+      });
+      throw new Error(`Merge Agent changed files without declaring them: ${declared.undeclared.join(", ")}`);
+    }
+    if (declared.declaredButUnchanged.length > 0) {
+      updateRun(cwd, runId, "blocked", {
+        commit_blocked_at: new Date().toISOString(),
+        commit_blocked_reason: "merge_agent_declared_but_unchanged_files",
+        commit_blocked_files: declared.declaredButUnchanged
+      });
+      throw new Error(`Merge Agent declared unchanged files: ${declared.declaredButUnchanged.join(", ")}`);
+    }
+    const scopeViolations = validateResolvedRunScope(mergedFiles, tasks);
+    if (scopeViolations.length > 0) {
+      updateRun(cwd, runId, "blocked", {
+        commit_blocked_at: new Date().toISOString(),
+        commit_blocked_reason: "merge_agent_outside_write_scope",
+        commit_blocked_files: scopeViolations
+      });
+      throw new Error(`Merge Agent changed files outside merged write_scope: ${scopeViolations.join(", ")}`);
+    }
+    stageFiles(runWorktree, mergedFiles);
     const runtimeVerification = runPreCommitVerification(cwd, runId, runWorktree, tasks, evidence);
     const message = commitMessage(runId, tasks, "integration", runtimeVerification);
     const hash = createCommit(runWorktree, message);
@@ -489,64 +529,11 @@ export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?
     run_worktree: runWorktree,
     commit_hashes: commits.map((commit) => commit.hash)
   });
-  finalizeWorkspaceIfNeeded(cwd, runId, runBranch, runWorktree);
   refreshOrchestrationSnapshot(cwd, runId);
 
   return {
     runId,
     mode,
-    runBranch,
-    runWorktree,
-    commits,
-    evidence,
-    status: "committed"
-  };
-}
-
-export function commitResolvedRun(cwd: string, runId: string, taskIds?: string[]): CommitResult {
-  const graph = readGraph(cwd, runId);
-  const selectedTaskIds = taskIds && taskIds.length > 0 ? taskIds : graph.tasks.map((task) => task.id);
-  const tasks = orderedTasks(graph, selectedTaskIds);
-  for (const task of tasks) requireReadyToCommit(cwd, runId, task.id);
-
-  const { runBranch, runWorktree } = ensureRunWorktree(cwd, runId);
-  const status = runGit(runWorktree, ["status", "--porcelain"]);
-  if (!status.trim()) {
-    throw new Error(`Run worktree has no resolved changes to commit: ${runWorktree}`);
-  }
-
-  runGit(runWorktree, ["add", "-A"]);
-  const scopeViolations = validateResolvedRunScope(runWorktree, tasks);
-  if (scopeViolations.length > 0) {
-    updateRun(cwd, runId, "blocked", {
-      commit_blocked_at: new Date().toISOString(),
-      commit_blocked_reason: "conflict_resolution_outside_write_scope",
-      commit_blocked_files: scopeViolations
-    });
-    throw new Error(`Conflict Resolver changed files outside write_scope: ${scopeViolations.join(", ")}`);
-  }
-  const evidence = evidenceFile(cwd, runId, "commits.md");
-  const runtimeVerification = runPreCommitVerification(cwd, runId, runWorktree, tasks, evidence);
-  const message = commitMessage(runId, tasks, "integration", runtimeVerification);
-  const hash = createCommit(runWorktree, message);
-  const commits = [{ taskIds: tasks.map((task) => task.id), hash, message }];
-  for (const task of tasks) updateTask(cwd, runId, task.id, "committed", { commit_hash: hash, commit_mode: "integration", resolved_by: "conflict_resolver" });
-
-  appendEvidence(evidence, "Commit Evidence", `## Conflict Resolver Integration Commit\n\n- mode: integration\n- hash: ${hash}\n- branch: ${runBranch}\n- worktree: ${runWorktree}\n- tasks: ${tasks.map((task) => task.id).join(", ")}\n- resolved_by: conflict_resolver\n- message: ${message.split("\n")[0]}`);
-
-  updateRun(cwd, runId, "committing", {
-    committed_at: new Date().toISOString(),
-    run_branch: runBranch,
-    run_worktree: runWorktree,
-    commit_hashes: [hash],
-    conflict_resolved_at: new Date().toISOString()
-  });
-  finalizeWorkspaceIfNeeded(cwd, runId, runBranch, runWorktree);
-  refreshOrchestrationSnapshot(cwd, runId);
-
-  return {
-    runId,
-    mode: "integration",
     runBranch,
     runWorktree,
     commits,

@@ -10,7 +10,7 @@ import { collectPatch, prepareWorktrees, type PatchCollectResult, type WorktreeP
 export interface NewProjectDeliveryResult {
   runId: string;
   cwd: string;
-  status: "archived" | "blocked";
+  status: "completed" | "blocked";
   run: DeliveryRunResult;
   worktrees: WorktreePrepareResult;
   patches: PatchCollectResult[];

@@ -95,7 +95,7 @@ function roleSummary(result: OrchestratorResult, agent: AgentRun): { summary: st
 
 export function summarizeOrchestratorSession(cwd: string, result: OrchestratorResult): SessionSummarizedOrchestratorResult {
   const orchestratorSummary = {
-    summary: `Orchestrator inferred ${result.status} with ${result.nextActions.filter((action) => action.status !== "done").length} actionable step(s) across ${result.parallelGroups.length} parallel group(s)`,
+    summary: `Orchestrator session declared ${result.status} in ${result.executionMode} with ${result.nextActions.filter((action) => action.status !== "done").length} actionable step(s) across ${result.parallelGroups.length} parallel group(s); native subagent dispatch stays owned by the current session`,
     outputs: [result.files.state, result.files.queue, result.files.dispatchContracts, result.files.timeline].map((file) => rel(cwd, file)),
     details: [
       `ready actions: ${result.nextActions.filter((action) => action.status === "ready").length}`,
@@ -112,7 +112,11 @@ export function summarizeOrchestratorSession(cwd: string, result: OrchestratorRe
       status: agent.status,
       summary: role.summary,
       outputs: existingOutputs(cwd, agent.outputs),
-      details: role.details
+      details: [
+        `execution source: ${agent.executionSource || "true_harness"}`,
+        `executed by: ${agent.executedBy || "native_agent"}`,
+        ...role.details
+      ]
     };
   });
   return { ...result, sessionSummary: { orchestrator: orchestratorSummary, agents } };
@@ -126,7 +130,11 @@ export function summarizeAutoOrchestratorSession(cwd: string, result: AutoOrches
       orchestrator: {
         summary: `Current session completed ${result.steps.filter((step) => step.status === "completed").length} step(s) in ${result.iterations} iteration(s); final status is ${result.status}`,
         outputs: [result.timeline],
-        details: result.steps.map((step) => `${step.actionId}: ${step.detail}`)
+        details: [
+          `execution mode: ${result.lastOrchestration.executionMode}`,
+          "native subagent dispatch remains current-session owned",
+          ...result.steps.map((step) => `${step.actionId}: ${step.detail}`)
+        ]
       },
       agents: summarized.sessionSummary.agents
     }

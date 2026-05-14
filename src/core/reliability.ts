@@ -4,7 +4,7 @@ import { ensureDir, writeText } from "./fs.js";
 
 export type LockScope = "run" | "action";
 export type CheckpointPhase = "before" | "after";
-export type CheckpointStatus = "started" | "completed" | "waiting_for_model" | "blocked" | "failed";
+export type CheckpointStatus = "started" | "completed" | "waiting_for_agent_output" | "blocked" | "failed";
 
 export interface LockHandle {
   acquired: boolean;

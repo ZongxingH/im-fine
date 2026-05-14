@@ -7,6 +7,7 @@ export interface StatusResult {
   workspace: string;
   currentRunId: string | null;
   currentRunStatus: string | null;
+  currentRunExecutionMode: string | null;
   currentRunBranch: string | null;
   reports: string[];
 }
@@ -23,6 +24,7 @@ export function status(cwd: string): StatusResult {
   const currentFile = path.join(workspace, "state", "current.json");
   let currentRunId: string | null = null;
   let currentRunStatus: string | null = null;
+  let currentRunExecutionMode: string | null = null;
   let currentRunBranch: string | null = null;
 
   if (fs.existsSync(currentFile)) {
@@ -43,11 +45,13 @@ export function status(cwd: string): StatusResult {
     const runFile = path.join(workspace, "runs", currentRunId, "run.json");
     if (fs.existsSync(runFile)) {
       try {
-        const parsed = JSON.parse(fs.readFileSync(runFile, "utf8")) as { status?: unknown; run_branch?: unknown };
+        const parsed = JSON.parse(fs.readFileSync(runFile, "utf8")) as { status?: unknown; execution_mode?: unknown; run_branch?: unknown };
         currentRunStatus = typeof parsed.status === "string" ? parsed.status : null;
+        currentRunExecutionMode = typeof parsed.execution_mode === "string" ? parsed.execution_mode : null;
         currentRunBranch = typeof parsed.run_branch === "string" ? parsed.run_branch : null;
       } catch {
         currentRunStatus = null;
+        currentRunExecutionMode = null;
       }
     }
   }
@@ -58,6 +62,7 @@ export function status(cwd: string): StatusResult {
     workspace,
     currentRunId,
     currentRunStatus,
+    currentRunExecutionMode,
     currentRunBranch,
     reports
   };

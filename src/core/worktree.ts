@@ -44,6 +44,7 @@ interface WorktreeIndex {
   run_id: string;
   run_branch: string;
   worktree_root: string;
+  run_worktree?: string;
   tasks: WorktreeTask[];
 }
 
@@ -107,10 +108,35 @@ function readIndex(cwd: string, runId: string): WorktreeIndex {
   return readJson<WorktreeIndex>(file);
 }
 
+export function taskHasPendingWorktreeChanges(cwd: string, runId: string, taskId: string): boolean {
+  try {
+    const index = readIndex(cwd, runId);
+    const task = index.tasks.find((item) => item.task_id === taskId);
+    if (!task) return false;
+    runGit(task.path, ["add", "-N", "."]);
+    const changed = runGit(task.path, ["diff", "--name-only", "HEAD"])
+      .split("\n")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return changed.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 function ensureBranch(cwd: string, branch: string, startPoint: string): void {
   if (!optionalGit(cwd, ["rev-parse", "--verify", branch])) {
     runGit(cwd, ["branch", branch, startPoint]);
   }
+}
+
+function nonRuntimeOwnedStatusLines(cwd: string): string[] {
+  return runGit(cwd, ["status", "--porcelain"])
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim())
+    .filter((file) => file && !(file === ".imfine" || file.startsWith(".imfine/")));
 }
 
 function agentType(task: TaskGraphTask): string {
@@ -132,6 +158,14 @@ export function prepareWorktrees(cwd: string, runId: string): WorktreePrepareRes
   ensureDir(root);
 
   ensureBranch(cwd, runBranch, "HEAD");
+  const currentBranch = runGit(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  if (currentBranch !== runBranch) {
+    const dirty = nonRuntimeOwnedStatusLines(cwd);
+    if (dirty.length > 0) {
+      throw new Error(`Current project directory has uncommitted source changes and cannot switch to ${runBranch}: ${dirty.join(", ")}`);
+    }
+    runGit(cwd, ["checkout", runBranch]);
+  }
 
   const tasks: WorktreeTask[] = [];
   for (const task of graph.tasks) {
@@ -160,6 +194,7 @@ export function prepareWorktrees(cwd: string, runId: string): WorktreePrepareRes
     run_id: runId,
     run_branch: runBranch,
     worktree_root: root,
+    run_worktree: cwd,
     tasks
   };
   writeText(indexFile(cwd, runId), `${JSON.stringify(index, null, 2)}\n`);

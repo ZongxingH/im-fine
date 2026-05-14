@@ -1,15 +1,13 @@
 import { archiveRun } from "./archive.js";
-import { executeAgentBatch, prepareAgentExecutions } from "./agent-execution.js";
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
 import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
-import { formatAgentExecute, formatAgentPrepare, formatArchive, formatAutoOrchestrator, formatCommit, formatDeliveryRun, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPlan, formatPush, formatRecovery, formatReplan, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
-import { commitResolvedRun, commitRun, commitTask, pushRun, type CommitMode } from "./gitflow.js";
+import { formatArchive, formatAutoOrchestrator, formatCommit, formatDeliveryRun, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
+import { commitRun, commitTask, pushRun, type CommitMode } from "./gitflow.js";
 import { initProject } from "./init.js";
 import { install } from "./install.js";
 import { listLibrary, parseKind, readLibrary, syncLibrary } from "./library.js";
 import { resumeRun } from "./orchestrator.js";
-import { planRun, validateRunTaskGraph } from "./plan.js";
 import { resolveCwd } from "./paths.js";
 import { requestDesignRework, type ReviewDecision, type VerificationStatus, reviewTask, verifyTask } from "./quality.js";
 import { requestTaskPlannerReplan } from "./replan.js";
@@ -30,8 +28,8 @@ Usage:
   ${program} help
 
 Public slash-command surface is intentionally limited to init, run, and status.
-All planning, orchestration, QA, review, commit, push, archive, recovery, and bridge commands remain internal runtime actions or debug/testing hooks.
-Outside init-time environment inspection and deterministic runtime materialization, delivery work is expected to be handled by model-led multi-role multi-agent + skill execution in the current provider session.
+All planning materialization, orchestration, QA, review, commit, push, archive, recovery, and agent-dispatch commands remain internal runtime actions.
+Outside init-time environment inspection and deterministic runtime materialization, delivery work is expected to be handled by the current session's Orchestrator launching independent native subagents with model-led multi-role multi-agent + skill execution.
 Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables Chinese /imfine entries for both Codex and Claude.
 `;
 }
@@ -51,13 +49,6 @@ function parseCommitMode(value: string | undefined): CommitMode {
   if (!value || value === "task") return "task";
   if (value === "integration") return value;
   throw new Error("Invalid commit --mode. Expected task or integration.");
-}
-
-function parseLimit(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed < 0) throw new Error("Invalid --limit. Expected a non-negative integer.");
-  return parsed;
 }
 
 function parseMaxIterations(value: string | undefined): number {
@@ -116,7 +107,6 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
         return;
       }
       const auto = summarizeAutoOrchestratorSession(cwd, await runAutoOrchestrator(cwd, result.runId, {
-        executor: readStringFlag(args, "executor"),
         dryRun: readBooleanFlag(args, "dryRun"),
         maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
       }));
@@ -128,26 +118,10 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       const runId = args.positional[1];
       if (!runId) throw new Error("Expected orchestrate <run-id>.");
       const result = summarizeAutoOrchestratorSession(cwd, await runAutoOrchestrator(cwd, runId, {
-        executor: readStringFlag(args, "executor"),
         dryRun: readBooleanFlag(args, "dryRun"),
         maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
       }));
       print(result, json, () => formatAutoOrchestrator(result));
-      return;
-    }
-
-    if (command === "plan") {
-      const actionOrRunId = args.positional[1];
-      if (!actionOrRunId) throw new Error("Missing <run-id>.");
-      if (actionOrRunId === "validate") {
-        const runId = args.positional[2];
-        if (!runId) throw new Error("Missing <run-id> for plan validate.");
-        const validation = validateRunTaskGraph(cwd, runId);
-        print(validation, json, () => `${validation.passed ? "pass" : "fail"}\n${validation.errors.map((error) => `- ${error}`).join("\n")}\n`);
-        return;
-      }
-      const result = planRun(cwd, actionOrRunId);
-      print(result, json, () => formatPlan(result));
       return;
     }
 
@@ -168,14 +142,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
         print(result, json, () => formatReplan(result));
         return;
       }
-      if (args.positional[1] !== "graph" || args.positional[2] !== "validate") {
-        throw new Error("Expected task graph validate <run-id> or task planner replan <run-id>.");
-      }
-      const runId = args.positional[3];
-      if (!runId) throw new Error("Missing <run-id> for task graph validate.");
-      const validation = validateRunTaskGraph(cwd, runId);
-      print(validation, json, () => `${validation.passed ? "pass" : "fail"}\n${validation.errors.map((error) => `- ${error}`).join("\n")}\n`);
-      return;
+      throw new Error("Expected task planner replan <run-id>.");
     }
 
     if (command === "worktree") {
@@ -259,13 +226,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
         print(result, json, () => formatCommit(result));
         return;
       }
-      if (scope === "resolved") {
-        if (!runId) throw new Error("Expected commit resolved <run-id> [task-id...].");
-        const result = commitResolvedRun(cwd, runId, args.positional.slice(3));
-        print(result, json, () => formatCommit(result));
-        return;
-      }
-      throw new Error("Expected commit task <run-id> <task-id>, commit run <run-id> [--mode task|integration], or commit resolved <run-id> [task-id...].");
+      throw new Error("Expected commit task <run-id> <task-id> or commit run <run-id> [--mode task|integration].");
     }
 
     if (command === "push") {
@@ -307,24 +268,6 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     if (command === "agents" || command === "skills" || command === "templates" || command === "workflows") {
       const kind = parseKind(command);
       const action = args.positional[1] || "list";
-      if (command === "agents" && action === "prepare") {
-        const runId = args.positional[2];
-        if (!runId) throw new Error("Expected agents prepare <run-id>.");
-        const result = prepareAgentExecutions(cwd, runId);
-        print(result, json, () => formatAgentPrepare(result));
-        return;
-      }
-      if (command === "agents" && action === "execute") {
-        const runId = args.positional[2];
-        if (!runId) throw new Error("Expected agents execute <run-id>.");
-        const result = await executeAgentBatch(cwd, runId, {
-          dryRun: readBooleanFlag(args, "dryRun"),
-          executor: readStringFlag(args, "executor"),
-          limit: parseLimit(readStringFlag(args, "limit"))
-        });
-        print(result, json, () => formatAgentExecute(result));
-        return;
-      }
       if (action === "list") {
         const result = listLibrary(kind);
         print(result, json, () => formatLibraryList(kind, result));

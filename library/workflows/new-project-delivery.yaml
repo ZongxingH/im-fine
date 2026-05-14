@@ -1,7 +1,7 @@
 {
   "id": "new-project-delivery",
   "states": {
-    "waiting_for_model": {
+    "waiting_for_agent_output": {
       "roles": {
         "architect": {
           "status": "ready",

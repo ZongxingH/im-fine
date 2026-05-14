@@ -39,7 +39,6 @@ export type FixLoopRecoveryStateId =
   | "implementation_blocked_by_design";
 
 export type FixLoopRoleActionStateId =
-  | "needs_conflict_resolution"
   | "needs_task_replan";
 
 export function readFixLoopRecoveryState(stateId: FixLoopRecoveryStateId): FixLoopRecoveryWorkflowState {

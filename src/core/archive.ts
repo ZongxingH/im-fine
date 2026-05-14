@@ -7,7 +7,7 @@ import { type TaskGraph } from "./plan.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 
-export type ArchiveStatus = "archived" | "blocked";
+export type ArchiveStatus = "completed" | "blocked";
 
 export interface ArchiveCheck {
   id: string;
@@ -30,6 +30,7 @@ export interface ArchiveResult {
 interface RunMetadata {
   run_id: string;
   status?: string;
+  execution_mode?: string;
   project_kind?: string;
   run_branch?: string;
   push_status?: string;
@@ -181,7 +182,7 @@ function outcomeChecks(cwd: string, runId: string): ArchiveCheck[] {
 }
 
 function updateRun(cwd: string, runId: string, status: ArchiveStatus, extra: Record<string, unknown>): void {
-  assertTransitionAccepted(transitionRunState(cwd, runId, status, extra), `archive run ${runId}`);
+  assertTransitionAccepted(transitionRunState(cwd, runId, status === "completed" ? "completed" : "blocked", extra), `archive run ${runId}`);
 }
 
 function appendProjectSection(file: string, title: string, body: string): void {
@@ -229,6 +230,10 @@ function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, c
   const commits = readTextIfExists(path.join(dir, "evidence", "commits.md"));
   const push = readTextIfExists(path.join(dir, "evidence", "push.md"));
   const harnessEvidence = path.join(dir, "orchestration", "true-harness-evidence.md");
+  const harnessEvidenceJson = path.join(dir, "orchestration", "true-harness-evidence.json");
+  const harness = fs.existsSync(harnessEvidenceJson)
+    ? readJson<{ harness_classification?: string; true_harness_passed?: boolean }>(harnessEvidenceJson)
+    : null;
 
   return `# Archive Report
 
@@ -236,6 +241,9 @@ function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, c
 
 - run id: ${runId}
 - status: ${status}
+- execution mode: ${run.execution_mode || "unknown"}
+- harness classification: ${harness?.harness_classification || "unknown"}
+- true harness passed: ${harness?.true_harness_passed ? "yes" : "no"}
 - project kind: ${run.project_kind || "unknown"}
 - run branch: ${run.run_branch || "unknown"}
 
@@ -254,7 +262,6 @@ ${taskLines(graph, cwd, runId).join("\n")}
 - impact analysis: ${path.join(dir, "analysis", "impact-analysis.md")}
 - risk analysis: ${path.join(dir, "analysis", "risk-analysis.md")}
 - runtime context: ${path.join(dir, "orchestration", "context.json")}
-- pending roles: ${path.join(dir, "orchestration", "pending-roles.json")}
 - task graph: ${path.join(dir, "planning", "task-graph.json")}
 - execution plan: ${path.join(dir, "planning", "execution-plan.md")}
 - commit plan: ${path.join(dir, "planning", "commit-plan.md")}
@@ -386,8 +393,8 @@ export function archiveRun(cwd: string, runId: string): ArchiveResult {
   const blockedItems = checks
     .filter((check) => check.status === "fail")
     .map((check) => `${check.id}: ${check.detail}`);
-  const status: ArchiveStatus = blockedItems.length === 0 ? "archived" : "blocked";
-  const projectUpdateFiles = status === "archived" ? writeProjectKnowledge(cwd, runId, graph) : [];
+  const status: ArchiveStatus = blockedItems.length === 0 ? "completed" : "blocked";
+  const projectUpdateFiles = status === "completed" ? writeProjectKnowledge(cwd, runId, graph) : [];
 
   const archiveReport = path.join(archiveDir, "archive-report.md");
   const projectUpdates = path.join(archiveDir, "project-updates.md");
@@ -432,7 +439,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
     from: "archive",
     to: "orchestrator",
     status,
-    summary: status === "archived" ? "Archive completed" : "Archive blocked by missing evidence",
+    summary: status === "completed" ? "Archive completed" : "Archive blocked by missing evidence",
     evidence: [archiveReport, userReport],
     archive_report: archiveReport,
     project_updates: projectUpdateFiles,
@@ -441,8 +448,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
   }, null, 2)}\n`);
 
   updateRun(cwd, runId, status, {
-    archive_status: status,
-    archived_at: status === "archived" ? new Date().toISOString() : undefined,
+    archived_at: status === "completed" ? new Date().toISOString() : undefined,
     archive_blocked_at: status === "blocked" ? new Date().toISOString() : undefined,
     archive_report: archiveReport,
     user_report: userReport

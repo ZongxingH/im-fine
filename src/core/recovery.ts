@@ -49,10 +49,10 @@ function inferDevRecoveryRun(fromRunState: string): RunState {
   if (fromRunState === "implementing" || fromRunState === "integrating" || fromRunState === "verifying" || fromRunState === "reviewing") {
     return fromRunState;
   }
-  if (fromRunState === "planned" || fromRunState === "waiting_for_model" || fromRunState === "branch_prepared") {
+  if (fromRunState === "planned" || fromRunState === "waiting_for_agent_output" || fromRunState === "branch_prepared") {
     return "implementing";
   }
-  if (fromRunState === "blocked" || fromRunState === "needs_dev_fix" || fromRunState === "needs_conflict_resolution" || fromRunState === "needs_infrastructure_action") {
+  if (fromRunState === "blocked" || fromRunState === "needs_dev_fix" || fromRunState === "needs_infrastructure_action") {
     return "implementing";
   }
   return "needs_dev_fix";

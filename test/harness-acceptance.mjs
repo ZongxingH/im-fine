@@ -7,10 +7,6 @@ import { execFileSync } from "node:child_process";
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "dist", "cli", "imfine.js");
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-harness-home-"));
-const harnessEnv = {
-  IMFINE_PROVIDER: "codex",
-  IMFINE_SUBAGENT_SUPPORTED: "true"
-};
 
 function run(args, cwd, extraEnv = {}) {
   return execFileSync(process.execPath, [cli, ...args], {
@@ -20,144 +16,29 @@ function run(args, cwd, extraEnv = {}) {
   });
 }
 
-function makeGitProject(prefix, packageJson = { scripts: { test: "node --test" } }) {
+function makeGitProject(prefix) {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  const git = (args) => execFileSync("git", args, { cwd: project, encoding: "utf8" });
+  const remote = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}remote-`));
+  const git = (args, cwd = project) => execFileSync("git", args, { cwd, encoding: "utf8" });
+  execFileSync("git", ["init", "--bare"], { cwd: remote, encoding: "utf8" });
   git(["init"]);
   git(["config", "user.email", "imfine@example.test"]);
   git(["config", "user.name", "imfine test"]);
-  fs.writeFileSync(path.join(project, "package.json"), JSON.stringify(packageJson, null, 2));
+  git(["remote", "add", "origin", remote]);
+  fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2));
   fs.mkdirSync(path.join(project, "src"));
+  fs.mkdirSync(path.join(project, "test"));
   fs.writeFileSync(path.join(project, "src", "index.js"), "export const value = 1;\n");
+  fs.writeFileSync(path.join(project, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 1));\n");
   git(["add", "."]);
   git(["commit", "-m", "initial"]);
-  return project;
+  git(["branch", "-M", "main"]);
+  git(["push", "-u", "origin", "main"]);
+  return { project };
 }
 
-const blockedProject = makeGitProject("imfine-harness-blocked-");
-const blockedRun = JSON.parse(run(["run", "Blocked harness path", "--plan-only", "--json"], blockedProject));
-const blockedResume = JSON.parse(run(["resume", blockedRun.runId, "--json"], blockedProject));
-assert.equal(blockedResume.status, "blocked");
-assert.ok(blockedResume.nextActions.some((action) => action.id === "gate-subagent-capability"));
-assert.ok(fs.existsSync(path.join(blockedRun.runDir, "orchestration", "true-harness-evidence.json")));
-const blockedEvidence = JSON.parse(fs.readFileSync(path.join(blockedRun.runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
-assert.equal(blockedEvidence.capability_gate.passed, false);
-
-const fakeExecutor = path.join(os.tmpdir(), `imfine-harness-executor-${process.pid}.mjs`);
-fs.writeFileSync(fakeExecutor, `
-import fs from "node:fs";
-import path from "node:path";
-
-const role = process.env.IMFINE_AGENT_ROLE || "";
-const id = process.env.IMFINE_AGENT_ID || "";
-const outputDir = process.env.IMFINE_AGENT_OUTPUT_DIR || "";
-const promptFile = process.env.IMFINE_AGENT_PROMPT || "";
-const prompt = fs.readFileSync(promptFile, "utf8");
-const agentDir = path.dirname(outputDir);
-
-function worktreePath() {
-  const match = prompt.match(/## Worktree\\n\\n([^\\n]+)/);
-  return match ? match[1].trim() : "";
-}
-
-function writeHandoff(payload) {
-  fs.writeFileSync(path.join(agentDir, "handoff.json"), JSON.stringify(payload, null, 2));
-}
-
-if (role === "dev") {
-  const worktree = worktreePath();
-  fs.writeFileSync(path.join(worktree, "src", "index.js"), "export const value = 2;\\n");
-} else if (role === "intake" || role === "project-analyzer" || role === "product-planner") {
-  fs.writeFileSync(path.join(agentDir, "note.txt"), role + " completed\\n");
-} else if (role === "qa") {
-  writeHandoff({
-    run_id: process.env.IMFINE_RUN_ID,
-    from: "qa",
-    to: "reviewer",
-    status: "pass",
-    summary: "acceptance qa passed",
-    commands: ["fake qa"],
-    failures: [],
-    evidence: [path.join(agentDir, "handoff.json")],
-    next_state: "reviewing"
-  });
-} else if (role === "reviewer") {
-  writeHandoff({
-    run_id: process.env.IMFINE_RUN_ID,
-    from: "reviewer",
-    to: "orchestrator",
-    status: "approved",
-    summary: "acceptance review approved",
-    findings: [],
-    evidence: [path.join(agentDir, "handoff.json")],
-    next_state: "committing"
-  });
-} else if (role === "risk-reviewer") {
-  writeHandoff({
-    run_id: process.env.IMFINE_RUN_ID,
-    from: "risk-reviewer",
-    to: "orchestrator",
-    status: "ready",
-    summary: "acceptance risk review passed",
-    risks: [],
-    evidence: [path.join(agentDir, "handoff.json")],
-    required_changes: [],
-    next_state: "planned"
-  });
-} else if (role === "committer") {
-  writeHandoff({
-    run_id: process.env.IMFINE_RUN_ID,
-    from: "committer",
-    to: "orchestrator",
-    status: "ready",
-    summary: "acceptance commit readiness approved",
-    commit_mode: "task",
-    evidence: [path.join(agentDir, "handoff.json")],
-    next_state: "committing"
-  });
-} else if (role === "technical-writer") {
-  if (id === "technical-writer") {
-    writeHandoff({
-      run_id: process.env.IMFINE_RUN_ID,
-      from: "technical-writer",
-      to: "archive",
-      status: "ready",
-      summary: "acceptance technical summary ready",
-      docs_changed: [],
-      evidence: [path.join(agentDir, "handoff.json")],
-      reason: "archive summary prepared",
-      next_state: "archiving"
-    });
-  } else {
-    const worktree = worktreePath();
-    fs.mkdirSync(path.join(worktree, "docs"), { recursive: true });
-    fs.writeFileSync(path.join(worktree, "docs", "usage.md"), "# Usage\\n\\nAcceptance docs update.\\n");
-  }
-} else if (role === "project-knowledge-updater") {
-  writeHandoff({
-    run_id: process.env.IMFINE_RUN_ID,
-    from: "project-knowledge-updater",
-    to: "archive",
-    status: "ready",
-    summary: "acceptance project knowledge ready",
-    evidence: [path.join(agentDir, "handoff.json")],
-    updated_files: [],
-    next_state: "archived"
-  });
-} else if (role === "architect") {
-  const runRoot = path.resolve(outputDir, "..", "..", "..");
-  fs.mkdirSync(path.join(runRoot, "design"), { recursive: true });
-  fs.writeFileSync(path.join(runRoot, "design", "stack-decision.json"), JSON.stringify({
-    language: "JavaScript",
-    runtime: "Node.js",
-    package_manager: "npm"
-  }, null, 2) + "\\n");
-  fs.writeFileSync(path.join(runRoot, "design", "technical-solution.md"), "# Technical Solution\\n\\nAcceptance architect output.\\n");
-  fs.writeFileSync(path.join(runRoot, "design", "architecture-decisions.md"), "# Architecture Decisions\\n\\nAcceptance architect output.\\n");
-} else if (role === "task-planner") {
-  const runRoot = path.resolve(outputDir, "..", "..", "..");
-  const runId = process.env.IMFINE_RUN_ID;
-  const graph = {
+function writeTaskGraph(runDir, runId) {
+  fs.writeFileSync(path.join(runDir, "planning", "task-graph.json"), `${JSON.stringify({
     run_id: runId,
     strategy: "serial",
     tasks: [
@@ -166,49 +47,339 @@ if (role === "dev") {
         title: "Implement requested change",
         type: "dev",
         depends_on: [],
-        read_scope: [".imfine/project/**", ".imfine/runs/" + runId + "/**", "src/**"],
+        read_scope: [".imfine/project/**", ".imfine/runs/" + runId + "/**", "src/**", "test/**"],
         write_scope: ["src/**", "test/**"],
         acceptance: ["requested change implemented"],
-        dev_plan: ["edit source"],
+        dev_plan: ["edit source and tests"],
         test_plan: ["npm run test"],
-        review_plan: ["review source change"],
+        review_plan: ["review code change"],
         verification: ["npm run test"],
         commit: { mode: "task", message: "feat: acceptance implementation" }
       }
     ]
-  };
-  fs.mkdirSync(path.join(runRoot, "planning"), { recursive: true });
-  fs.writeFileSync(path.join(runRoot, "planning", "task-graph.json"), JSON.stringify(graph, null, 2) + "\\n");
+  }, null, 2)}\n`);
 }
-`);
 
-const harnessProject = makeGitProject("imfine-harness-ok-");
-const fakeExecutorCommand = `${JSON.stringify(process.execPath)} ${JSON.stringify(fakeExecutor)}`;
-const autoRun = JSON.parse(run(["run", "True harness acceptance run", "--executor", fakeExecutorCommand, "--max-iterations", "30", "--json"], harnessProject, harnessEnv));
-assert.equal(autoRun.status, "completed");
-assert.ok(typeof autoRun.sessionSummary?.orchestrator?.summary === "string");
-assert.ok(Array.isArray(autoRun.sessionSummary?.agents));
-assert.ok(autoRun.sessionSummary.agents.some((agent) => agent.role === "reviewer" && agent.summary === "acceptance review approved"));
-const runDir = path.join(harnessProject, ".imfine", "runs", autoRun.runId);
+function writeOrchestratorSession(runDir, runId) {
+  const action = (id, kind, role, reason, dependsOn = [], taskId, parallelGroup = role) => ({
+    id,
+    kind,
+    status: "ready",
+    role,
+    taskId,
+    reason,
+    inputs: [],
+    outputs: [],
+    dependsOn,
+    parallelGroup
+  });
+
+  fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    decision_source: "orchestrator_agent",
+    execution_mode: "true_harness",
+    harness_classification: "true_harness",
+    status: "planned",
+    next_actions: [
+      action("runtime-worktree-prepare", "runtime", "orchestrator", "prepare worktrees"),
+      action("agent-dev-T1", "agent", "dev", "implement T1", ["runtime-worktree-prepare"], "T1", "delivery"),
+      action("agent-qa-T1", "agent", "qa", "verify T1", ["agent-dev-T1"], "T1", "qa"),
+      action("agent-reviewer-T1", "agent", "reviewer", "review T1", ["agent-qa-T1"], "T1", "review"),
+      action("agent-merge-agent-T1", "agent", "merge-agent", "integrate T1 into current project directory", ["agent-reviewer-T1"], "T1", "merge"),
+      action("agent-committer", "agent", "committer", "approve commit", ["agent-merge-agent-T1"]),
+      action("runtime-commit-run", "runtime", "orchestrator", "commit run", ["agent-committer"]),
+      action("runtime-push-run", "runtime", "orchestrator", "push run", ["runtime-commit-run"]),
+      action("agent-technical-writer", "agent", "technical-writer", "prepare final summary", ["runtime-push-run"], undefined, "archive-prep"),
+      action("agent-project-knowledge-updater", "agent", "project-knowledge-updater", "update project knowledge", ["runtime-push-run"], undefined, "archive-prep"),
+      action("agent-archive", "agent", "archive", "archive run", ["agent-technical-writer", "agent-project-knowledge-updater"], undefined, "archive")
+    ],
+    agent_runs: [
+      {
+        id: "T1",
+        role: "dev",
+        taskId: "T1",
+        status: "ready",
+        workflowState: "active_delivery",
+        skills: ["implementation"],
+        inputs: [path.join(runDir, "agents", "T1", "input.md")],
+        outputs: [path.join(runDir, "agents", "T1", "handoff.json")],
+        readScope: [".imfine/project/**", ".imfine/runs/" + runId + "/**", "src/**", "test/**"],
+        writeScope: ["src/**", "test/**"],
+        dependsOn: ["runtime-worktree-prepare"],
+        parallelGroup: "delivery"
+      },
+      {
+        id: "qa-T1",
+        role: "qa",
+        taskId: "T1",
+        status: "ready",
+        workflowState: "active_delivery",
+        skills: ["verification"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "qa-T1", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**"],
+        writeScope: [".imfine/runs/" + runId + "/agents/qa-T1/**"],
+        dependsOn: ["agent-dev-T1"],
+        parallelGroup: "qa"
+      },
+      {
+        id: "reviewer-T1",
+        role: "reviewer",
+        taskId: "T1",
+        status: "ready",
+        workflowState: "active_delivery",
+        skills: ["risk-review"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "reviewer-T1", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**"],
+        writeScope: [".imfine/runs/" + runId + "/agents/reviewer-T1/**"],
+        dependsOn: ["agent-qa-T1"],
+        parallelGroup: "review"
+      },
+      {
+        id: "merge-agent-T1",
+        role: "merge-agent",
+        taskId: "T1",
+        status: "ready",
+        workflowState: "integrating",
+        skills: ["merge", "scope-control"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "merge-agent-T1", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**", "src/**", "test/**"],
+        writeScope: ["src/**", "test/**"],
+        dependsOn: ["agent-reviewer-T1"],
+        parallelGroup: "merge"
+      },
+      {
+        id: "committer",
+        role: "committer",
+        status: "ready",
+        workflowState: "ready_to_commit",
+        skills: ["scope-control"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "committer", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**"],
+        writeScope: [".imfine/runs/" + runId + "/agents/committer/**"],
+        dependsOn: ["agent-merge-agent-T1"],
+        parallelGroup: "commit"
+      },
+      {
+        id: "technical-writer",
+        role: "technical-writer",
+        status: "ready",
+        workflowState: "ready_to_archive",
+        skills: ["documentation"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "technical-writer", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**"],
+        writeScope: [".imfine/runs/" + runId + "/agents/technical-writer/**"],
+        dependsOn: ["runtime-push-run"],
+        parallelGroup: "archive-prep"
+      },
+      {
+        id: "project-knowledge-updater",
+        role: "project-knowledge-updater",
+        status: "ready",
+        workflowState: "ready_to_archive",
+        skills: ["project-knowledge"],
+        inputs: [],
+        outputs: [path.join(runDir, "agents", "project-knowledge-updater", "handoff.json")],
+        readScope: [".imfine/runs/" + runId + "/**"],
+        writeScope: [".imfine/runs/" + runId + "/agents/project-knowledge-updater/**"],
+        dependsOn: ["runtime-push-run"],
+        parallelGroup: "archive-prep"
+      }
+    ]
+  }, null, 2)}\n`);
+}
+
+function readWorktreePath(runDir, taskId) {
+  const index = JSON.parse(fs.readFileSync(path.join(runDir, "worktrees", "index.json"), "utf8"));
+  return index.tasks.find((task) => task.task_id === taskId).path;
+}
+
+function writeJson(file, payload) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function writeQaHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "qa-T1", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    task_id: "T1",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "qa passed",
+    commands: ["npm run test"],
+    failures: [],
+    evidence: [file],
+    next_state: "reviewing"
+  });
+}
+
+function writeReviewerHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "reviewer-T1", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    task_id: "T1",
+    from: "reviewer",
+    to: "orchestrator",
+    status: "approved",
+    summary: "review approved",
+    findings: [],
+    evidence: [file],
+    next_state: "committing"
+  });
+}
+
+function writeCommitterHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "committer", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    from: "committer",
+    to: "orchestrator",
+    status: "ready",
+    summary: "commit approved",
+    commit_mode: "task",
+    evidence: [file],
+    next_state: "committing"
+  });
+}
+
+function writeMergeAgentHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "merge-agent-T1", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    task_id: "T1",
+    from: "merge-agent",
+    to: "committer",
+    status: "ready",
+    summary: "merged approved task changes into current project directory",
+    merged_files: ["src/index.js", "test/index.test.js"],
+    commands: ["git apply .imfine/runs/" + runId + "/agents/T1/patch.diff"],
+    evidence: [file],
+    next_state: "committing"
+  });
+}
+
+function writeTechnicalWriterHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "technical-writer", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    from: "technical-writer",
+    to: "archive",
+    status: "ready",
+    summary: "final summary ready",
+    docs_changed: [],
+    evidence: [file],
+    reason: "archive summary prepared",
+    next_state: "archiving"
+  });
+}
+
+function writeProjectKnowledgeHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "project-knowledge-updater", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    from: "project-knowledge-updater",
+    to: "archive",
+    status: "ready",
+    summary: "project knowledge ready",
+    evidence: [file],
+    updated_files: [],
+    next_state: "completed"
+  });
+}
+
+function writeArchiveHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "archive", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    from: "archive",
+    to: "orchestrator",
+    status: "completed",
+    summary: "archive completed",
+    archive_report: path.join(runDir, "archive", "archive-report.md"),
+    project_updates: [],
+    blocked_items: [],
+    evidence: [file],
+    next_state: "completed"
+  });
+}
+
+const { project } = makeGitProject("imfine-harness-");
+const created = JSON.parse(run(["run", "Implement the requested change", "--plan-only", "--json"], project));
+writeTaskGraph(created.runDir, created.runId);
+writeOrchestratorSession(created.runDir, created.runId);
+
+let auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+assert.equal(auto.status, "waiting_for_agent_output");
+assert.ok(auto.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
+
+const taskWorktree = readWorktreePath(created.runDir, "T1");
+fs.writeFileSync(path.join(taskWorktree, "src", "index.js"), "export const value = 2;\n");
+fs.writeFileSync(path.join(taskWorktree, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
+
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+assert.equal(auto.status, "waiting_for_agent_output");
+writeQaHandoff(created.runDir, created.runId);
+
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+assert.equal(auto.status, "waiting_for_agent_output");
+writeReviewerHandoff(created.runDir, created.runId);
+
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+assert.equal(auto.status, "waiting_for_agent_output");
+fs.writeFileSync(path.join(project, "src", "index.js"), "export const value = 2;\n");
+fs.writeFileSync(path.join(project, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
+writeMergeAgentHandoff(created.runDir, created.runId);
+
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+assert.equal(auto.status, "waiting_for_agent_output");
+writeCommitterHandoff(created.runDir, created.runId);
+writeTechnicalWriterHandoff(created.runDir, created.runId);
+writeProjectKnowledgeHandoff(created.runDir, created.runId);
+writeArchiveHandoff(created.runDir, created.runId);
+
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project));
+assert.equal(auto.status, "completed");
+assert.equal(auto.lastOrchestration.executionMode, "true_harness");
+assert.ok(auto.sessionSummary.orchestrator.summary.includes("completed"));
+
+const runDir = path.join(project, ".imfine", "runs", created.runId);
+const runMetadata = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
+assert.equal(runMetadata.status, "completed");
+
 const parallelPlan = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-plan.json"), "utf8"));
-assert.ok(Array.isArray(parallelPlan.wave_history));
-assert.ok(parallelPlan.wave_history.length > 0);
-assert.ok(fs.existsSync(path.join(runDir, "orchestration", "dispatch-contracts.json")));
-assert.ok(fs.existsSync(path.join(runDir, "orchestration", "true-harness-evidence.json")));
-const harnessEvidence = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
-assert.equal(harnessEvidence.capability_gate.passed, true);
-assert.ok(harnessEvidence.parallel_execution.wave_count > 0);
-assert.ok(harnessEvidence.participating_roles.includes("dev"));
-assert.ok(harnessEvidence.participating_roles.includes("qa"));
-assert.ok(harnessEvidence.participating_roles.includes("reviewer"));
-assert.ok(harnessEvidence.handoff_evidence_chain.length > 0);
-const archiveReport = fs.readFileSync(path.join(runDir, "archive", "archive-report.md"), "utf8");
-assert.match(archiveReport, /True Harness Evidence/);
-assert.match(archiveReport, /true-harness-evidence\.md/);
+assert.equal(parallelPlan.artifact_type, "planning");
+assert.ok(Array.isArray(parallelPlan.parallel_groups));
 
-const bridgePrepared = JSON.parse(run(["agents", "prepare", autoRun.runId, "--json"], harnessProject, harnessEnv));
-const bridgeDispatch = JSON.parse(fs.readFileSync(bridgePrepared.dispatch, "utf8"));
-assert.equal(bridgeDispatch.bridge_mode, "legacy_debug");
-assert.match(bridgeDispatch.bridge_notice, /not the true harness path/i);
+const parallelExecution = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8"));
+assert.equal(parallelExecution.artifact_type, "execution");
+assert.ok(Array.isArray(parallelExecution.wave_history));
+assert.ok(parallelExecution.wave_history.length > 0);
+
+const dispatchContracts = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
+assert.ok(dispatchContracts.contracts.length >= 6);
+
+const session = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8"));
+assert.equal(session.decision_source, "orchestrator_agent");
+assert.equal(session.execution_mode, "true_harness");
+assert.equal(session.harness_classification, "true_harness");
+
+const evidence = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
+assert.equal(evidence.harness_classification, "true_harness");
+assert.equal(evidence.orchestrator_declaration.passed, true);
+assert.equal(evidence.true_harness_passed, true);
+assert.ok(evidence.parallel_execution.wave_count > 0);
+assert.ok(evidence.handoff_evidence_chain.length > 0);
+
+const archive = JSON.parse(fs.readFileSync(path.join(runDir, "agents", "archive", "status.json"), "utf8"));
+assert.equal(archive.status, "completed");
+assert.ok(fs.existsSync(path.join(runDir, "archive", "archive-report.md")));
+assert.ok(fs.existsSync(path.join(project, ".imfine", "reports", `${created.runId}.md`)));
 
 console.log("harness acceptance ok");

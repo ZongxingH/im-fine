@@ -17,10 +17,11 @@ Direct local CLI `install` is not part of the supported user surface.
 Runtime notes:
 
 - `init` may call deterministic runtime JS to inspect the current project and materialize `.imfine`.
-- `run` always enters the orchestration path. Runtime may materialize state and validate model outputs, but planning, orchestration, implementation, QA, review, and archive decisions are expected to come from the current model session through multi-role multi-agent + skill execution.
-- Internal runtime/debug commands still exist in the codebase, but they are not part of the user-facing `/imfine` contract.
-- Legacy bridge paths remain debug/testing only and are explicitly marked `legacy_debug`.
-- True harness execution is blocked unless the current provider session explicitly declares native subagent support.
+- `run` always enters the orchestration path. The current session's `orchestrator agent` is expected to launch independent native subagents directly.
+- Runtime only materializes state, contracts, execution artifacts, and evidence from an explicit `orchestrator agent` decision file.
+- The only execution mode is `true_harness`.
+- Planning artifacts and execution artifacts are separate runtime products.
+- Internal runtime commands still exist in the codebase, but they are deterministic backend actions, not part of the user-facing `/imfine` contract.
 
 Install from GitHub and enable `/imfine` in both Codex and Claude:
 

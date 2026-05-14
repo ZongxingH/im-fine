@@ -4,7 +4,7 @@
     "no_task_graph": {
       "discovery_roles": ["intake", "project-analyzer", "product-planner", "architect"],
       "planning_roles": ["task-planner", "risk-reviewer"],
-      "planning_runtime_action": "runtime-plan",
+      "planning_runtime_action": "runtime-materialize-planning",
       "parallel_groups": {
         "discovery": "discovery",
         "planning": "planning",
@@ -67,6 +67,24 @@
             "action_id_pattern": "agent-reviewer-{task_id}",
             "parallel_group_pattern": "review-task-layer-{layer}",
             "reason": "review decision is already present"
+          },
+          "merge_ready": {
+            "role": "merge-agent",
+            "action_id_pattern": "agent-merge-agent-{task_id}",
+            "parallel_group_pattern": "merge-task-layer-{layer}",
+            "reason": "QA and Review passed and the task must be integrated into the current project directory"
+          },
+          "merge_waiting": {
+            "role": "merge-agent",
+            "action_id_pattern": "agent-merge-agent-{task_id}",
+            "parallel_group_pattern": "merge-task-layer-{layer}",
+            "reason": "merge is waiting for reviewer approval"
+          },
+          "merge_done": {
+            "role": "merge-agent",
+            "action_id_pattern": "agent-merge-agent-{task_id}",
+            "parallel_group_pattern": "merge-task-layer-{layer}",
+            "reason": "merge handoff is already present"
           }
         }
       },
@@ -80,7 +98,7 @@
       "runtime_action_id": "runtime-commit-run",
       "parallel_group": "commit",
       "review_reason": "commit readiness and mode can be reviewed before runtime materializes git commits",
-      "runtime_reason": "all tasks have QA and Review approval but no run commits are recorded"
+      "runtime_reason": "all tasks have Merge Agent handoff and Committer approval but no run commits are recorded"
     },
     "ready_to_push": {
       "runtime_action_id": "runtime-push-run",

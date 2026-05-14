@@ -8,9 +8,11 @@ export type RunState =
   | "project_analyzed"
   | "requirement_analyzed"
   | "designed"
+  | "orchestrating"
   | "planned"
-  | "waiting_for_model"
+  | "waiting_for_agent_output"
   | "branch_prepared"
+  | "executing"
   | "implementing"
   | "integrating"
   | "verifying"
@@ -18,13 +20,12 @@ export type RunState =
   | "committing"
   | "pushing"
   | "archiving"
-  | "archived"
+  | "completed"
   | "blocked"
   | "needs_requirement_reanalysis"
   | "needs_dev_fix"
   | "needs_design_update"
   | "needs_task_replan"
-  | "needs_conflict_resolution"
   | "needs_infrastructure_action";
 
 const RUN_STATES = new Set<RunState>([
@@ -33,9 +34,11 @@ const RUN_STATES = new Set<RunState>([
   "project_analyzed",
   "requirement_analyzed",
   "designed",
+  "orchestrating",
   "planned",
-  "waiting_for_model",
+  "waiting_for_agent_output",
   "branch_prepared",
+  "executing",
   "implementing",
   "integrating",
   "verifying",
@@ -43,13 +46,12 @@ const RUN_STATES = new Set<RunState>([
   "committing",
   "pushing",
   "archiving",
-  "archived",
+  "completed",
   "blocked",
   "needs_requirement_reanalysis",
   "needs_dev_fix",
   "needs_design_update",
   "needs_task_replan",
-  "needs_conflict_resolution",
   "needs_infrastructure_action"
 ]);
 
@@ -68,10 +70,9 @@ export type TaskState =
   | "review_changes_requested"
   | "review_blocked"
   | "committed"
-  | "archived"
+  | "completed"
   | "blocked"
   | "needs_dev_fix"
-  | "needs_conflict_resolution"
   | "implementation_blocked_by_design";
 
 const TASK_STATES = new Set<TaskState>([
@@ -89,10 +90,9 @@ const TASK_STATES = new Set<TaskState>([
   "review_changes_requested",
   "review_blocked",
   "committed",
-  "archived",
+  "completed",
   "blocked",
   "needs_dev_fix",
-  "needs_conflict_resolution",
   "implementation_blocked_by_design"
 ]);
 
@@ -128,7 +128,6 @@ export function isRecoverableRunState(state: RunState): boolean {
     || state === "needs_dev_fix"
     || state === "needs_design_update"
     || state === "needs_task_replan"
-    || state === "needs_conflict_resolution"
     || state === "needs_infrastructure_action";
 }
 
@@ -163,7 +162,7 @@ function recordBlocker(cwd: string, runId: string, blocker: Record<string, unkno
 
 function isLegalRunTransition(from: RunState, to: RunState): boolean {
   if (from === to) return true;
-  if (from === "archived") return to === "archived";
+  if (from === "completed") return to === "completed";
   if (to === "archiving") return true;
   if (isRecoverableRunState(to)) return true;
 
@@ -171,35 +170,36 @@ function isLegalRunTransition(from: RunState, to: RunState): boolean {
     created: ["infrastructure_checked"],
     infrastructure_checked: ["project_analyzed", "requirement_analyzed"],
     project_analyzed: ["requirement_analyzed", "designed"],
-    requirement_analyzed: ["designed"],
-    designed: ["planned", "waiting_for_model"],
-    planned: ["waiting_for_model", "branch_prepared", "implementing"],
-    waiting_for_model: ["planned", "branch_prepared", "implementing"],
-    branch_prepared: ["implementing"],
+    requirement_analyzed: ["designed", "orchestrating"],
+    designed: ["orchestrating", "planned", "waiting_for_agent_output"],
+    orchestrating: ["planned", "waiting_for_agent_output", "branch_prepared", "executing", "implementing"],
+    planned: ["waiting_for_agent_output", "branch_prepared", "executing", "implementing"],
+    waiting_for_agent_output: ["planned", "branch_prepared", "executing", "implementing"],
+    branch_prepared: ["executing", "implementing"],
+    executing: ["integrating", "verifying", "reviewing", "committing"],
     implementing: ["integrating", "verifying", "reviewing", "committing"],
     integrating: ["verifying", "reviewing", "committing"],
     verifying: ["reviewing"],
     reviewing: ["committing"],
     committing: ["pushing"],
     pushing: ["archiving"],
-    archiving: ["archived"],
-    archived: ["archived"],
-    blocked: ["infrastructure_checked", "planned", "branch_prepared", "implementing", "verifying", "reviewing", "committing", "pushing", "archiving"],
-    needs_requirement_reanalysis: ["requirement_analyzed", "designed", "planned"],
-    needs_dev_fix: ["implementing", "verifying", "reviewing"],
-    needs_design_update: ["designed", "planned"],
+    archiving: ["completed"],
+    completed: ["completed"],
+    blocked: ["infrastructure_checked", "orchestrating", "planned", "branch_prepared", "executing", "implementing", "verifying", "reviewing", "committing", "pushing", "archiving"],
+    needs_requirement_reanalysis: ["requirement_analyzed", "designed", "orchestrating", "planned"],
+    needs_dev_fix: ["executing", "implementing", "verifying", "reviewing"],
+    needs_design_update: ["designed", "orchestrating", "planned"],
     needs_task_replan: ["planned"],
-    needs_conflict_resolution: ["verifying", "reviewing", "committing", "pushing"],
-    needs_infrastructure_action: ["infrastructure_checked", "planned", "branch_prepared", "implementing"]
+    needs_infrastructure_action: ["infrastructure_checked", "orchestrating", "planned", "branch_prepared", "executing", "implementing"]
   };
   return allowed[from].includes(to);
 }
 
 function isLegalTaskTransition(from: TaskState, to: TaskState): boolean {
   if (from === to) return true;
-  if (to === "blocked" || to === "needs_dev_fix" || to === "needs_conflict_resolution") return true;
-  if (from === "archived") return to === "archived";
-  if (from === "committed") return to === "committed" || to === "archived";
+  if (to === "blocked" || to === "needs_dev_fix") return true;
+  if (from === "completed") return to === "completed";
+  if (from === "committed") return to === "committed" || to === "completed";
 
   const allowed: Record<TaskState, TaskState[]> = {
     planned: ["waiting", "ready", "ready_for_dev", "implementing", "implementation_blocked_by_design"],
@@ -215,11 +215,10 @@ function isLegalTaskTransition(from: TaskState, to: TaskState): boolean {
     review_changes_requested: ["ready_for_dev", "implementing"],
     review_blocked: ["ready_for_dev", "implementing"],
     review_approved: ["committed"],
-    committed: ["archived"],
-    archived: ["archived"],
+    committed: ["completed"],
+    completed: ["completed"],
     blocked: ["planned", "waiting", "ready", "ready_for_dev", "implementing", "patch_validated", "qa_passed", "review_approved"],
     needs_dev_fix: ["ready_for_dev", "implementing", "patch_validated"],
-    needs_conflict_resolution: ["qa_passed", "review_approved", "committed"],
     implementation_blocked_by_design: ["planned", "waiting", "ready_for_dev"]
   };
   return allowed[from].includes(to);

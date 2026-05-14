@@ -1,5 +1,4 @@
 import type { ArchiveResult } from "./archive.js";
-import type { AgentExecuteResult, AgentPrepareResult } from "./agent-execution.js";
 import type { AutoOrchestratorResult } from "./auto-orchestrator.js";
 import type { DoctorReport, InitResult } from "./types.js";
 import type { CommitResult, PushResult } from "./gitflow.js";
@@ -7,7 +6,6 @@ import type { InstallResult } from "./install.js";
 import type { LibraryEntry, LibrarySyncResult } from "./library.js";
 import type { NewProjectDeliveryResult } from "./new-project.js";
 import type { OrchestratorResult } from "./orchestrator.js";
-import type { PlanResult } from "./plan.js";
 import type { DesignReworkResult, ReviewResult, VerificationResult } from "./quality.js";
 import type { ReplanResult } from "./replan.js";
 import type { RecoveryResult } from "./recovery.js";
@@ -78,6 +76,7 @@ export function formatStatus(result: StatusResult): string {
     `workspace: ${result.workspace}`,
     `current run: ${result.currentRunId || "none"}`,
     `current run status: ${result.currentRunStatus || "none"}`,
+    `current run execution mode: ${result.currentRunExecutionMode || "none"}`,
     `current run branch: ${result.currentRunBranch || "none"}`,
     `reports: ${result.reports.length === 0 ? "none" : result.reports.join(", ")}`,
     ""
@@ -95,26 +94,13 @@ export function formatDeliveryRun(result: DeliveryRunResult): string {
   return [
     `created imfine run: ${result.runId}`,
     `status: ${result.status}`,
+    `execution mode: ${result.executionMode}`,
     `project kind: ${result.projectKind}`,
     `run dir: ${result.runDir}`,
-    `runtime context: ${result.runDir}/orchestration/context.json`,
-    `pending roles: ${result.runDir}/orchestration/pending-roles.json`,
-    `task graph: pending model task planner output`,
+    `orchestrator input: ${result.runDir}/orchestration/orchestrator-input.md`,
+    `orchestrator session: ${result.runDir}/orchestration/orchestrator-session.json`,
+    `dispatch mode: current session orchestrator must launch independent native subagents`,
     `artifacts: ${result.artifacts.length}`,
-    ""
-  ].join("\n");
-}
-
-export function formatPlan(result: PlanResult): string {
-  return [
-    `planned imfine run: ${result.runId}`,
-    `task graph: ${result.taskGraph}`,
-    `ownership: ${result.ownership}`,
-    `execution plan: ${result.executionPlan}`,
-    `commit plan: ${result.commitPlan}`,
-    `validation: ${result.validation.passed ? "pass" : "fail"}`,
-    `parallel groups: ${result.validation.parallelGroups.length}`,
-    `serial tasks: ${result.validation.serialTasks.length}`,
     ""
   ].join("\n");
 }
@@ -237,7 +223,7 @@ export function formatPush(result: PushResult): string {
 
 export function formatArchive(result: ArchiveResult): string {
   return [
-    `archived run ${result.runId}: ${result.status}`,
+    `archive run ${result.runId}: ${result.status}`,
     `archive report: ${result.archiveReport}`,
     `user report: ${result.userReport}`,
     `project updates: ${result.projectUpdates}`,
@@ -275,6 +261,7 @@ export function formatOrchestrator(result: OrchestratorResult | SessionSummarize
   return [
     `${result.mode === "resume" ? "resumed" : "orchestrated"} imfine run: ${result.runId}`,
     `status: ${result.status}`,
+    `execution mode: ${result.executionMode}`,
     `next actions: ${result.nextActions.length}`,
     `agent runs: ${result.agentRuns.length}`,
     `dispatch contracts: ${result.dispatchContracts.length}`,
@@ -288,30 +275,6 @@ export function formatOrchestrator(result: OrchestratorResult | SessionSummarize
       ? result.nextActions.map((action) => `- [${action.status}] ${action.id}${action.command ? `: ${action.command}` : ""}`)
       : ["- none"]),
     ...formatSessionSummary(result),
-    ""
-  ].join("\n");
-}
-
-export function formatAgentPrepare(result: AgentPrepareResult): string {
-  return [
-    `prepared legacy bridge artifacts for run: ${result.runId}`,
-    `usage: debug/testing only`,
-    `dispatch: ${result.dispatch}`,
-    `packages: ${result.packages.length}`,
-    ...result.packages.map((item) => `- [${item.status}] ${item.id}: ${item.prompt}`),
-    ""
-  ].join("\n");
-}
-
-export function formatAgentExecute(result: AgentExecuteResult): string {
-  return [
-    `executed legacy bridge batch for run: ${result.runId}`,
-    `usage: debug/testing only`,
-    `executor: ${result.executor}`,
-    `dry run: ${result.dryRun ? "yes" : "no"}`,
-    `dispatch: ${result.dispatch}`,
-    `results: ${result.results.length}`,
-    ...result.results.map((item) => `- [${item.status}] ${item.id}: ${item.prompt}`),
     ""
   ].join("\n");
 }

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { doctor } from "./doctor.js";
+import type { ExecutionMode } from "./execution-mode.js";
 import { ensureDir, writeText } from "./fs.js";
 import { initProject } from "./init.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
@@ -16,7 +17,8 @@ export interface DeliveryRunResult {
     value: string;
   };
   artifacts: string[];
-  status: "waiting_for_model";
+  status: "waiting_for_agent_output";
+  executionMode: ExecutionMode;
 }
 
 interface Evidence {
@@ -224,12 +226,14 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
   }
 
   const doctorReport = doctor(cwd);
+  const executionMode: ExecutionMode = "true_harness";
   const sourceInfo = { type: source.type, value: source.value };
 
   writeArtifact(path.join(runDir, "run.json"), `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
     status: "created",
+    execution_mode: executionMode,
     project_kind: analysis.kind,
     source: sourceInfo,
     created_at: new Date().toISOString()
@@ -266,19 +270,41 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[]): Deliv
     ],
     generated_at: new Date().toISOString()
   }, null, 2)}\n`, artifacts);
-  writeArtifact(path.join(runDir, "orchestration", "pending-roles.json"), `${JSON.stringify({
-    schema_version: 1,
-    run_id: runId,
-    project_kind: analysis.kind,
-    pending_roles: readyRoles.map((role) => ({
-      role,
-      status: "pending",
-      reason: role === "task-planner"
-        ? "runtime captured requirement and project evidence; task planning remains model-owned"
-        : "runtime captured requirement and project evidence; role judgment remains model-owned"
-    })),
-    updated_at: new Date().toISOString()
-  }, null, 2)}\n`, artifacts);
+  writeArtifact(path.join(runDir, "orchestration", "orchestrator-input.md"), `# Orchestrator Input
+
+You are the only orchestration decision maker for this run.
+
+You must coordinate independent native subagents from the current provider session.
+Do not complete the full workflow by pretending one agent performed all roles.
+
+## Run
+
+- run id: ${runId}
+- execution mode: true_harness
+- project kind: ${analysis.kind}
+
+## Required Decision Output
+
+Write \`orchestration/orchestrator-session.json\` as the single source of orchestration truth.
+
+The file must:
+
+- declare \`decision_source=orchestrator_agent\`
+- declare \`execution_mode=true_harness\`
+- declare \`harness_classification=true_harness\`
+- define every planned \`next_action\`
+- define every \`agent_run\`
+- define explicit dependencies and parallel groups
+
+You must:
+
+- decide which roles to start
+- use the current session's native subagent capability to dispatch independent agents
+- keep QA, Review, Committer, and Archive as separate roles
+- mark the run blocked if the current provider session cannot launch independent subagents
+
+Runtime will only materialize what you write in that file and will only perform deterministic backend actions.
+`, artifacts);
   writeArtifact(path.join(runDir, "orchestration", "state.json"), `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
@@ -312,8 +338,8 @@ Capture the run-local capability delta for Archive Agent. This is not the top-le
 ## Runtime Context
 
 - project kind: ${analysis.kind}
-- package manager: ${analysis.packageManager}
-- test commands: ${analysis.testCommands.length > 0 ? analysis.testCommands.join(", ") : "unknown"}
+  - package manager: ${analysis.packageManager}
+  - test commands: ${analysis.testCommands.length > 0 ? analysis.testCommands.join(", ") : "unknown"}
 
 ## Evidence Boundary
 
@@ -323,7 +349,7 @@ ${evidenceLines(analysis.evidence)}
 
 ${lines(analysis.unknowns)}
 
-## Pending Model Roles
+## Initial Model Roles
 
 ${readyRoles.map((role) => `- ${role}`).join("\n")}
 `, artifacts);
@@ -336,12 +362,12 @@ ${readyRoles.map((role) => `- ${role}`).join("\n")}
   - planning/execution-plan.md
   - planning/commit-plan.md
 `, artifacts);
-  assertTransitionAccepted(transitionRunState(cwd, runId, "waiting_for_model", {
-    waiting_for_model_at: new Date().toISOString(),
-    waiting_for_model_reason: analysis.kind === "new_project"
+  assertTransitionAccepted(transitionRunState(cwd, runId, "waiting_for_agent_output", {
+    waiting_for_agent_output_at: new Date().toISOString(),
+    waiting_for_agent_output_reason: analysis.kind === "new_project"
       ? "new project requires Architect and Task Planner model outputs before runtime planning"
       : "existing project requires discovery and Task Planner model outputs before runtime planning"
-  }), `run ${runId} waiting for model`);
+  }), `run ${runId} waiting for agent output`);
   return {
     runId,
     cwd,
@@ -350,6 +376,7 @@ ${readyRoles.map((role) => `- ${role}`).join("\n")}
     projectKind: analysis.kind,
     source: sourceInfo,
     artifacts,
-    status: "waiting_for_model"
+    status: "waiting_for_agent_output",
+    executionMode
   };
 }

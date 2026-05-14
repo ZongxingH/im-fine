@@ -1,30 +1,29 @@
 import fs from "node:fs";
 import path from "node:path";
 import { archiveRun } from "./archive.js";
-import { executeAgentBatch } from "./agent-execution.js";
 import { installDependencies } from "./dependencies.js";
 import { writeText } from "./fs.js";
-import { commitResolvedRun, commitRun, pushRun } from "./gitflow.js";
+import { commitRun, pushRun } from "./gitflow.js";
 import { validateHandoff, type HandoffRole } from "./handoff-validator.js";
 import { acquireLock, isActionCompleted, readLatestCheckpoint, releaseLock, writeCheckpoint } from "./reliability.js";
 import { resumeRun, type OrchestrationAction, type OrchestratorResult } from "./orchestrator.js";
-import { materializeModelPlan } from "./plan.js";
+import { materializeTaskGraphArtifacts } from "./plan.js";
 import { reviewTask, type ReviewDecision, type VerificationStatus, verifyTask } from "./quality.js";
 import { transitionRunState } from "./state-machine.js";
-import { collectPatch, prepareWorktrees } from "./worktree.js";
+import { collectPatch, prepareWorktrees, taskHasPendingWorktreeChanges } from "./worktree.js";
 
 export interface AutoOrchestratorStep {
   iteration: number;
   actionId: string;
   kind: string;
-  status: "completed" | "waiting_for_model" | "blocked" | "failed";
+  status: "completed" | "waiting_for_agent_output" | "blocked" | "failed";
   detail: string;
   artifacts: string[];
 }
 
 export interface AutoOrchestratorResult {
   runId: string;
-  status: "completed" | "waiting_for_model" | "blocked" | "max_iterations";
+  status: "completed" | "waiting_for_agent_output" | "blocked" | "max_iterations";
   iterations: number;
   steps: AutoOrchestratorStep[];
   lastOrchestration: OrchestratorResult;
@@ -32,7 +31,6 @@ export interface AutoOrchestratorResult {
 }
 
 export interface AutoOrchestratorOptions {
-  executor?: string;
   dryRun: boolean;
   maxIterations: number;
 }
@@ -41,6 +39,7 @@ interface Handoff {
   status?: string;
   summary?: string;
   task_id?: string;
+  merged_files?: string[];
   resolved_files?: string[];
   commands?: string[];
   evidence?: string[];
@@ -52,7 +51,7 @@ interface ParallelExecutionWave {
   action_ids: string[];
   task_ids: string[];
   roles: string[];
-  status: "waiting_for_model" | "dispatched" | "completed" | "blocked" | "failed";
+  status: "waiting_for_agent_output" | "dispatched" | "completed" | "blocked" | "failed";
   reason: string;
   started_at: string;
   completed_at?: string;
@@ -69,7 +68,7 @@ function readJson<T>(file: string): T {
 }
 
 function parallelPlanFile(cwd: string, runId: string): string {
-  return path.join(runDir(cwd, runId), "orchestration", "parallel-plan.json");
+  return path.join(runDir(cwd, runId), "orchestration", "parallel-execution.json");
 }
 
 function recordParallelWave(cwd: string, runId: string, wave: ParallelExecutionWave): void {
@@ -78,12 +77,11 @@ function recordParallelWave(cwd: string, runId: string, wave: ParallelExecutionW
     ? readJson<{
       schema_version?: number;
       run_id?: string;
-      groups?: unknown[];
       wave_history?: ParallelExecutionWave[];
       executed_parallel_groups?: string[];
       blocked_parallel_groups?: string[];
     }>(file)
-    : { schema_version: 1, run_id: runId, groups: [] };
+    : { schema_version: 1, run_id: runId };
   const waveHistory = Array.isArray(current.wave_history) ? current.wave_history : [];
   const executed = new Set(Array.isArray(current.executed_parallel_groups) ? current.executed_parallel_groups : []);
   const blocked = new Set(Array.isArray(current.blocked_parallel_groups) ? current.blocked_parallel_groups : []);
@@ -98,7 +96,7 @@ function recordParallelWave(cwd: string, runId: string, wave: ParallelExecutionW
   writeText(file, `${JSON.stringify({
     schema_version: current.schema_version || 1,
     run_id: current.run_id || runId,
-    groups: Array.isArray(current.groups) ? current.groups : [],
+    artifact_type: "execution",
     executed_parallel_groups: Array.from(executed),
     blocked_parallel_groups: Array.from(blocked),
     wave_history: waveHistory
@@ -119,6 +117,7 @@ function updateRunStatus(cwd: string, runId: string, status: string, extra: Reco
 function handoffFile(runDirPath: string, role: string, taskId: string): string {
   if (role === "qa") return path.join(runDirPath, "agents", `qa-${taskId}`, "handoff.json");
   if (role === "reviewer") return path.join(runDirPath, "agents", `reviewer-${taskId}`, "handoff.json");
+  if (role === "merge-agent") return path.join(runDirPath, "agents", `merge-agent-${taskId}`, "handoff.json");
   return path.join(runDirPath, "agents", taskId, "handoff.json");
 }
 
@@ -127,8 +126,32 @@ function readHandoff(file: string): Handoff | null {
   return readJson<Handoff>(file);
 }
 
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
 function runLevelHandoffFile(runDirPath: string, role: string): string {
   return path.join(runDirPath, "agents", role, "handoff.json");
+}
+
+function agentActionReadyForProcessing(cwd: string, runId: string, runDirPath: string, action: OrchestrationAction): boolean {
+  if (action.role === "dev" || action.role === "technical-writer") {
+    if (action.taskId) {
+      return taskHasPendingWorktreeChanges(cwd, runId, action.taskId)
+        || fs.existsSync(path.join(runDirPath, "agents", action.taskId, "handoff.json"));
+    }
+    return fs.existsSync(runLevelHandoffFile(runDirPath, action.role));
+  }
+
+  if (action.role === "qa" || action.role === "reviewer") {
+    return action.taskId ? fs.existsSync(handoffFile(runDirPath, action.role, action.taskId)) : false;
+  }
+
+  if (action.role === "merge-agent") {
+    return action.taskId ? fs.existsSync(handoffFile(runDirPath, action.role, action.taskId)) : false;
+  }
+
+  return fs.existsSync(runLevelHandoffFile(runDirPath, action.role));
 }
 
 function validateRoleHandoff(role: HandoffRole, handoff: Handoff | null, runId: string, taskId?: string): { handoff: Handoff; errors: string[] } | { handoff: null; errors: string[] } {
@@ -191,7 +214,7 @@ function firstReadyAction(cwd: string, runId: string, orchestration: Orchestrato
 }
 
 function readyActionBatch(cwd: string, runId: string, orchestration: OrchestratorResult, seed: OrchestrationAction): OrchestrationAction[] {
-  if (seed.status === "blocked" || seed.kind === "gate") return [seed];
+  if (seed.status === "blocked") return [seed];
   if (seed.kind !== "agent") return [seed];
   return orchestration.nextActions.filter((action) =>
     action.kind === "agent"
@@ -203,9 +226,9 @@ function readyActionBatch(cwd: string, runId: string, orchestration: Orchestrato
 }
 
 function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationAction): AutoOrchestratorStep {
-  if (action.id === "runtime-plan") {
-    const result = materializeModelPlan(cwd, runId);
-    return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: "validated model planning outputs and materialized task artifacts", artifacts: result.artifacts };
+  if (action.id === "runtime-materialize-planning") {
+    const result = materializeTaskGraphArtifacts(cwd, runId);
+    return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: "validated orchestrator-provided task graph and materialized planning artifacts", artifacts: result.artifacts };
   }
   if (action.id === "runtime-worktree-prepare") {
     const result = prepareWorktrees(cwd, runId);
@@ -231,7 +254,7 @@ function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationA
       updateRunStatus(cwd, runId, "blocked", { archive_handoff_errors: gate.errors, archive_handoff_blocked_at: new Date().toISOString() });
       return { iteration: 0, actionId: action.id, kind: action.kind, status: "blocked", detail: `archive handoff invalid: ${gate.errors.join("; ")}`, artifacts: [result.archiveReport, result.userReport] };
     }
-    return { iteration: 0, actionId: action.id, kind: action.kind, status: result.status === "archived" ? "completed" : "blocked", detail: `archive status: ${result.status}`, artifacts: [result.archiveReport, result.userReport] };
+    return { iteration: 0, actionId: action.id, kind: action.kind, status: result.status === "completed" ? "completed" : "blocked", detail: `archive status: ${result.status}`, artifacts: [result.archiveReport, result.userReport] };
   }
   return { iteration: 0, actionId: action.id, kind: action.kind, status: "blocked", detail: `unsupported runtime action: ${action.id}`, artifacts: [] };
 }
@@ -255,44 +278,13 @@ function writeDevHandoff(cwd: string, runId: string, taskId: string, patch: stri
   return handoff;
 }
 
-function processConflictResolver(cwd: string, runId: string, runDirPath: string): AutoOrchestratorStep {
-  const handoff = readHandoff(path.join(runDirPath, "agents", "conflict-resolver", "handoff.json"));
-  const gate = validateRoleHandoff("conflict-resolver", handoff, runId, handoff?.task_id);
-  if (gate.errors.length > 0 || !gate.handoff) {
-    return { iteration: 0, actionId: "agent-conflict-resolver", kind: "agent", status: "waiting_for_model", detail: `Conflict Resolver handoff invalid: ${gate.errors.join("; ")}`, artifacts: [] };
-  }
-  if (gate.handoff.status === "blocked") {
-    updateRunStatus(cwd, runId, "needs_conflict_resolution", { conflict_resolver_blocked_at: new Date().toISOString(), conflict_resolver_summary: gate.handoff.summary || "" });
-    return { iteration: 0, actionId: "agent-conflict-resolver", kind: "agent", status: "blocked", detail: `Conflict Resolver blocked: ${gate.handoff.summary || "blocked"}`, artifacts: [] };
-  }
-
-  const runMetadata = readJson<Record<string, unknown>>(path.join(runDirPath, "run.json"));
-  const affectedTask = gate.handoff.task_id || (typeof runMetadata.conflict_task_id === "string" ? runMetadata.conflict_task_id : undefined);
-  if (!affectedTask) {
-    return { iteration: 0, actionId: "agent-conflict-resolver", kind: "agent", status: "waiting_for_model", detail: "Conflict Resolver handoff missing affected task", artifacts: [] };
-  }
-
-  const qa = verifyTask(cwd, runId, affectedTask, "pass", gate.handoff.summary || "Conflict Resolver reported resolved changes");
-  if (qa.status !== "pass") {
-    return { iteration: 0, actionId: "agent-conflict-resolver", kind: "agent", status: "blocked", detail: `post-conflict QA status: ${qa.status}`, artifacts: [qa.evidence] };
-  }
-  const review = reviewTask(cwd, runId, affectedTask, "approved", gate.handoff.summary || "Conflict Resolver resolved integration conflict");
-  if (review.status !== "approved") {
-    return { iteration: 0, actionId: "agent-conflict-resolver", kind: "agent", status: "blocked", detail: `post-conflict Review status: ${review.status}`, artifacts: [qa.evidence, review.evidence] };
-  }
-  const commit = commitResolvedRun(cwd, runId, [affectedTask]);
-  return { iteration: 0, actionId: "agent-conflict-resolver", kind: "agent", status: "completed", detail: "resolved conflict verified, reviewed, and committed", artifacts: [qa.evidence, review.evidence, commit.evidence] };
-}
-
 function processExecutedAgent(cwd: string, runId: string, runDirPath: string, action: OrchestrationAction): AutoOrchestratorStep {
-  if (action.role === "conflict-resolver") return processConflictResolver(cwd, runId, runDirPath);
-
   if (!action.taskId) {
     if (action.role === "committer") {
       const file = runLevelHandoffFile(runDirPath, "committer");
       const gate = validateRoleHandoff("committer", readHandoff(file), runId);
       if (gate.errors.length > 0 || !gate.handoff) {
-        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_model", detail: `Committer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
+        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `Committer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
       }
       if (gate.handoff.status === "blocked") {
         updateRunStatus(cwd, runId, "blocked", { committer_blocked_at: new Date().toISOString(), committer_summary: gate.handoff.summary || "", committer_handoff: file });
@@ -305,7 +297,7 @@ function processExecutedAgent(cwd: string, runId: string, runDirPath: string, ac
       const file = runLevelHandoffFile(runDirPath, "risk-reviewer");
       const gate = validateRoleHandoff("risk-reviewer", readHandoff(file), runId);
       if (gate.errors.length > 0 || !gate.handoff) {
-        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_model", detail: `Risk Reviewer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
+        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `Risk Reviewer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
       }
       if (gate.handoff.status === "blocked") {
         updateRunStatus(cwd, runId, "blocked", { risk_reviewer_blocked_at: new Date().toISOString(), risk_reviewer_summary: gate.handoff.summary || "", risk_reviewer_handoff: file });
@@ -322,7 +314,7 @@ function processExecutedAgent(cwd: string, runId: string, runDirPath: string, ac
       const file = runLevelHandoffFile(runDirPath, "technical-writer");
       const gate = validateRoleHandoff("technical-writer", readHandoff(file), runId);
       if (gate.errors.length > 0 || !gate.handoff) {
-        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_model", detail: `Technical Writer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
+        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `Technical Writer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
       }
       if (gate.handoff.status === "blocked") {
         updateRunStatus(cwd, runId, "blocked", { technical_writer_blocked_at: new Date().toISOString(), technical_writer_summary: gate.handoff.summary || "", technical_writer_handoff: file });
@@ -335,7 +327,7 @@ function processExecutedAgent(cwd: string, runId: string, runDirPath: string, ac
       const file = runLevelHandoffFile(runDirPath, "project-knowledge-updater");
       const gate = validateRoleHandoff("project-knowledge-updater", readHandoff(file), runId);
       if (gate.errors.length > 0 || !gate.handoff) {
-        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_model", detail: `Project Knowledge Updater handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
+        return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `Project Knowledge Updater handoff invalid: ${gate.errors.join("; ")}`, artifacts: [file] };
       }
       if (gate.handoff.status === "blocked") {
         updateRunStatus(cwd, runId, "blocked", { project_knowledge_blocked_at: new Date().toISOString(), project_knowledge_summary: gate.handoff.summary || "", project_knowledge_handoff: file });
@@ -371,7 +363,7 @@ function processExecutedAgent(cwd: string, runId: string, runDirPath: string, ac
     const handoff = readHandoff(handoffFile(runDirPath, "qa", action.taskId));
     const gate = validateRoleHandoff("qa", handoff, runId, action.taskId);
     if (gate.errors.length > 0 || !gate.handoff || !isVerificationStatus(gate.handoff.status)) {
-      return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_model", detail: `QA handoff invalid: ${gate.errors.join("; ")}`, artifacts: [] };
+      return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `QA handoff invalid: ${gate.errors.join("; ")}`, artifacts: [] };
     }
     const result = verifyTask(cwd, runId, action.taskId, gate.handoff.status, gate.handoff.summary || "");
     return {
@@ -388,7 +380,7 @@ function processExecutedAgent(cwd: string, runId: string, runDirPath: string, ac
     const handoff = readHandoff(handoffFile(runDirPath, "reviewer", action.taskId));
     const gate = validateRoleHandoff("reviewer", handoff, runId, action.taskId);
     if (gate.errors.length > 0 || !gate.handoff || !isReviewDecision(gate.handoff.status)) {
-      return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_model", detail: `Reviewer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [] };
+      return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `Reviewer handoff invalid: ${gate.errors.join("; ")}`, artifacts: [] };
     }
     const result = reviewTask(cwd, runId, action.taskId, gate.handoff.status, gate.handoff.summary || "");
     return {
@@ -398,6 +390,25 @@ function processExecutedAgent(cwd: string, runId: string, runDirPath: string, ac
       status: result.status === "blocked" ? "blocked" : "completed",
       detail: result.fixTaskId ? `Review status: ${result.status}; fix task: ${result.fixTaskId}` : `Review status: ${result.status}`,
       artifacts: [result.evidence]
+    };
+  }
+  if (action.role === "merge-agent") {
+    const handoff = readHandoff(handoffFile(runDirPath, "merge-agent", action.taskId));
+    const gate = validateRoleHandoff("merge-agent", handoff, runId, action.taskId);
+    if (gate.errors.length > 0 || !gate.handoff) {
+      return { iteration: 0, actionId: action.id, kind: action.kind, status: "waiting_for_agent_output", detail: `Merge Agent handoff invalid: ${gate.errors.join("; ")}`, artifacts: [] };
+    }
+    if (gate.handoff.status === "blocked") {
+      updateRunStatus(cwd, runId, "blocked", { merge_agent_blocked_at: new Date().toISOString(), merge_agent_summary: gate.handoff.summary || "", merge_agent_task_id: action.taskId });
+      return { iteration: 0, actionId: action.id, kind: action.kind, status: "blocked", detail: `Merge Agent blocked: ${gate.handoff.summary || "blocked"}`, artifacts: stringList(gate.handoff.evidence) };
+    }
+    return {
+      iteration: 0,
+      actionId: action.id,
+      kind: action.kind,
+      status: "completed",
+      detail: `merge ready for commit: ${action.taskId}`,
+      artifacts: stringList(gate.handoff.evidence)
     };
   }
   return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: `agent execution recorded for role ${action.role}`, artifacts: [] };
@@ -452,15 +463,15 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
       last = resumeRun(cwd, runId);
       const action = firstReadyAction(cwd, runId, last);
       if (!action) {
-        const status: AutoOrchestratorResult["status"] = last.status === "archived" ? "completed" : "waiting_for_model";
+        const status: AutoOrchestratorResult["status"] = last.status === "completed" ? "completed" : "waiting_for_agent_output";
         const waitingOnDependencies = last.nextActions.some((candidate) => candidate.status === "ready" && !isActionCompleted(cwd, runId, candidate.id));
-        writeCheckpoint(cwd, runId, "orchestrator-idle", "after", status === "completed" ? "completed" : "waiting_for_model", waitingOnDependencies ? "ready actions are waiting for completed dependencies" : `no ready action; run state is ${last.status}`, []);
+        writeCheckpoint(cwd, runId, "orchestrator-idle", "after", status === "completed" ? "completed" : "waiting_for_agent_output", waitingOnDependencies ? "ready actions are waiting for completed dependencies" : `no ready action; run state is ${last.status}`, []);
         const timeline = writeAutoTimeline(cwd, runId, steps, status);
         return { runId, status, iterations: iteration - 1, steps, lastOrchestration: last, timeline };
       }
 
       const batch = readyActionBatch(cwd, runId, last, action);
-      if (action.status === "blocked" || action.kind === "gate") {
+      if (action.status === "blocked") {
         const step = { iteration, actionId: action.id, kind: action.kind, status: "blocked" as const, detail: action.reason, artifacts: action.outputs };
         steps.push(step);
         writeCheckpoint(cwd, runId, action.id, "after", "blocked", action.reason, action.outputs);
@@ -492,9 +503,9 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
       }
 
       if (action.kind === "agent") {
-        const executor = options.executor || "";
         const waveStartedAt = new Date().toISOString();
-        if (options.dryRun || !executor) {
+        const readyForProcessing = batch.every((item) => agentActionReadyForProcessing(cwd, runId, last.runDir, item));
+        if (options.dryRun || !readyForProcessing) {
           const latest = resumeRun(cwd, runId);
           recordParallelWave(cwd, runId, {
             iteration,
@@ -502,10 +513,10 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
             action_ids: batch.map((item) => item.id),
             task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
             roles: Array.from(new Set(batch.map((item) => item.role))),
-            status: "waiting_for_model",
+            status: "waiting_for_agent_output",
             reason: options.dryRun
               ? "dry-run stopped before provider dispatch"
-              : "current session must dispatch this ready batch with native subagents",
+              : "current session must dispatch this ready batch with native subagents and write back handoff or worktree results",
             started_at: waveStartedAt,
             completed_at: new Date().toISOString()
           });
@@ -513,86 +524,39 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
             iteration,
             actionId: action.id,
             kind: action.kind,
-            status: "waiting_for_model" as const,
+            status: "waiting_for_agent_output" as const,
             detail: options.dryRun
               ? `dry-run stopped at dispatch contracts for ${batch.length} agent(s)`
-              : `waiting for current session to dispatch ${batch.length} agent(s) from ${latest.files.dispatchContracts}`,
+              : `waiting for current session to dispatch ${batch.length} agent(s) and write handoff/worktree output`,
             artifacts: [latest.files.dispatchContracts]
           };
           steps.push(step);
-          writeCheckpoint(cwd, runId, action.id, "after", "waiting_for_model", step.detail, step.artifacts);
-          const timeline = writeAutoTimeline(cwd, runId, steps, "waiting_for_model");
-          return { runId, status: "waiting_for_model", iterations: iteration, steps, lastOrchestration: latest, timeline };
+          writeCheckpoint(cwd, runId, action.id, "after", "waiting_for_agent_output", step.detail, step.artifacts);
+          const timeline = writeAutoTimeline(cwd, runId, steps, "waiting_for_agent_output");
+          return { runId, status: "waiting_for_agent_output", iterations: iteration, steps, lastOrchestration: latest, timeline };
         }
 
-        recordParallelWave(cwd, runId, {
-          iteration,
-          parallel_group: action.parallelGroup,
-          action_ids: batch.map((item) => item.id),
-          task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
-          roles: Array.from(new Set(batch.map((item) => item.role))),
-          status: "dispatched",
-          reason: `dispatching ready batch of ${batch.length} agent(s)`,
-          started_at: waveStartedAt
-        });
-        const executed = await executeAgentBatch(cwd, runId, {
-          dryRun: false,
-          executor,
-          limit: undefined,
-          actionIds: batch.map((item) => item.id)
-        });
-        const batchStatus = executed.results.every((result) => result.status === "executed") ? "completed" : "failed";
-        steps.push({
-          iteration,
-          actionId: action.id,
-          kind: action.kind,
-          status: batchStatus,
-          detail: `model batch results: ${executed.results.length} agent(s) in ${action.parallelGroup}`,
-          artifacts: [executed.dispatch]
-        });
-        writeCheckpoint(cwd, runId, action.id, "after", batchStatus, `model batch results: ${executed.results.length} agent(s) in ${action.parallelGroup}`, [executed.dispatch]);
-        if (batchStatus === "failed") {
-          recordParallelWave(cwd, runId, {
-            iteration,
-            parallel_group: action.parallelGroup,
-            action_ids: batch.map((item) => item.id),
-            task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
-            roles: Array.from(new Set(batch.map((item) => item.role))),
-            status: "failed",
-            reason: "one or more model agents failed before handoff processing",
-            started_at: waveStartedAt,
-            completed_at: new Date().toISOString()
-          });
-          updateRunStatus(cwd, runId, "blocked", { auto_failed_at: new Date().toISOString(), auto_failed_reason: "one or more model agents failed" });
-          const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");
-          return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
-        }
-        const processedBatchStatuses: Array<"completed" | "waiting_for_model" | "blocked" | "failed"> = [];
-        for (const result of executed.results) {
-          if (result.status === "executed") {
-            const resultAction = last.nextActions.find((candidate) => candidate.id === `agent-${result.role}-${result.taskId}` || candidate.id === result.id || candidate.role === result.role && candidate.taskId === result.taskId);
-            if (resultAction) {
-              const processed = { ...processExecutedAgent(cwd, runId, last.runDir, resultAction), iteration };
-              steps.push(processed);
-              writeCheckpoint(cwd, runId, resultAction.id, "after", processed.status, processed.detail, processed.artifacts);
-              processedBatchStatuses.push(processed.status);
-              if (processed.status === "blocked" || processed.status === "waiting_for_model") {
-                recordParallelWave(cwd, runId, {
-                  iteration,
-                  parallel_group: action.parallelGroup,
-                  action_ids: batch.map((item) => item.id),
-                  task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
-                  roles: Array.from(new Set(batch.map((item) => item.role))),
-                  status: processed.status,
-                  reason: processed.detail,
-                  started_at: waveStartedAt,
-                  completed_at: new Date().toISOString()
-                });
-                const status = processed.status === "blocked" ? "blocked" : "waiting_for_model";
-                const timeline = writeAutoTimeline(cwd, runId, steps, status);
-                return { runId, status, iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
-              }
-            }
+        const processedBatchStatuses: Array<"completed" | "waiting_for_agent_output" | "blocked" | "failed"> = [];
+        for (const batchAction of batch) {
+          const processed = { ...processExecutedAgent(cwd, runId, last.runDir, batchAction), iteration };
+          steps.push(processed);
+          writeCheckpoint(cwd, runId, batchAction.id, "after", processed.status, processed.detail, processed.artifacts);
+          processedBatchStatuses.push(processed.status);
+          if (processed.status === "blocked" || processed.status === "waiting_for_agent_output") {
+            recordParallelWave(cwd, runId, {
+              iteration,
+              parallel_group: action.parallelGroup,
+              action_ids: batch.map((item) => item.id),
+              task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
+              roles: Array.from(new Set(batch.map((item) => item.role))),
+              status: processed.status,
+              reason: processed.detail,
+              started_at: waveStartedAt,
+              completed_at: new Date().toISOString()
+            });
+            const status = processed.status === "blocked" ? "blocked" : "waiting_for_agent_output";
+            const timeline = writeAutoTimeline(cwd, runId, steps, status);
+            return { runId, status, iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
           }
         }
         recordParallelWave(cwd, runId, {

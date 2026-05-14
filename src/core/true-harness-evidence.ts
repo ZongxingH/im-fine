@@ -5,6 +5,7 @@ import { ensureDir, writeText } from "./fs.js";
 interface RunMetadata {
   run_id: string;
   status?: string;
+  execution_mode?: string;
   project_kind?: string;
   needs_task_replan_at?: string;
 }
@@ -14,6 +15,8 @@ interface AgentRunRecord {
   role: string;
   taskId?: string;
   status?: string;
+  executionSource?: string;
+  executedBy?: string;
   executionStatus?: string;
   workflowState?: string;
   skills?: string[];
@@ -44,6 +47,12 @@ interface HandoffRecord {
 
 interface TaskGraph {
   tasks: Array<{ id: string }>;
+}
+
+interface OrchestratorSessionRecord {
+  decision_source?: string;
+  execution_mode?: string;
+  harness_classification?: string;
 }
 
 function readJson<T>(file: string): T {
@@ -136,12 +145,13 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 
   const run = readJson<RunMetadata>(path.join(runDirPath, "run.json"));
   const agentRuns = optionalJson<{ agents?: AgentRunRecord[] }>(path.join(orchestrationDir, "agent-runs.json"));
-  const parallelPlan = optionalJson<{
+  const parallelExecution = optionalJson<{
     wave_history?: ParallelPlanWave[];
     executed_parallel_groups?: string[];
     blocked_parallel_groups?: string[];
-  }>(path.join(orchestrationDir, "parallel-plan.json"));
-  const capabilityGateFile = path.join(orchestrationDir, "subagent-capability-gate.json");
+  }>(path.join(orchestrationDir, "parallel-execution.json"));
+  const orchestratorSessionFile = path.join(orchestrationDir, "orchestrator-session.json");
+  const orchestratorSession = optionalJson<OrchestratorSessionRecord>(orchestratorSessionFile);
   const handoffs = collectHandoffs(runDirPath, cwd);
   const taskStatusValues = taskStatuses(runDirPath);
   const graphTaskIds = taskIds(runDirPath);
@@ -149,26 +159,40 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     ...(Array.isArray(agentRuns?.agents) ? agentRuns.agents.filter((agent) => agent.status === "completed" || agent.executionStatus === "completed").map((agent) => agent.role) : []),
     ...handoffs.map((handoff) => handoff.role)
   ])).sort();
-  const waves = Array.isArray(parallelPlan?.wave_history) ? parallelPlan.wave_history : [];
+  const waves = Array.isArray(parallelExecution?.wave_history) ? parallelExecution.wave_history : [];
+  const agentRecords = Array.isArray(agentRuns?.agents) ? agentRuns.agents : [];
+  const hasTrueHarnessAgent = agentRecords.some((agent) => agent.executionSource === "true_harness");
+  const hasCompletedWave = waves.some((wave) => wave.status === "completed");
+  const hasHandoffChain = handoffs.length > 0;
+  const orchestratorDeclaredTrueHarness = orchestratorSession?.decision_source === "orchestrator_agent"
+    && orchestratorSession.execution_mode === "true_harness"
+    && orchestratorSession.harness_classification === "true_harness";
+  const passed = orchestratorDeclaredTrueHarness && hasTrueHarnessAgent && hasCompletedWave && hasHandoffChain;
 
   const payload = {
     schema_version: 1,
     run_id: runId,
     generated_at: new Date().toISOString(),
     target_goal: "依赖大模型能力，通过多角色多 agent + skill 并行执行，实现 harness 工程",
-    capability_gate: {
-      passed: !fs.existsSync(capabilityGateFile),
-      gate_file: fs.existsSync(capabilityGateFile) ? rel(cwd, capabilityGateFile) : null
+    harness_classification: "true_harness",
+    true_harness_passed: passed,
+    orchestrator_declaration: {
+      passed: orchestratorDeclaredTrueHarness,
+      decision_source: orchestratorSession?.decision_source || "missing",
+      execution_mode: orchestratorSession?.execution_mode || "missing",
+      harness_classification: orchestratorSession?.harness_classification || "missing",
+      session_file: fs.existsSync(orchestratorSessionFile) ? rel(cwd, orchestratorSessionFile) : null
     },
     run: {
       status: run.status || "unknown",
+      execution_mode: run.execution_mode || "unknown",
       project_kind: run.project_kind || "unknown"
     },
     participating_roles: participatingRoles,
     task_count: graphTaskIds.length,
     parallel_execution: {
-      executed_parallel_groups: Array.isArray(parallelPlan?.executed_parallel_groups) ? parallelPlan.executed_parallel_groups : [],
-      blocked_parallel_groups: Array.isArray(parallelPlan?.blocked_parallel_groups) ? parallelPlan.blocked_parallel_groups : [],
+      executed_parallel_groups: Array.isArray(parallelExecution?.executed_parallel_groups) ? parallelExecution.executed_parallel_groups : [],
+      blocked_parallel_groups: Array.isArray(parallelExecution?.blocked_parallel_groups) ? parallelExecution.blocked_parallel_groups : [],
       wave_count: waves.length,
       waves: waves.map((wave) => ({
         iteration: wave.iteration,
@@ -193,8 +217,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     fix_loop_usage: {
       fix_tasks_present: graphTaskIds.some((taskId) => taskId.startsWith("FIX-")),
       replan_used: fs.existsSync(path.join(orchestrationDir, "task-planner-replan.md")) || typeof run.needs_task_replan_at === "string",
-      design_rework_used: fs.existsSync(path.join(evidenceDir, "design-rework.md")) || taskStatusValues.includes("implementation_blocked_by_design"),
-      conflict_resolution_used: fs.existsSync(path.join(evidenceDir, "conflicts.md")) || taskStatusValues.includes("needs_conflict_resolution")
+      design_rework_used: fs.existsSync(path.join(evidenceDir, "design-rework.md")) || taskStatusValues.includes("implementation_blocked_by_design")
     }
   };
 
@@ -207,10 +230,24 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 
 - ${payload.target_goal}
 
-## Capability Gate
+## Assessment
 
-- passed: ${payload.capability_gate.passed ? "yes" : "no"}
-- gate file: ${payload.capability_gate.gate_file || "none"}
+- harness classification: ${payload.harness_classification}
+- true harness passed: ${payload.true_harness_passed ? "yes" : "no"}
+
+## Orchestrator Declaration
+
+- passed: ${payload.orchestrator_declaration.passed ? "yes" : "no"}
+- decision source: ${payload.orchestrator_declaration.decision_source}
+- execution mode: ${payload.orchestrator_declaration.execution_mode}
+- harness classification: ${payload.orchestrator_declaration.harness_classification}
+- session file: ${payload.orchestrator_declaration.session_file || "none"}
+
+## Run
+
+- status: ${payload.run.status}
+- execution mode: ${payload.run.execution_mode}
+- project kind: ${payload.run.project_kind}
 
 ## Participating Roles
 
@@ -233,7 +270,6 @@ ${payload.handoff_evidence_chain.length > 0 ? payload.handoff_evidence_chain.map
 - fix tasks present: ${payload.fix_loop_usage.fix_tasks_present ? "yes" : "no"}
 - replan used: ${payload.fix_loop_usage.replan_used ? "yes" : "no"}
 - design rework used: ${payload.fix_loop_usage.design_rework_used ? "yes" : "no"}
-- conflict resolution used: ${payload.fix_loop_usage.conflict_resolution_used ? "yes" : "no"}
 `);
 
   return {

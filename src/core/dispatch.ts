@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { AgentRun, OrchestrationAction, OrchestrationActionStatus } from "./orchestrator.js";
+import fs from "node:fs";
 
 export interface DispatchContract {
   id: string;
@@ -23,6 +24,11 @@ export interface DispatchContract {
   blocked_reason?: string;
 }
 
+interface OrchestratorSessionSnapshot {
+  next_actions?: OrchestrationAction[];
+  agent_runs?: AgentRun[];
+}
+
 function normalizeStatus(status: OrchestrationActionStatus): DispatchContract["status"] {
   if (status === "done") return "done";
   return status;
@@ -37,18 +43,25 @@ function normalizeAgentRunStatus(status: AgentRun["status"]): DispatchContract["
 function allowedTransitionsForRole(role: string): string[] {
   if (role === "qa") return ["qa_passed", "qa_failed", "blocked"];
   if (role === "reviewer") return ["review_approved", "review_changes_requested", "blocked"];
-  if (role === "archive") return ["archived", "blocked"];
+  if (role === "merge-agent") return ["committing", "blocked"];
+  if (role === "archive") return ["completed", "blocked"];
   if (role === "architect") return ["designed", "needs_design_update", "blocked"];
   if (role === "task-planner") return ["planned", "needs_task_replan", "blocked"];
   if (role === "risk-reviewer") return ["planned", "implementing", "blocked"];
   if (role === "committer") return ["committing", "blocked"];
   if (role === "technical-writer") return ["archiving", "blocked"];
   if (role === "project-knowledge-updater") return ["archiving", "blocked"];
-  if (role === "conflict-resolver") return ["reviewing", "committing", "blocked"];
   return ["implementing", "patch_validated", "blocked"];
 }
 
-export function buildDispatchContracts(cwd: string, runId: string, runDir: string, actions: OrchestrationAction[], agentRuns: AgentRun[]): DispatchContract[] {
+function readSessionSnapshot(file: string): OrchestratorSessionSnapshot {
+  return JSON.parse(fs.readFileSync(file, "utf8")) as OrchestratorSessionSnapshot;
+}
+
+export function buildDispatchContracts(cwd: string, runId: string, runDir: string, orchestratorSessionFile: string): DispatchContract[] {
+  const session = readSessionSnapshot(orchestratorSessionFile);
+  const actions = Array.isArray(session.next_actions) ? session.next_actions : [];
+  const agentRuns = Array.isArray(session.agent_runs) ? session.agent_runs : [];
   const actionByAgentId = new Map<string, OrchestrationAction>();
   const actionByRoleTask = new Map<string, OrchestrationAction>();
 
