@@ -29,7 +29,7 @@ imfine 当前是一套面向真实软件项目交付的项目级自主多 Agent 
   -> runtime 读取并校验 orchestrator-session.json
   -> runtime 物化 planning / dispatch / execution 产物
   -> auto orchestrator 按 agent 决策推进执行
-  -> archive 写出报告和 true harness evidence
+  -> archive action 写出报告、final gates 和 true harness evidence
 ```
 
 如果 `orchestrator-session.json` 尚未存在，run 会停在 `waiting_for_agent_output`，等待当前会话中的 orchestrator agent 补齐决策；runtime 不会自动退化为单 Agent 全流程。
@@ -194,6 +194,7 @@ Claude:
     risks.md
     capabilities/
       <capability>/spec.md
+      <capability>/trace.json
   runs/
     <run-id>/
       run.json
@@ -209,16 +210,26 @@ Claude:
         context.json
         orchestrator-input.md
         orchestrator-session.json
+        session-validation.json
+        handoff-validation.json
         state.json
+        state-blockers.json
+        blocker-summary.json
         queue.json
         state-transitions.jsonl
         action-ledger.json
         checkpoints/
+        provider-capability.json
+        provider-receipts/
         dispatch-contracts.json
         agent-runs.json
         parallel-plan.json
         parallel-execution.json
+        pre-archive-harness-evidence.json
+        pre-archive-harness-evidence.md
         auto-timeline.md
+        final-gates.json
+        trace-index.json
         true-harness-evidence.json
         true-harness-evidence.md
       planning/
@@ -237,10 +248,15 @@ Claude:
           execution/
             execution-status.json
       evidence/
+        test-results.md
+        review.md
+        commits.md
+        push.md
       worktrees/
         index.json
       archive/
         archive-report.md
+        project-updates.md
         final-summary.md
   reports/
     <run-id>.md
@@ -252,6 +268,14 @@ Claude:
 - 分离 planning 产物与 execution 证据
 - 支撑恢复、审计和问题定位
 - 产出 archive report 与 true harness evidence
+
+当前实现还会在 run 目录中生成 provider、dispatch、checkpoint、blocker、trace 与 pre-archive 证据，用于证明 harness 不是单会话伪装执行：
+
+- `provider-capability.json` 记录当前 provider、entry installed、subagent support、检测来源和检测时间
+- `provider-receipts/` 记录 agent action 对应的 provider execution receipt
+- `blocker-summary.json` 汇总 state/session/handoff/provider/final gate 阻塞来源
+- `pre-archive-harness-evidence.*` 在 archive 前校验 orchestration、dispatch、handoff、QA、Review、Commit、Push 证据
+- `trace-index.json` 建立 requirement、analysis、task、handoff、QA/Review/Commit evidence 与 archived capability 的结构化关联
 
 ## 6. 用户命令
 
@@ -297,9 +321,11 @@ Claude:
 
 这些检查结果会进入：
 
-- `.imfine/config.yaml`
 - `run` 创建时的 analysis 产物
-- `orchestrator-input.md`
+- `analysis/project-context.md` 中的 Doctor Summary
+- orchestrator agent 可读取的 runtime context
+
+`.imfine/config.yaml` 由 init 创建基础配置，不作为 doctor 检查结果的落盘位置。
 
 ### 7.2 缺失处理
 
@@ -421,6 +447,17 @@ runtime 不再替它推导 workflow、role、action 或并行边界。
 - 写出 `planning/commit-plan.md`
 - 为 orchestrator 提供可执行任务图
 
+当前 runtime 会校验 task graph 的基础结构、依赖存在性和同波次 write scope 冲突。
+
+Task graph 当前校验范围包括：
+
+- `graph.run_id` 必须等于当前 run id
+- `task.type` 必须属于 runtime 支持的任务类型
+- `depends_on`、`read_scope`、`write_scope`、`acceptance`、`dev_plan`、`test_plan`、`review_plan`、`verification` 必须为数组
+- 每个 task 必须有 commit message
+- 依赖 task 必须存在，且 dependency graph 不能成环
+- 与 `orchestrator-session.json` 中的 task/action/agent 引用必须一致
+
 ### 9.7 Dev Agent
 
 `dev` 负责：
@@ -460,7 +497,7 @@ runtime 不再替它推导 workflow、role、action 或并行边界。
 - 输出 commit 准备结论
 - 不直接执行 git commit；确定性 git 操作由 runtime 执行
 
-### 9.13 Archive / Risk Reviewer / Technical Writer / Project Knowledge Updater
+### 9.12 Archive / Risk Reviewer / Technical Writer / Project Knowledge Updater
 
 这些角色分别负责：
 
@@ -468,6 +505,30 @@ runtime 不再替它推导 workflow、role、action 或并行边界。
 - `risk-reviewer`: 风险暴露与阻塞结论
 - `technical-writer`: 文档和说明产物
 - `project-knowledge-updater`: 长期项目知识更新
+
+### 9.13 Role Registry 和 Skill Registry
+
+当前实现已经将 runtime 角色契约集中到 `src/core/role-registry.ts`：
+
+- role level：`run`、`task`、`both`
+- handoff schema
+- allowed transitions
+- role status 集合
+- role-level required evidence
+- handoff 必需字段、数组字段和字符串字段
+
+`handoff-validator.ts`、`handoff-evidence.ts`、`dispatch.ts` 会消费同一份 role registry，避免角色、handoff schema、allowed transitions 和 evidence requirements 分散漂移。
+
+当前实现也已经将 Superpowers 风格能力集中到 `src/core/skill-registry.ts`：
+
+- skill id
+- 适用 role
+- required inputs
+- expected outputs
+- required evidence
+- failure handling
+
+`AgentRun.skills` 会在 orchestrator session 校验时验证 skill 是否存在、是否允许被该 role 使用；`true-harness-evidence` 会把关键 skill required evidence 纳入 evidence contract。
 
 ## 10. 任务拆分、并行和冲突策略
 
@@ -482,11 +543,13 @@ runtime 只消费这些边界，不推导新的并行波次。
 
 ### 10.2 不能安全拆分时
 
-如果 orchestrator agent 没有声明可并行边界：
+如果 orchestrator agent 没有声明可并行边界，或者通过依赖关系表达了串行执行：
 
 - runtime 按串行执行
 - `parallel-plan.json` 仍然只表达规划分组
 - `parallel-execution.json` 只记录真实执行事实
+
+当前 orchestrator session 中每个 action 都必须声明 `parallelGroup`。串行语义应通过 `dependsOn` 和不同 action 状态表达，而不是省略 parallel group。
 
 ### 10.3 多角色并行
 
@@ -496,6 +559,14 @@ runtime 只消费这些边界，不推导新的并行波次。
 - runtime 只把这些调度结果物化为同一波次中的多个 agent run
 - `agent-runs.json` 只记录真实 agent run
 - `parallel-execution.json` 只记录真实 wave
+
+runtime 当前会在 `parallel-execution.json` 中记录显式 batch 语义：
+
+- `batch_strategy=parallel_group` 表示同一 parallel group 的 ready agent batch
+- `batch_strategy=run_level_compatible` 表示 run-level agent 与 task-level ready batch 的兼容合批
+- `batch_levels` 明确记录该 wave 包含 `run_level`、`task_level` 中的哪类 action
+
+这样 run-level agent 不再只依赖 `!taskId` 这种隐式规则被混入 batch，而是有可审计的 batch strategy 和 batch level。
 
 ### 10.4 write_scope 校验
 
@@ -507,6 +578,8 @@ runtime 只消费这些边界，不推导新的并行波次。
 - `dependsOn`
 
 这些边界由 orchestrator agent 和 task graph 共同定义，runtime 负责落盘和校验。
+
+当前 runtime 已经对 task graph 中的同波次 write scope 重叠、task patch 是否越界、merge-agent 声明的 merged files 是否越界进行校验。
 
 ## 11. Git、Commit 和 Push 策略
 
@@ -522,11 +595,11 @@ runtime 只消费这些边界，不推导新的并行波次。
 - push 到 `origin`
 - 记录 archive 与报告
 
-当前集成目录是当前项目目录本身。task worktree 只用于各 task 的隔离开发；任务通过 QA / Review / Committer 后，runtime 直接把 patch 合并到当前项目目录对应的 run 分支工作区。
+当前集成目录是当前项目目录本身。task worktree 只用于各 task 的隔离开发；任务通过 QA / Review 后，由 `merge-agent` 负责把已通过的任务结果合并到当前项目目录对应的 run 分支工作区，并声明 `merged_files` 与 evidence。runtime 校验这些声明，再执行后续确定性 commit / push。
 
 是否进入 commit / push 阶段，由 orchestrator agent 和 handoff 结果决定；具体 git 操作由 runtime 执行。
 
-merge-agent 必须声明合并结果，runtime 只消费已声明的合并事实并执行后续确定性 commit / push。
+merge-agent 必须声明合并结果，runtime 不替它推导合并内容，只消费已声明且通过 scope 校验的合并事实并执行后续确定性 commit / push。
 
 ## 12. 新项目流程
 
@@ -591,6 +664,27 @@ agent 负责：
 
 如果当前 provider 会话不能启动独立原生子 Agent，orchestrator agent 应把 run 标记为 `blocked`，而不是静默压缩成单会话代偿路径。
 
+当前 runtime 会在 run 创建或首次 orchestration 时写出 provider capability snapshot：
+
+- provider：`codex`、`claude` 或 `unknown`
+- 当前 provider entry 是否安装
+- subagent support：`supported`、`unsupported` 或 `unknown`
+- detection source 与 detected_at
+- 当 provider 明确声明 `unsupported` 时写出 blocked reason
+
+agent dispatch、等待输出、处理 handoff、archive 等路径会写出 provider execution receipt。receipt 记录：
+
+- action id
+- agent id / role / task id
+- parallel group
+- provider
+- provider agent id
+- provider session id
+- status
+- metadata
+
+因此 true harness 判断不只看产物链是否完整，还要求 dispatch contract 对应的 provider receipt 存在并完成。
+
 ## 15. Gate 体系
 
 ### 15.1 Orchestrator Gate
@@ -610,8 +704,20 @@ agent 负责：
 
 如果需要进入任务执行：
 
-- `planning/task-graph.json` 必须存在并通过 schema 校验
+- `planning/task-graph.json` 必须存在并通过 runtime 当前支持的结构校验
 - `dispatch-contracts.json` 与 `agent-runs.json` 只能从 orchestrator session 派生
+
+当前校验覆盖：
+
+- task id 不重复
+- task type 属于 runtime 支持集合
+- `graph.run_id` 与当前 run id 一致
+- 必需的 scope、acceptance、plan、verification、commit message 不为空
+- 必需数组字段必须真的是数组
+- task 依赖引用存在
+- task dependency graph 不成环
+- 无依赖并行候选之间的 write scope 不重叠
+- task graph 与 orchestrator session 中的 task/action/agent 引用一致
 
 ### 15.3 Execution Gate
 
@@ -622,9 +728,56 @@ agent 负责：
 - patch 校验结果
 - QA / review / archive handoff 结果
 - commit / push / archive evidence
-- `true-harness-evidence` 对显式声明、dispatch、wave、handoff 的综合判断
+- provider execution receipt
+- skill evidence contract
+- `true-harness-evidence` 对显式声明、provider、dispatch、wave、handoff、skill evidence 的综合判断
 
 这些 gate 只表达执行前置条件，不表达第二套运行语义。
+
+### 15.4 Handoff Gate
+
+当前 handoff 已经是不可绕过的标准 evidence。
+
+核心角色 handoff 必须包含：
+
+- `run_id`
+- `task_id`
+- `role`
+- `from`
+- `to`
+- `status`
+- `summary`
+- `commands`
+- `evidence`
+- `next_state`
+
+不同角色还会追加角色专属字段，例如：
+
+- `dev`: `files_changed`、`verification`
+- `qa`: `failures`
+- `reviewer`: `findings`
+- `merge-agent`: `merged_files`
+- `committer`: `commit_mode`
+- `archive`: `archive_report`、`project_updates`、`blocked_items`
+
+缺失 handoff 时，agent action 保持 `waiting_for_agent_output`；已完成 action 的 handoff 不合法时，run 进入 `blocked` 并写出 validation evidence。
+
+handoff evidence 中引用的文件必须真实存在。缺失 evidence 文件会导致 handoff validation 失败，并在 true harness evidence 中体现为不可通过。
+
+### 15.5 Final Gates
+
+`final-gates.json` 只能作为 runtime 从标准 evidence 派生出的摘要视图。
+
+它不能替代以下标准 evidence：
+
+- handoff
+- status
+- QA / review evidence
+- commit / push outcome
+- archive handoff
+- true harness evidence
+
+手写 final gates 不能让 blocked run 变成 completed。
 
 ## 16. 失败和返工
 
@@ -646,13 +799,25 @@ agent 负责：
 
 恢复时，runtime 只负责状态迁移与证据落盘，不替代 agent 再做判断。
 
+当前实现会为恢复与返工写出审计证据：
+
+- replan 写出 `agents/task-planner-replan/input.md`、`orchestration/task-planner-replan.md`、`orchestration/task-planner-replan-audit.json`
+- recover 写出 `orchestration/recovery-<task-id>.json`
+- design rework 写出对应 evidence、architect input、task-planner input 和 audit
+- blocked action 会根据 role 映射到更精确的 recoverable state，例如 `needs_design_update`、`needs_task_replan`、`needs_dev_fix`、`needs_requirement_reanalysis`、`needs_infrastructure_action`
+
 ## 17. 归档策略
 
 归档阶段固定写出：
 
 - `archive/archive-report.md`
+- `archive/project-updates.md`
 - `archive/final-summary.md`
 - `reports/<run-id>.md`
+- `orchestration/final-gates.json`
+- `orchestration/pre-archive-harness-evidence.json`
+- `orchestration/pre-archive-harness-evidence.md`
+- `orchestration/trace-index.json`
 - `orchestration/true-harness-evidence.json`
 - `orchestration/true-harness-evidence.md`
 
@@ -671,9 +836,32 @@ archive 的最终状态只有：
 true harness 不是 runtime 猜出来的，而是以下事实共同成立：
 
 - orchestrator agent 显式声明 `true_harness`
+- provider capability 没有明确阻断独立 subagent dispatch
 - 存在 dispatch contract
 - 存在真实 execution wave
+- 每个 required contract 都有 completed wave
+- 每个 required contract 都有 completed provider execution receipt
 - 存在 agent handoff evidence chain
+- contract 对应 handoff 全部通过 schema 与 evidence 文件存在性校验
+- `AgentRun.skills` 对应的 required evidence contract 全部满足
+
+archive 前还会写出 `pre-archive-harness-evidence.json` 和 `pre-archive-harness-evidence.md`，专门证明进入 archive 前以下 evidence 已满足：
+
+- completed wave contract
+- handoff validation
+- provider receipt contract
+- QA evidence
+- Review evidence
+- commit evidence
+- push evidence
+- committer handoff
+
+archive 完成后会写出：
+
+- `orchestration/trace-index.json`
+- `.imfine/project/capabilities/<capability>/trace.json`
+
+trace index 只引用已有产物，不改变业务执行逻辑；capability trace 用于把 archived capability 与 run、task、evidence、commit 关联起来，让后续 run 基于可追踪事实读取历史能力。
 
 ## 18. 当前实现摘要
 
@@ -683,6 +871,8 @@ true harness 不是 runtime 猜出来的，而是以下事实共同成立：
 - 安装入口只有 `npx github:<owner>/<repo> install ...`
 - 唯一执行模式是 `true_harness`
 - 唯一编排决策源是当前会话中的 `orchestrator agent`
+- 角色契约已经集中到 role registry，handoff validator、dispatch contract、evidence validation 共用同一份 role 定义
+- skill 契约已经集中到 skill registry，`AgentRun.skills` 会校验 role 适配性并进入 evidence contract
 - `run` 创建后固定进入 `waiting_for_agent_output`
 - `--plan-only` 不走另一套 planning 路径，只返回当前 run 的 orchestrator 快照
 - `doctor` 是 advisory fact source，不再裁决主路径
@@ -690,10 +880,19 @@ true harness 不是 runtime 猜出来的，而是以下事实共同成立：
 - runtime 不替代当前会话发起原生子 Agent 调度
 - planning 产物与 execution 证据严格分层
 - `parallel-plan.json` 只表达规划
-- `parallel-execution.json` 只表达真实执行
+- `parallel-execution.json` 只表达真实执行，并记录 batch strategy 与 batch level
+- provider capability snapshot 与 provider execution receipt 已进入 true harness evidence
+- pre-archive harness evidence 已用于 archive 前证据完整性检查
+- run-level trace index 与 capability trace 已用于 OpenSpec 风格可追溯性
+- blocker summary artifact 已用于汇总 state、provider、session、handoff、final gate 阻塞来源
 - agent summary 只输出到当前会话
 - fix loop 状态已经进入 run 状态机，用于恢复、失败追踪和 archive 前审计
-- true harness evidence 只按显式声明与真实 dispatch / wave / handoff 事实判断
+- true harness evidence 按显式声明、provider receipt、真实 dispatch / wave / handoff、skill evidence contract 事实判断
+- orchestrator session schema、handoff、dispatch contract、parallel execution、archive gate、completed gate 已经形成闭环
+- run 防重策略已经存在：同一 active current run 与同一 source 默认复用，需要新 run 时显式 `--new`
+- internal runtime command 已经通过环境变量 guard 与用户公开入口隔离
+- final gates 由 runtime 从标准 evidence 派生，不作为独立事实来源
+- test coverage 已覆盖 role registry 一致性、TaskGraph 负例、provider supported/unsupported/unknown、true harness 缺 receipt/wave/handoff/evidence/pre-archive 负例，以及 status/gate matrix 状态输出
 
 ## 19. 已确认实现决策
 
@@ -705,9 +904,10 @@ true harness 不是 runtime 猜出来的，而是以下事实共同成立：
 - debug / internal runtime 命令不构成用户公开工作流
 - `plan` 不属于公开命令
 - runtime 不再自己生成 task graph 主语义
-- task 终态是 `completed`
+- task 状态机支持 `completed`，当前交付链路中 commit 后的任务事实主要以 `committed`、commit hash 和 run archive evidence 表达
 - archive 终态是 `completed | blocked`
 - session summary 不写入 `.imfine` 文档
+- `IMFINE_IMPLEMENTATION_OPTIMIZATION_TASKS.md` 中的 runtime contract、true harness evidence、OpenSpec traceability、Superpowers skill contract、observability、recovery robustness 和 test coverage 任务已按当前实现整合进本文档
 
 ## 20. 参考来源
 
@@ -723,9 +923,15 @@ true harness 不是 runtime 猜出来的，而是以下事实共同成立：
   - `src/core/dispatch.ts`
   - `src/core/archive.ts`
   - `src/core/true-harness-evidence.ts`
+  - `src/core/role-registry.ts`
+  - `src/core/skill-registry.ts`
+  - `src/core/provider-evidence.ts`
+  - `src/core/blocker-summary.ts`
+  - `src/core/trace.ts`
   - `src/core/state-machine.ts`
   - `src/core/quality.ts`
   - `src/core/worktree.ts`
   - `src/core/gitflow.ts`
   - `src/core/doctor.ts`
   - `src/core/session-summary.ts`
+  - `test/implementation-optimization.mjs`

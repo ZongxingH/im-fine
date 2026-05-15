@@ -38,6 +38,14 @@ export interface TaskGraphValidation {
   replanRecommended: boolean;
 }
 
+export interface TaskGraphValidationOptions {
+  expectedRunId?: string;
+  orchestratorSession?: {
+    next_actions?: Array<{ kind?: string; role?: string; taskId?: string; id?: string }>;
+    agent_runs?: Array<{ role?: string; taskId?: string; id?: string }>;
+  };
+}
+
 export interface PlanResult {
   runId: string;
   runDir: string;
@@ -87,30 +95,128 @@ function scopeOverlaps(left: string, right: string): boolean {
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }
 
-export function validateTaskGraph(graph: TaskGraph): TaskGraphValidation {
-  const errors: string[] = [];
-  const ids = new Set<string>();
+const TASK_TYPES = new Set(["dev", "docs", "qa", "qa_gate", "review", "review_gate", "archive", "delivery_gate"]);
+const ARRAY_FIELDS = ["depends_on", "read_scope", "write_scope", "acceptance", "dev_plan", "test_plan", "review_plan", "verification"] as const;
 
-  for (const task of graph.tasks) {
-    if (ids.has(task.id)) errors.push(`Duplicate task id: ${task.id}`);
-    ids.add(task.id);
-    if (task.write_scope.length === 0) errors.push(`Task ${task.id} missing write_scope`);
-    if (task.read_scope.length === 0) errors.push(`Task ${task.id} missing read_scope`);
-    if (task.acceptance.length === 0) errors.push(`Task ${task.id} missing acceptance`);
-    if (task.dev_plan.length === 0) errors.push(`Task ${task.id} missing dev_plan`);
-    if (task.test_plan.length === 0) errors.push(`Task ${task.id} missing test_plan`);
-    if (task.review_plan.length === 0) errors.push(`Task ${task.id} missing review_plan`);
-    if (task.verification.length === 0) errors.push(`Task ${task.id} missing verification`);
-    if (!task.commit?.message) errors.push(`Task ${task.id} missing commit message`);
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function taskField(task: unknown, field: string): unknown {
+  return task && typeof task === "object" ? (task as Record<string, unknown>)[field] : undefined;
+}
+
+function detectCycles(tasks: Array<{ id: string; depends_on: string[] }>): string[] {
+  const errors: string[] = [];
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+
+  function visit(task: { id: string; depends_on: string[] }, pathIds: string[]): void {
+    if (visited.has(task.id)) return;
+    if (visiting.has(task.id)) {
+      errors.push(`Task dependency cycle detected: ${[...pathIds, task.id].join(" -> ")}`);
+      return;
+    }
+    visiting.add(task.id);
+    for (const dep of task.depends_on) {
+      const next = byId.get(dep);
+      if (next) visit(next, [...pathIds, task.id]);
+    }
+    visiting.delete(task.id);
+    visited.add(task.id);
   }
 
-  for (const task of graph.tasks) {
+  for (const task of tasks) visit(task, []);
+  return errors;
+}
+
+function validateSessionAlignment(tasks: Array<{ id: string; type: string }>, options: TaskGraphValidationOptions, errors: string[]): void {
+  const session = options.orchestratorSession;
+  if (!session) return;
+  const taskIds = new Set(tasks.map((task) => task.id));
+  const agentActions = Array.isArray(session.next_actions) ? session.next_actions.filter((action) => action.kind === "agent") : [];
+  const agentRuns = Array.isArray(session.agent_runs) ? session.agent_runs : [];
+  for (const action of agentActions) {
+    if (action.taskId && !taskIds.has(action.taskId)) errors.push(`Agent action ${action.id || action.role || "unknown"} references unknown task ${action.taskId}`);
+  }
+  for (const agent of agentRuns) {
+    if (agent.taskId && !taskIds.has(agent.taskId)) errors.push(`Agent run ${agent.id || agent.role || "unknown"} references unknown task ${agent.taskId}`);
+  }
+  for (const task of tasks.filter((item) => item.type !== "archive" && item.type !== "delivery_gate")) {
+    if (!agentActions.some((action) => action.taskId === task.id) && !agentRuns.some((agent) => agent.taskId === task.id)) {
+      errors.push(`Task ${task.id} has no matching orchestrator action or agent run`);
+    }
+  }
+}
+
+export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidationOptions = {}): TaskGraphValidation {
+  const errors: string[] = [];
+  const ids = new Set<string>();
+  if (!graph || typeof graph !== "object") {
+    return {
+      passed: false,
+      errors: ["Task graph must be an object"],
+      parallelGroups: [],
+      serialTasks: [],
+      serialReason: null,
+      replanRecommended: true
+    };
+  }
+
+  if (options.expectedRunId && graph.run_id !== options.expectedRunId) {
+    errors.push(`Task graph run_id mismatch: expected ${options.expectedRunId}, got ${graph.run_id || "missing"}`);
+  }
+  if (!Array.isArray(graph.tasks)) errors.push("Task graph tasks must be an array");
+
+  const normalizedTasks = Array.isArray(graph.tasks)
+    ? graph.tasks.map((task) => ({
+      id: typeof taskField(task, "id") === "string" ? taskField(task, "id") as string : "",
+      type: typeof taskField(task, "type") === "string" ? taskField(task, "type") as string : "",
+      depends_on: stringArray(taskField(task, "depends_on")),
+      read_scope: stringArray(taskField(task, "read_scope")),
+      write_scope: stringArray(taskField(task, "write_scope")),
+      acceptance: stringArray(taskField(task, "acceptance")),
+      dev_plan: stringArray(taskField(task, "dev_plan")),
+      test_plan: stringArray(taskField(task, "test_plan")),
+      review_plan: stringArray(taskField(task, "review_plan")),
+      verification: stringArray(taskField(task, "verification")),
+      commit: taskField(task, "commit")
+    }))
+    : [];
+
+  for (const [index, task] of normalizedTasks.entries()) {
+    const label = task.id || `tasks[${index}]`;
+    if (!task.id) errors.push(`Task ${index} missing id`);
+    if (task.id && ids.has(task.id)) errors.push(`Duplicate task id: ${task.id}`);
+    if (task.id) ids.add(task.id);
+    if (!TASK_TYPES.has(task.type)) errors.push(`Task ${label} has unsupported type: ${task.type || "missing"}`);
+    const original = Array.isArray(graph.tasks) ? graph.tasks[index] as unknown : {};
+    for (const field of ARRAY_FIELDS) {
+      if (!Array.isArray(taskField(original, field))) errors.push(`Task ${label} ${field} must be an array`);
+    }
+    if (task.write_scope.length === 0) errors.push(`Task ${label} missing write_scope`);
+    if (task.read_scope.length === 0) errors.push(`Task ${label} missing read_scope`);
+    if (task.acceptance.length === 0) errors.push(`Task ${label} missing acceptance`);
+    if (task.dev_plan.length === 0) errors.push(`Task ${label} missing dev_plan`);
+    if (task.test_plan.length === 0) errors.push(`Task ${label} missing test_plan`);
+    if (task.review_plan.length === 0) errors.push(`Task ${label} missing review_plan`);
+    if (task.verification.length === 0) errors.push(`Task ${label} missing verification`);
+    const commit = task.commit;
+    if (!commit || typeof commit !== "object" || typeof (commit as { message?: unknown }).message !== "string" || !(commit as { message: string }).message.trim()) {
+      errors.push(`Task ${label} missing commit message`);
+    }
+  }
+
+  for (const task of normalizedTasks) {
     for (const dep of task.depends_on) {
       if (!ids.has(dep)) errors.push(`Task ${task.id} depends on unknown task ${dep}`);
     }
   }
+  errors.push(...detectCycles(normalizedTasks.filter((task) => task.id)));
+  validateSessionAlignment(normalizedTasks.filter((task) => task.id), options, errors);
 
-  const parallelCandidates = graph.tasks.filter((task) => task.depends_on.length === 0);
+  const parallelCandidates = normalizedTasks.filter((task) => task.depends_on.length === 0 && task.id);
   for (let i = 0; i < parallelCandidates.length; i += 1) {
     for (let j = i + 1; j < parallelCandidates.length; j += 1) {
       const left = parallelCandidates[i];
@@ -136,7 +242,7 @@ export function validateTaskGraph(graph: TaskGraph): TaskGraphValidation {
     passed: errors.length === 0,
     errors,
     parallelGroups: parallelCandidates.length > 1 && errors.length === 0 ? [parallelCandidates.map((task) => task.id)] : [],
-    serialTasks: graph.tasks.filter((task) => task.depends_on.length > 0 || graph.strategy !== "parallel").map((task) => task.id),
+    serialTasks: normalizedTasks.filter((task) => task.depends_on.length > 0 || graph.strategy !== "parallel").map((task) => task.id).filter(Boolean),
     serialReason,
     replanRecommended
   };
@@ -163,7 +269,7 @@ function writeTaskPlans(cwd: string, runDir: string, graph: TaskGraph, artifacts
 }
 
 function materializePlanningFiles(cwd: string, runId: string, runDir: string, graph: TaskGraph): PlanResult {
-  const validation = validateTaskGraph(graph);
+  const validation = validateTaskGraph(graph, { expectedRunId: runId });
   if (!validation.passed) {
     throw new Error(`Task graph validation failed for run ${runId}: ${validation.errors.join("; ")}`);
   }
@@ -261,5 +367,13 @@ export function materializeTaskGraphArtifacts(cwd: string, runId: string): PlanR
     throw new Error(`Missing model-produced task graph for run: ${runId}`);
   }
   const graph = readJson<TaskGraph>(graphFile);
+  const sessionFile = path.join(runDir, "orchestration", "orchestrator-session.json");
+  const session = fs.existsSync(sessionFile)
+    ? readJson<TaskGraphValidationOptions["orchestratorSession"]>(sessionFile)
+    : undefined;
+  const validation = validateTaskGraph(graph, { expectedRunId: runId, orchestratorSession: session });
+  if (!validation.passed) {
+    throw new Error(`Task graph validation failed for run ${runId}: ${validation.errors.join("; ")}`);
+  }
   return materializePlanningFiles(cwd, runId, runDir, graph);
 }

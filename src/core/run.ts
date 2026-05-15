@@ -4,6 +4,7 @@ import { doctor } from "./doctor.js";
 import type { ExecutionMode } from "./execution-mode.js";
 import { ensureDir, writeText } from "./fs.js";
 import { initProject } from "./init.js";
+import { writeProviderCapabilitySnapshot } from "./provider-evidence.js";
 import { assertTransitionAccepted, isRunState, transitionRunState, type RunState } from "./state-machine.js";
 
 export interface DeliveryRunResult {
@@ -329,6 +330,8 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[], option
     ],
     generated_at: new Date().toISOString()
   }, null, 2)}\n`, artifacts);
+  writeProviderCapabilitySnapshot(cwd, runId);
+  artifacts.push(path.join(runDir, "orchestration", "provider-capability.json"));
   writeArtifact(path.join(runDir, "orchestration", "orchestrator-input.md"), `# Orchestrator Input
 
 You are the only orchestration decision maker for this run.

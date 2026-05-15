@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { readFixLoopRecoveryState } from "./fix-loop.js";
+import { writeText } from "./fs.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { assertTransitionAccepted, isRunState, isTaskState, transitionRunState, transitionTaskState, type RunState, type TaskState } from "./state-machine.js";
 
@@ -12,6 +13,7 @@ export interface RecoveryResult {
   fromRunState: string;
   toRunState: RunState;
   status: "recovered";
+  audit: string;
 }
 
 function readJson<T>(file: string): T {
@@ -87,6 +89,18 @@ export function recoverTask(cwd: string, runId: string, taskId: string): Recover
   const fromRunState = currentRunState(cwd, runId);
   if (!isRunState(fromRunState)) throw new Error(`Run ${runId} has unknown state: ${fromRunState}`);
   const target = inferRecovery(fromTaskState, fromRunState);
+  const audit = path.join(runDir(cwd, runId), "orchestration", `recovery-${taskId}.json`);
+  writeText(audit, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    task_id: taskId,
+    from_task_state: fromTaskState,
+    to_task_state: target.task,
+    from_run_state: fromRunState,
+    to_run_state: target.run,
+    reason: "formal recovery path selected by current task/run state",
+    recorded_at: new Date().toISOString()
+  }, null, 2)}\n`);
   assertTransitionAccepted(transitionTaskState(cwd, runId, taskId, target.task, {
     recovered_at: new Date().toISOString(),
     recovered_from: fromTaskState
@@ -104,6 +118,7 @@ export function recoverTask(cwd: string, runId: string, taskId: string): Recover
     toTaskState: target.task,
     fromRunState,
     toRunState: target.run,
-    status: "recovered"
+    status: "recovered",
+    audit
   };
 }

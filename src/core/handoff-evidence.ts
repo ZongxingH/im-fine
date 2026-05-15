@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { validateHandoff, type HandoffRole } from "./handoff-validator.js";
+import { isRuntimeRole, RUNTIME_ROLES } from "./role-registry.js";
 
 export interface AgentHandoffTarget {
   id: string;
@@ -18,25 +19,10 @@ export interface AgentHandoffValidation {
   errors: string[];
 }
 
-const HANDOFF_ROLES = new Set<string>([
-  "architect",
-  "task-planner",
-  "intake",
-  "project-analyzer",
-  "product-planner",
-  "dev",
-  "qa",
-  "reviewer",
-  "merge-agent",
-  "archive",
-  "committer",
-  "risk-reviewer",
-  "technical-writer",
-  "project-knowledge-updater"
-]);
+const HANDOFF_ROLES = new Set<string>(RUNTIME_ROLES);
 
 export function isHandoffRole(role: string): role is HandoffRole {
-  return HANDOFF_ROLES.has(role);
+  return HANDOFF_ROLES.has(role) && isRuntimeRole(role);
 }
 
 export function agentHandoffCandidates(agent: AgentHandoffTarget, runDirPath: string): string[] {

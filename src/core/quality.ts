@@ -50,6 +50,7 @@ export interface DesignReworkResult {
   evidence: string;
   architectInput: string;
   taskPlannerInput: string;
+  audit: string;
 }
 
 interface WorktreeIndex {
@@ -364,9 +365,23 @@ export function requestDesignRework(cwd: string, runId: string, taskId: string, 
 
   const architectInput = path.join(architectDir, "input.md");
   const taskPlannerInput = path.join(plannerDir, "input.md");
+  const audit = path.join(runDir(cwd, runId), "orchestration", `design-rework-${taskId}.json`);
   writeEvidenceSection(evidenceFile, "Design Rework", `## ${taskId}\n\n- status: implementation_blocked_by_design\n- summary: ${summary || "none"}\n- workflow_reason: ${workflow.reason}\n\n## Affected Task\n\n- ${task.id}: ${task.title}`);
   writeText(architectInput, `# Architect Rework Input: ${taskId}\n\n## Reason\n\n${summary || workflow.architect.reason}\n\n## Workflow Reason\n\n${workflow.reason}\n\n## Current Task\n\n${task.title}\n\n## Required Output\n\n- Update design artifacts if the design is invalid.\n- Produce architecture guidance for Task Planner.\n- Do not change implementation code.\n`);
   writeText(taskPlannerInput, `# Task Planner Rework Input: ${taskId}\n\n## Reason\n\n${summary || workflow.task_planner.reason}\n\n## Workflow Reason\n\n${workflow.reason}\n\n## Current Task Graph\n\n${graphFile(cwd, runId)}\n\n## Required Output\n\n- Re-plan affected tasks after Architect updates design.\n- Preserve valid task boundaries where possible.\n- Do not change implementation code.\n`);
+  writeText(audit, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    task_id: taskId,
+    from_task_state: "unknown",
+    to_task_state: "implementation_blocked_by_design",
+    to_run_state: "needs_design_update",
+    summary: summary || workflow.reason,
+    evidence: evidenceFile,
+    architect_input: architectInput,
+    task_planner_input: taskPlannerInput,
+    recorded_at: new Date().toISOString()
+  }, null, 2)}\n`);
   updateRunStatus(cwd, runId, "needs_design_update", {
     design_rework_requested_at: new Date().toISOString(),
     design_rework_evidence: evidenceFile
@@ -383,6 +398,7 @@ export function requestDesignRework(cwd: string, runId: string, taskId: string, 
     summary,
     evidence: evidenceFile,
     architectInput,
-    taskPlannerInput
+    taskPlannerInput,
+    audit
   };
 }

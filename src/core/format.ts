@@ -70,6 +70,18 @@ export function formatInstall(result: InstallResult): string {
 }
 
 export function formatStatus(result: StatusResult): string {
+  const gates = result.currentRunGates
+    ? Object.entries(result.currentRunGates).map(([key, value]) => `${key}=${value}`).join(", ")
+    : "none";
+  const actions = result.currentRunActions
+    ? `ready=${result.currentRunActions.ready}, waiting=${result.currentRunActions.waiting}, blocked=${result.currentRunActions.blocked}, groups=${result.currentRunActions.currentParallelGroups.join(",") || "none"}`
+    : "none";
+  const blockers = result.currentRunBlockers
+    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}`
+    : "none";
+  const checkpoint = result.currentRunLatestCheckpoint
+    ? `${result.currentRunLatestCheckpoint.actionId}:${result.currentRunLatestCheckpoint.status} (${result.currentRunLatestCheckpoint.detail})`
+    : "none";
   return [
     `imfine status: ${result.cwd}`,
     `initialized: ${result.initialized ? "yes" : "no"}`,
@@ -78,6 +90,10 @@ export function formatStatus(result: StatusResult): string {
     `current run status: ${result.currentRunStatus || "none"}`,
     `current run execution mode: ${result.currentRunExecutionMode || "none"}`,
     `current run branch: ${result.currentRunBranch || "none"}`,
+    `current run gates: ${gates}`,
+    `current run actions: ${actions}`,
+    `current run blockers: ${blockers}`,
+    `current run latest checkpoint: ${checkpoint}`,
     `runs: ${result.runs.length === 0 ? "none" : result.runs.map((run) => `${run.runId}(${run.relation}:${run.status})`).join(", ")}`,
     `reports: ${result.reports.length === 0 ? "none" : result.reports.join(", ")}`,
     ""
@@ -174,6 +190,7 @@ export function formatDesignRework(result: DesignReworkResult): string {
     `evidence: ${result.evidence}`,
     `architect input: ${result.architectInput}`,
     `task planner input: ${result.taskPlannerInput}`,
+    `audit: ${result.audit}`,
     ""
   ].join("\n");
 }
@@ -183,6 +200,7 @@ export function formatRecovery(result: RecoveryResult): string {
     `recovered task ${result.runId}/${result.taskId}`,
     `task state: ${result.fromTaskState} -> ${result.toTaskState}`,
     `run state: ${result.fromRunState} -> ${result.toRunState}`,
+    `audit: ${result.audit}`,
     ""
   ].join("\n");
 }
@@ -194,6 +212,7 @@ export function formatReplan(result: ReplanResult): string {
     `reason: ${result.reason}`,
     `input: ${result.input}`,
     `report: ${result.report}`,
+    `audit: ${result.audit}`,
     ""
   ].join("\n");
 }

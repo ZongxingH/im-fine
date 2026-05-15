@@ -6,6 +6,10 @@ import { agentHandoffCandidates, validateAgentHandoff } from "./handoff-evidence
 import { isRunState, normalizeRunState, transitionRunState, type RunState } from "./state-machine.js";
 import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import type { ExecutionMode } from "./execution-mode.js";
+import { writeBlockerSummary } from "./blocker-summary.js";
+import { readProviderCapabilitySnapshot, writeProviderCapabilitySnapshot } from "./provider-evidence.js";
+import { isRuntimeRole } from "./role-registry.js";
+import { validateAgentSkills } from "./skill-registry.js";
 
 export type OrchestrationActionKind = "runtime" | "agent";
 export type OrchestrationActionStatus = "ready" | "waiting" | "blocked" | "done";
@@ -177,6 +181,8 @@ function validateAction(value: unknown, index: number, ids: Set<string>, errors:
     errors.push(`${pathName}.status must be ready, waiting, blocked, or done`);
   }
   stringField(value, "role", pathName, errors);
+  const role = typeof value.role === "string" ? value.role : "";
+  if (kind === "agent" && role && !isRuntimeRole(role)) errors.push(`${pathName}.role is not a supported runtime agent role: ${role}`);
   optionalStringField(value, "taskId", pathName, errors);
   optionalStringField(value, "command", pathName, errors);
   stringField(value, "reason", pathName, errors);
@@ -198,14 +204,16 @@ function validateAgentRun(value: unknown, index: number, ids: Set<string>, error
     if (ids.has(id)) errors.push(`${pathName}.id duplicates ${id}`);
     ids.add(id);
   }
-  stringField(value, "role", pathName, errors);
+  const role = stringField(value, "role", pathName, errors);
+  if (role && !isRuntimeRole(role)) errors.push(`${pathName}.role is not a supported runtime role: ${role}`);
   optionalStringField(value, "taskId", pathName, errors);
   optionalStringField(value, "workflowState", pathName, errors);
   const status = stringField(value, "status", pathName, errors);
   if (status && !["ready", "waiting", "planned", "completed"].includes(status)) {
     errors.push(`${pathName}.status must be ready, waiting, planned, or completed`);
   }
-  stringArrayField(value, "skills", pathName, errors);
+  const skills = stringArrayField(value, "skills", pathName, errors);
+  if (role) errors.push(...validateAgentSkills(role, skills).map((error) => `${pathName}.${error}`));
   stringArrayField(value, "inputs", pathName, errors);
   stringArrayField(value, "outputs", pathName, errors);
   stringArrayField(value, "readScope", pathName, errors);
@@ -492,6 +500,26 @@ function waitingForOrchestratorDecision(cwd: string, runId: string, mode: Orches
 
 function buildSessionDrivenDecision(cwd: string, runId: string, mode: OrchestratorResult["mode"]): Omit<OrchestratorResult, "files"> {
   const runDirPath = runDir(cwd, runId);
+  const provider = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
+  if (provider.blocked) {
+    transitionRunState(cwd, runId, "blocked", {
+      blocked_at: new Date().toISOString(),
+      blocked_reason: provider.blocked_reason,
+      provider_capability: path.join(runDirPath, "orchestration", "provider-capability.json")
+    });
+    writeBlockerSummary(cwd, runId);
+    return {
+      runId,
+      runDir: runDirPath,
+      mode,
+      status: "blocked",
+      executionMode: "true_harness",
+      nextActions: [],
+      agentRuns: [],
+      dispatchContracts: [],
+      parallelGroups: []
+    };
+  }
   const sessionFile = path.join(runDirPath, "orchestration", "orchestrator-session.json");
   if (!exists(sessionFile)) {
     return {
@@ -522,6 +550,7 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       blocked_reason: "orchestrator-session schema validation failed",
       session_validation_errors: validationErrors
     });
+    writeBlockerSummary(cwd, runId);
     return {
       runId,
       runDir: runDirPath,
@@ -561,6 +590,7 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       blocked_reason: "agent handoff schema validation failed",
       handoff_validation_errors: handoffErrors
     });
+    writeBlockerSummary(cwd, runId);
     return {
       runId,
       runDir: runDirPath,

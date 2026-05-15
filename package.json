@@ -11,7 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "npm run build",
     "prepare": "npm run build",
-    "test": "npm run build && node test/smoke.mjs && node test/harness-acceptance.mjs && node test/plan-validation.mjs && node test/reliability.mjs",
+    "test": "npm run build && node test/smoke.mjs && node test/harness-acceptance.mjs && node test/plan-validation.mjs && node test/reliability.mjs && node test/implementation-optimization.mjs",
     "start": "node dist/cli/imfine.js"
   },
   "engines": {

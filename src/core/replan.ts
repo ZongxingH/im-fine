@@ -13,6 +13,7 @@ export interface ReplanResult {
   reason: string;
   input: string;
   report: string;
+  audit: string;
 }
 
 function readJson<T>(file: string): T {
@@ -41,8 +42,10 @@ export function requestTaskPlannerReplan(cwd: string, runId: string, summary = "
   const workflow = readFixLoopRoleActionState("needs_task_replan");
   const input = path.join(runRoot, "agents", "task-planner-replan", "input.md");
   const report = path.join(runRoot, "orchestration", "task-planner-replan.md");
+  const audit = path.join(runRoot, "orchestration", "task-planner-replan-audit.json");
   const graphFile = path.join(runRoot, "planning", "task-graph.json");
   const executionPlan = path.join(runRoot, "planning", "execution-plan.md");
+  const run = readJson<{ status?: string }>(path.join(runRoot, "run.json"));
 
   writeText(input, `# Task Planner Replan Input
 
@@ -71,6 +74,20 @@ ${reason}
 - reason: ${reason}
 - input: ${input}
 `);
+  writeText(audit, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    from_run_state: run.status || "unknown",
+    to_run_state: "needs_task_replan",
+    reason,
+    related_artifacts: {
+      task_graph: fs.existsSync(graphFile) ? graphFile : null,
+      execution_plan: fs.existsSync(executionPlan) ? executionPlan : null,
+      input,
+      report
+    },
+    recorded_at: new Date().toISOString()
+  }, null, 2)}\n`);
 
   assertTransitionAccepted(transitionRunState(cwd, runId, "needs_task_replan", {
     needs_task_replan_at: new Date().toISOString(),
@@ -85,6 +102,7 @@ ${reason}
     status: "needs_task_replan",
     reason,
     input,
-    report
+    report,
+    audit
   };
 }

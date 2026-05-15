@@ -5,6 +5,8 @@ import { installDependencies } from "./dependencies.js";
 import { writeText } from "./fs.js";
 import { commitRun, pushRun } from "./gitflow.js";
 import { validateHandoff, type HandoffRole } from "./handoff-validator.js";
+import { writeBlockerSummary } from "./blocker-summary.js";
+import { writeProviderExecutionReceipt } from "./provider-evidence.js";
 import { acquireLock, isActionCompleted, readLatestCheckpoint, releaseLock, writeCheckpoint } from "./reliability.js";
 import { resumeRun, type OrchestrationAction, type OrchestratorResult } from "./orchestrator.js";
 import { materializeTaskGraphArtifacts } from "./plan.js";
@@ -52,6 +54,8 @@ interface ParallelExecutionWave {
   task_ids: string[];
   roles: string[];
   status: "waiting_for_agent_output" | "dispatched" | "completed" | "blocked" | "failed";
+  batch_strategy?: "parallel_group" | "run_level_compatible";
+  batch_levels?: Array<"run_level" | "task_level">;
   reason: string;
   started_at: string;
   completed_at?: string;
@@ -218,11 +222,31 @@ function readyActionBatch(cwd: string, runId: string, orchestration: Orchestrato
   if (seed.kind !== "agent") return [seed];
   return orchestration.nextActions.filter((action) =>
     action.kind === "agent"
-    && (action.parallelGroup === seed.parallelGroup || !action.taskId)
+    && (action.parallelGroup === seed.parallelGroup || runLevelActionCanJoinBatch(action))
     && action.status === "ready"
     && !isActionCompleted(cwd, runId, action.id)
     && dependenciesCompleted(cwd, runId, orchestration, action)
   );
+}
+
+function runLevelActionCanJoinBatch(action: OrchestrationAction): boolean {
+  return actionBatchLevel(action) === "run_level";
+}
+
+function actionBatchLevel(action: OrchestrationAction): "run_level" | "task_level" {
+  return action.taskId ? "task_level" : "run_level";
+}
+
+function batchStrategy(seed: OrchestrationAction, batch: OrchestrationAction[]): "parallel_group" | "run_level_compatible" {
+  return batch.every((action) => action.parallelGroup === seed.parallelGroup) ? "parallel_group" : "run_level_compatible";
+}
+
+function blockedRunStateForAction(action: OrchestrationAction): string {
+  if (action.role === "architect") return "needs_design_update";
+  if (action.role === "task-planner") return "needs_task_replan";
+  if (action.role === "dev" || action.role === "qa" || action.role === "reviewer" || action.role === "merge-agent") return "needs_dev_fix";
+  if (action.role === "intake" || action.role === "product-planner") return "needs_requirement_reanalysis";
+  return "needs_infrastructure_action";
 }
 
 function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationAction): AutoOrchestratorStep {
@@ -483,7 +507,8 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         const step = { iteration, actionId: action.id, kind: action.kind, status: "blocked" as const, detail: action.reason, artifacts: action.outputs };
         steps.push(step);
         writeCheckpoint(cwd, runId, action.id, "after", "blocked", action.reason, action.outputs);
-        updateRunStatus(cwd, runId, "needs_infrastructure_action", { auto_blocked_at: new Date().toISOString(), auto_blocked_reason: action.reason });
+        updateRunStatus(cwd, runId, blockedRunStateForAction(action), { auto_blocked_at: new Date().toISOString(), auto_blocked_reason: action.reason, auto_blocked_action_id: action.id, auto_blocked_role: action.role });
+        writeBlockerSummary(cwd, runId);
         const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");
         return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: last, timeline };
       }
@@ -501,9 +526,21 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         writeCheckpoint(cwd, runId, action.id, "before", "started", action.reason, action.inputs);
       if (action.kind === "runtime" || action.id === "agent-archive") {
         const step = { ...executeRuntimeAction(cwd, runId, action), iteration };
+        if (action.id === "agent-archive") {
+          writeProviderExecutionReceipt(cwd, runId, {
+            actionId: action.id,
+            agentId: "archive",
+            role: action.role,
+            taskId: action.taskId,
+            parallelGroup: action.parallelGroup,
+            status: step.status === "completed" ? "completed" : step.status === "blocked" ? "blocked" : step.status === "waiting_for_agent_output" ? "waiting_for_agent_output" : "failed",
+            metadata: { detail: step.detail, artifacts: step.artifacts }
+          });
+        }
         steps.push(step);
         writeCheckpoint(cwd, runId, action.id, "after", step.status === "completed" ? "completed" : step.status, step.detail, step.artifacts);
         if (step.status === "blocked") {
+          writeBlockerSummary(cwd, runId);
           const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");
           return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
         }
@@ -515,6 +552,17 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         const readyForProcessing = batch.every((item) => agentActionReadyForProcessing(cwd, runId, last.runDir, item));
         if (options.dryRun || !readyForProcessing) {
           const latest = resumeRun(cwd, runId);
+          for (const item of batch) {
+            writeProviderExecutionReceipt(cwd, runId, {
+              actionId: item.id,
+              agentId: item.taskId ? item.role === "dev" || item.role === "technical-writer" ? item.taskId : `${item.role}-${item.taskId}` : item.role,
+              role: item.role,
+              taskId: item.taskId,
+              parallelGroup: item.parallelGroup,
+              status: "waiting_for_agent_output",
+              metadata: { reason: "awaiting current-session native subagent output", dry_run: options.dryRun }
+            });
+          }
           recordParallelWave(cwd, runId, {
             iteration,
             parallel_group: action.parallelGroup,
@@ -522,6 +570,8 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
             task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
             roles: Array.from(new Set(batch.map((item) => item.role))),
             status: "waiting_for_agent_output",
+            batch_strategy: batchStrategy(action, batch),
+            batch_levels: Array.from(new Set(batch.map(actionBatchLevel))),
             reason: options.dryRun
               ? "dry-run stopped before provider dispatch"
               : "current session must dispatch this ready batch with native subagents and write back handoff or worktree results",
@@ -547,6 +597,15 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         const processedBatchStatuses: Array<"completed" | "waiting_for_agent_output" | "blocked" | "failed"> = [];
         for (const batchAction of batch) {
           const processed = { ...processExecutedAgent(cwd, runId, last.runDir, batchAction), iteration };
+          writeProviderExecutionReceipt(cwd, runId, {
+            actionId: batchAction.id,
+            agentId: batchAction.taskId ? batchAction.role === "dev" || batchAction.role === "technical-writer" ? batchAction.taskId : `${batchAction.role}-${batchAction.taskId}` : batchAction.role,
+            role: batchAction.role,
+            taskId: batchAction.taskId,
+            parallelGroup: batchAction.parallelGroup,
+            status: processed.status === "waiting_for_agent_output" ? "waiting_for_agent_output" : processed.status === "completed" ? "completed" : processed.status === "blocked" ? "blocked" : "failed",
+            metadata: { detail: processed.detail, artifacts: processed.artifacts }
+          });
           steps.push(processed);
           writeCheckpoint(cwd, runId, batchAction.id, "after", processed.status, processed.detail, processed.artifacts);
           processedBatchStatuses.push(processed.status);
@@ -558,6 +617,8 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
               task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
               roles: Array.from(new Set(batch.map((item) => item.role))),
               status: processed.status,
+              batch_strategy: batchStrategy(action, batch),
+              batch_levels: Array.from(new Set(batch.map(actionBatchLevel))),
               reason: processed.detail,
               started_at: waveStartedAt,
               completed_at: new Date().toISOString()
@@ -574,6 +635,8 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
           task_ids: batch.map((item) => item.taskId).filter((item): item is string => Boolean(item)),
           roles: Array.from(new Set(batch.map((item) => item.role))),
           status: processedBatchStatuses.every((item) => item === "completed") ? "completed" : "blocked",
+          batch_strategy: batchStrategy(action, batch),
+          batch_levels: Array.from(new Set(batch.map(actionBatchLevel))),
           reason: processedBatchStatuses.every((item) => item === "completed")
             ? `ready batch completed with ${processedBatchStatuses.length} processed agent result(s)`
             : "one or more agent results did not complete cleanly",

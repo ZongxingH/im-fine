@@ -3,10 +3,12 @@ import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
 import { validateHandoff } from "./handoff-validator.js";
+import { writeProviderExecutionReceipt } from "./provider-evidence.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
-import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
+import { writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
+import { writeCapabilityTrace, writeRunTraceIndex } from "./trace.js";
 
 export type ArchiveStatus = "completed" | "blocked";
 
@@ -567,12 +569,14 @@ ${specDeltaFiles.length > 0 ? specDeltaFiles.map((file) => `- ${file}`).join("\n
 - commits: .imfine/runs/${runId}/evidence/commits.md
 `);
   files.push(capability);
+  files.push(writeCapabilityTrace(cwd, runId, capability));
 
   return files;
 }
 
 export function archiveRun(cwd: string, runId: string, options: ArchiveRunOptions = {}): ArchiveResult {
   const dir = runDir(cwd, runId);
+  writePreArchiveHarnessEvidence(cwd, runId);
   assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString() }), `start archive for ${runId}`);
   const graph = readTaskGraph(cwd, runId);
   const archiveDir = path.join(dir, "archive");
@@ -640,11 +644,20 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   writeText(archiveReport, preliminaryReport);
   writeText(userReport, preliminaryReport);
   recordArchiveWave(cwd, runId, options, status);
+  writeProviderExecutionReceipt(cwd, runId, {
+    actionId: options.archiveAction?.id || "agent-archive",
+    agentId: "archive",
+    role: "archive",
+    parallelGroup: options.archiveAction?.parallelGroup || "archive",
+    status,
+    metadata: { phase: "archive-run", archive_report: archiveReport, user_report: userReport }
+  });
   writeTrueHarnessEvidence(cwd, runId);
 
   const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), trueHarnessCheck(cwd, runId)];
   blockedItems = archiveBlockedItems(checks);
   status = blockedItems.length === 0 ? "completed" : "blocked";
+  if (status === "completed") writeRunTraceIndex(cwd, runId);
   projectUpdateFiles = status === "completed" ? writeProjectKnowledge(cwd, runId, graph) : [];
   writeArchiveAgent(status, blockedItems, projectUpdateFiles);
 
@@ -664,6 +677,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
 `);
 
   writeDerivedFinalGates(cwd, runId, status, checks);
+  writeRunTraceIndex(cwd, runId);
   writeTrueHarnessEvidence(cwd, runId);
   updateRun(cwd, runId, status, {
     archived_at: status === "completed" ? new Date().toISOString() : undefined,

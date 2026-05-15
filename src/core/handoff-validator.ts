@@ -1,18 +1,6 @@
-export type HandoffRole =
-  | "architect"
-  | "task-planner"
-  | "intake"
-  | "project-analyzer"
-  | "product-planner"
-  | "dev"
-  | "qa"
-  | "reviewer"
-  | "merge-agent"
-  | "archive"
-  | "committer"
-  | "risk-reviewer"
-  | "technical-writer"
-  | "project-knowledge-updater";
+import { roleContract, type RuntimeRole } from "./role-registry.js";
+
+export type HandoffRole = RuntimeRole;
 
 export interface HandoffValidationResult {
   passed: boolean;
@@ -83,55 +71,15 @@ export function validateHandoff(role: HandoffRole, value: unknown, runId: string
   if (!isObject(value)) return { passed: false, errors: ["handoff must be a JSON object"] };
 
   requireCommon(value, runId, taskId, errors);
+  const contract = roleContract(role);
+  for (const field of contract.requiredStringFields) stringField(value, field, errors);
+  for (const field of contract.requiredArrayFields) arrayField(value, field, errors);
 
   const from = typeof value.from === "string" ? value.from : "";
   if (from && from !== role) errors.push(`from mismatch: ${from}`);
   const handoffRole = typeof value.role === "string" ? value.role : "";
   if (handoffRole && handoffRole !== role) errors.push(`role mismatch: ${handoffRole}`);
-
-  if (role === "architect") {
-    statusField(value, ["ready", "blocked", "needs_design_update"], errors);
-    arrayField(value, "design_files", errors);
-  } else if (role === "task-planner") {
-    statusField(value, ["ready", "blocked", "needs_replan"], errors);
-    stringField(value, "task_graph", errors);
-    arrayField(value, "parallel_groups", errors);
-    arrayField(value, "serial_tasks", errors);
-  } else if (role === "intake" || role === "project-analyzer" || role === "product-planner") {
-    statusField(value, ["ready", "blocked"], errors);
-  } else if (role === "dev") {
-    statusField(value, ["ready", "blocked"], errors);
-    arrayField(value, "files_changed", errors);
-    arrayField(value, "verification", errors);
-  } else if (role === "qa") {
-    statusField(value, ["pass", "fail", "blocked"], errors);
-    arrayField(value, "failures", errors);
-  } else if (role === "reviewer") {
-    statusField(value, ["approved", "changes_requested", "blocked"], errors);
-    arrayField(value, "findings", errors);
-  } else if (role === "merge-agent") {
-    statusField(value, ["ready", "blocked"], errors);
-    arrayField(value, "merged_files", errors);
-  } else if (role === "archive") {
-    statusField(value, ["completed", "blocked"], errors);
-    stringField(value, "archive_report", errors);
-    arrayField(value, "project_updates", errors);
-    arrayField(value, "blocked_items", errors);
-  } else if (role === "committer") {
-    statusField(value, ["ready", "blocked"], errors);
-    stringField(value, "commit_mode", errors);
-  } else if (role === "risk-reviewer") {
-    statusField(value, ["ready", "blocked", "needs_replan"], errors);
-    arrayField(value, "risks", errors);
-    arrayField(value, "required_changes", errors);
-  } else if (role === "technical-writer") {
-    statusField(value, ["ready", "not_needed", "blocked"], errors);
-    arrayField(value, "docs_changed", errors);
-    stringField(value, "reason", errors);
-  } else if (role === "project-knowledge-updater") {
-    statusField(value, ["ready", "blocked"], errors);
-    arrayField(value, "updated_files", errors);
-  }
+  statusField(value, contract.statuses, errors);
 
   return { passed: errors.length === 0, errors };
 }
