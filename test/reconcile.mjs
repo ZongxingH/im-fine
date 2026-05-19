@@ -181,6 +181,20 @@ function writeHappyHarness(cwd, runDir, runId) {
   fs.writeFileSync(path.join(cwd, "backend", "run-tests.sh"), "#!/bin/sh\n");
   fs.mkdirSync(path.join(cwd, "docs"), { recursive: true });
   fs.writeFileSync(path.join(cwd, "docs", "api.md"), "# API\n");
+  fs.mkdirSync(path.join(cwd, ".imfine", "project"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "project", "overview.md"), "# Overview\n\nBackend system delivered with tests.\n");
+  fs.writeFileSync(path.join(cwd, ".imfine", "project", "product.md"), "# Product\n\nBackend workflow.\n");
+  fs.writeFileSync(path.join(cwd, ".imfine", "project", "architecture.md"), "# Architecture\n\nNode runtime harness fixture.\n");
+  fs.writeFileSync(path.join(cwd, ".imfine", "project", "test-strategy.md"), "# Test Strategy\n\nRuntime reconcile tests.\n");
+  fs.mkdirSync(path.join(runDir, "analysis"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "planning"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "analysis", "project-context.md"), "# Project Context\n\nBackend fixture.\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "context.json"), JSON.stringify({ run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "planning", "task-graph.json"), JSON.stringify({
+    run_id: runId,
+    strategy: "parallel",
+    tasks: []
+  }, null, 2) + "\n");
 }
 
 {
@@ -223,7 +237,12 @@ function writeHappyHarness(cwd, runDir, runId) {
   const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "acceptance-matrix.json"), "utf8"));
   assert.equal(matrix.items.find((item) => item.id === "product_shape.user-mini-program").classification, "demo-substitute");
   assert.equal(matrix.items.find((item) => item.id === "product_shape.user-mini-program").status, "blocked");
+  assert.equal(matrix.items.find((item) => item.id === "tests.frontend-contract").status, "blocked");
+  assert.equal(matrix.items.find((item) => item.id === "documentation.delivery-set").status, "blocked");
   assert.ok(fs.existsSync(path.join(runDir, "orchestration", "structured-blockers.json")));
+  const blockerMatrix = JSON.parse(fs.readFileSync(path.join(runDir, "review", "blocker-matrix.json"), "utf8"));
+  assert.ok(blockerMatrix.rows.length > 0);
+  assert.ok(blockerMatrix.rows.some((row) => row.status === "still_blocking"));
   const blockerTasks = fs.readdirSync(path.join(runDir, "tasks")).filter((name) => name.startsWith("FIX-reviewer") || name.startsWith("FIX-risk-reviewer"));
   assert.ok(blockerTasks.length >= 3);
   const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
@@ -240,6 +259,12 @@ function writeHappyHarness(cwd, runDir, runId) {
   const result = reconcileRun(cwd, runId);
   assert.equal(result.status, "completed");
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8")).status, "completed");
+  const gates = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "final-gates.json"), "utf8")).gates;
+  for (const gate of ["planning", "dispatch", "qa", "review", "recheck_fix_loop", "committer", "push", "archive", "true_harness", "project_knowledge"]) {
+    assert.equal(gates[gate], "pass", `${gate} should pass`);
+  }
+  const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
+  assert.equal(freshness.status, "fresh");
 }
 
 {

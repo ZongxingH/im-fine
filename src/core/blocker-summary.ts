@@ -46,6 +46,12 @@ function collectErrors(value: unknown): string[] {
         return `${String(record.id || "check")}: ${String(record.detail || record.status || "blocked")}`;
       });
   }
+  const gates = object.gates;
+  if (gates && typeof gates === "object" && !Array.isArray(gates)) {
+    return Object.entries(gates as Record<string, unknown>)
+      .filter(([, value]) => value !== "pass")
+      .map(([key, value]) => `${key}: ${String(value)}`);
+  }
   return [];
 }
 

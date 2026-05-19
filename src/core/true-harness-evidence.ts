@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
-import { providerReceipts, readProviderCapabilitySnapshot, writeProviderCapabilitySnapshot } from "./provider-evidence.js";
+import { providerReceipts, receiptProvesNativeSubagent, resolveProviderCapabilityFromReceipts } from "./provider-evidence.js";
 import { skillEvidenceRequirements } from "./skill-registry.js";
 
 interface RunMetadata {
@@ -165,6 +165,51 @@ function collectHandoffs(runDirPath: string, cwd: string): Array<{
 export interface TrueHarnessEvidenceFiles {
   json: string;
   markdown: string;
+  methodProvenance: string;
+}
+
+export interface TrueHarnessConsistencyResult {
+  passed: boolean;
+  errors: string[];
+}
+
+function markdownBoolean(markdown: string, label: string): boolean | null {
+  const pattern = new RegExp(`${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*(yes|no|true|false)`, "i");
+  const match = markdown.match(pattern);
+  if (!match) return null;
+  return match[1].toLowerCase() === "yes" || match[1].toLowerCase() === "true";
+}
+
+export function validateTrueHarnessEvidenceFiles(jsonFile: string, markdownFile: string): TrueHarnessConsistencyResult {
+  const errors: string[] = [];
+  if (!fs.existsSync(jsonFile)) errors.push(`missing ${jsonFile}`);
+  if (!fs.existsSync(markdownFile)) errors.push(`missing ${markdownFile}`);
+  if (errors.length > 0) return { passed: false, errors };
+  const json = readJson<{
+    true_harness_passed?: unknown;
+    provider_capability?: { blocked?: unknown };
+    provider_execution_receipts?: { receipt_count?: unknown; valid_receipt_count?: unknown };
+    parallel_execution?: { wave_count?: unknown; dispatch_contract_count?: unknown };
+    handoff_validation?: { passed?: unknown };
+  }>(jsonFile);
+  const markdown = fs.readFileSync(markdownFile, "utf8");
+  const mdPassed = markdownBoolean(markdown, "true harness passed");
+  const mdProviderBlocked = markdownBoolean(markdown, "blocked");
+  const jsonPassed = Boolean(json.true_harness_passed);
+  const jsonProviderBlocked = Boolean(json.provider_capability?.blocked);
+  if (mdPassed === null) errors.push("markdown missing true harness passed");
+  else if (mdPassed !== jsonPassed) errors.push(`true_harness_passed mismatch: json=${jsonPassed} markdown=${mdPassed}`);
+  if (mdProviderBlocked === null) errors.push("markdown missing provider blocked");
+  else if (mdProviderBlocked !== jsonProviderBlocked) errors.push(`provider blocked mismatch: json=${jsonProviderBlocked} markdown=${mdProviderBlocked}`);
+
+  const receiptCount = Number(json.provider_execution_receipts?.receipt_count || 0);
+  const validReceiptCount = Number(json.provider_execution_receipts?.valid_receipt_count || 0);
+  const waveCount = Number(json.parallel_execution?.wave_count || 0);
+  const dispatchCount = Number(json.parallel_execution?.dispatch_contract_count || 0);
+  if (jsonPassed && (receiptCount === 0 || validReceiptCount === 0)) errors.push("true harness passed without valid provider receipts");
+  if (jsonPassed && (waveCount === 0 || dispatchCount === 0)) errors.push("true harness passed without dispatch contracts or wave history");
+  if (jsonPassed && json.handoff_validation?.passed !== true) errors.push("true harness passed without handoff validation");
+  return { passed: errors.length === 0, errors };
 }
 
 export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnessEvidenceFiles {
@@ -245,7 +290,8 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     .map((contract) => contract.id);
   const allContractsHaveCompletedWave = hasDispatchContract && missingCompletedWaveContracts.length === 0;
   const receipts = providerReceipts(cwd, runId);
-  const receiptActionIds = new Set(receipts.filter((receipt) => receipt.status === "completed").map((receipt) => receipt.action_id));
+  const validReceipts = receipts.filter((receipt) => receiptProvesNativeSubagent(cwd, receipt));
+  const receiptActionIds = new Set(validReceipts.map((receipt) => receipt.action_id));
   const missingProviderReceiptContracts = contractTargets
     .filter((contract) => {
       const actionIds = [
@@ -258,7 +304,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     })
     .map((contract) => contract.id);
   const allContractsHaveProviderReceipt = hasDispatchContract && missingProviderReceiptContracts.length === 0;
-  const providerCapability = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
+  const providerCapability = resolveProviderCapabilityFromReceipts(cwd, runId);
   const orchestratorDeclaredTrueHarness = orchestratorSession?.decision_source === "orchestrator_agent"
     && orchestratorSession.execution_mode === "true_harness"
     && orchestratorSession.harness_classification === "true_harness";
@@ -298,10 +344,14 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
       provider: providerCapability.provider,
       subagent_supported: providerCapability.subagent_supported,
       entry_installed: providerCapability.entry_installed,
-      blocked: providerCapability.blocked
+      blocked: providerCapability.blocked,
+      detection_source: providerCapability.detection_source,
+      resolved_by_receipts: providerCapability.resolved_by_receipts === true,
+      resolved_receipt_count: providerCapability.resolved_receipt_count || 0
     },
     provider_execution_receipts: {
       receipt_count: receipts.length,
+      valid_receipt_count: validReceipts.length,
       all_contracts_have_provider_receipt: allContractsHaveProviderReceipt,
       missing_provider_receipt_contracts: missingProviderReceiptContracts,
       receipts: receipts.map((receipt) => ({
@@ -310,6 +360,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
         role: receipt.role,
         task_id: receipt.task_id || null,
         status: receipt.status,
+        valid_native_subagent_proof: receiptProvesNativeSubagent(cwd, receipt),
         provider_agent_id: receipt.provider_agent_id,
         provider_session_id: receipt.provider_session_id
       }))
@@ -369,7 +420,41 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 
   const jsonFile = path.join(orchestrationDir, "true-harness-evidence.json");
   const markdownFile = path.join(orchestrationDir, "true-harness-evidence.md");
+  const methodProvenanceFile = path.join(orchestrationDir, "method-provenance.json");
   writeText(jsonFile, `${JSON.stringify(payload, null, 2)}\n`);
+  writeText(methodProvenanceFile, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: payload.generated_at,
+    sources: {
+      openspec_inspired: [
+        { artifact: "request", evidence: "request/" },
+        { artifact: "analysis", evidence: "analysis/" },
+        { artifact: "spec-delta", evidence: "spec-delta/" },
+        { artifact: "archive", evidence: "archive/" },
+        { artifact: "capabilities", evidence: ".imfine/project/capabilities/" }
+      ],
+      superpowers_inspired_skills: [
+        "clarify",
+        "project-analysis",
+        "write-delivery-plan",
+        "execute-task-plan",
+        "tdd",
+        "systematic-debugging",
+        "parallel-agent-dispatch",
+        "code-review",
+        "archive-confirmation"
+      ],
+      bmad_inspired_roles: payload.participating_roles,
+      imfine_specific_contracts: [
+        { contract: "true-harness", evidence: rel(cwd, jsonFile) },
+        { contract: "provider-receipts", evidence: "orchestration/provider-receipts/" },
+        { contract: "dispatch-contracts", evidence: "orchestration/dispatch-contracts.json" },
+        { contract: "handoff-validation", evidence: "agents/*/handoff.json" }
+      ]
+    },
+    skill_evidence_contracts: payload.skill_evidence_contracts
+  }, null, 2)}\n`);
   writeText(markdownFile, `# True Harness Evidence
 
 ## Goal
@@ -401,10 +486,14 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 - subagent supported: ${payload.provider_capability.subagent_supported}
 - entry installed: ${payload.provider_capability.entry_installed}
 - blocked: ${payload.provider_capability.blocked ? "yes" : "no"}
+- detection source: ${payload.provider_capability.detection_source}
+- resolved by receipts: ${payload.provider_capability.resolved_by_receipts ? "yes" : "no"}
+- resolved receipt count: ${payload.provider_capability.resolved_receipt_count}
 
 ## Provider Execution Receipts
 
 - receipt count: ${payload.provider_execution_receipts.receipt_count}
+- valid receipt count: ${payload.provider_execution_receipts.valid_receipt_count}
 - all contracts have provider receipt: ${payload.provider_execution_receipts.all_contracts_have_provider_receipt ? "yes" : "no"}
 - missing provider receipt contracts: ${payload.provider_execution_receipts.missing_provider_receipt_contracts.length > 0 ? payload.provider_execution_receipts.missing_provider_receipt_contracts.join(", ") : "none"}
 
@@ -449,7 +538,8 @@ ${payload.handoff_evidence_chain.length > 0 ? payload.handoff_evidence_chain.map
 
   return {
     json: jsonFile,
-    markdown: markdownFile
+    markdown: markdownFile,
+    methodProvenance: methodProvenanceFile
   };
 }
 
@@ -508,5 +598,5 @@ export function writePreArchiveHarnessEvidence(cwd: string, runId: string): True
 - missing provider receipt contracts: ${missingReceipts.length > 0 ? missingReceipts.join(", ") : "none"}
 - missing standard evidence: ${missingStandardEvidence.length > 0 ? missingStandardEvidence.join(", ") : "none"}
 `);
-  return { json: file, markdown };
+  return { json: file, markdown, methodProvenance: full.methodProvenance };
 }

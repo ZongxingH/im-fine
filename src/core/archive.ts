@@ -7,8 +7,9 @@ import { writeProviderExecutionReceipt } from "./provider-evidence.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
-import { writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
+import { validateTrueHarnessEvidenceFiles, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { writeCapabilityTrace, writeRunTraceIndex } from "./trace.js";
+import { runCommand } from "./shell.js";
 
 export type ArchiveStatus = "completed" | "blocked";
 
@@ -62,6 +63,12 @@ interface RunMetadata {
   push_user_action?: string;
   push_local_commit?: string;
   commit_hashes?: string[];
+  commit_set?: string[];
+  implementation_commit?: string;
+  evidence_sync_commit?: string;
+  archive_commit?: string;
+  final_head?: string;
+  pushed_head?: string;
   commit_blocked_reason?: string;
 }
 
@@ -76,6 +83,25 @@ function readJson<T>(file: string): T {
 
 function readTextIfExists(file: string): string {
   return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+}
+
+function updateRunMetadataFile(cwd: string, runId: string, extra: Record<string, unknown>): void {
+  const file = path.join(runDir(cwd, runId), "run.json");
+  const current = readJson<Record<string, unknown>>(file);
+  writeText(file, `${JSON.stringify({ ...current, ...extra, updated_at: new Date().toISOString() }, null, 2)}\n`);
+}
+
+function recordArchiveIdentity(cwd: string, runId: string): void {
+  const head = runCommand("git", ["rev-parse", "HEAD"], cwd);
+  const status = runCommand("git", ["status", "--porcelain"], cwd);
+  const finalHead = head.code === 0 && head.stdout.trim() ? head.stdout.trim() : undefined;
+  updateRunMetadataFile(cwd, runId, {
+    archive_started_head: finalHead,
+    archive_commit: finalHead,
+    final_head: finalHead,
+    worktree_clean_before_archive: status.code === 0 ? status.stdout.trim().length === 0 : false,
+    worktree_status_before_archive: status.code === 0 ? status.stdout.trim() : status.stderr || status.error || "unknown"
+  });
 }
 
 function recordArchiveWave(cwd: string, runId: string, options: ArchiveRunOptions, status: ArchiveStatus): void {
@@ -289,12 +315,30 @@ function taskEvidenceChecks(cwd: string, runId: string, graph: TaskGraph | null)
 
 function trueHarnessCheck(cwd: string, runId: string): ArchiveCheck {
   const file = path.join(runDir(cwd, runId), "orchestration", "true-harness-evidence.json");
+  const markdown = path.join(runDir(cwd, runId), "orchestration", "true-harness-evidence.md");
   if (!fs.existsSync(file)) return { id: "true-harness-evidence", status: "fail", detail: `missing ${file}` };
   const evidence = readJson<{ true_harness_passed?: boolean }>(file);
+  const consistency = validateTrueHarnessEvidenceFiles(file, markdown);
   return {
     id: "true-harness-evidence",
-    status: evidence.true_harness_passed === true ? "pass" : "fail",
-    detail: file
+    status: evidence.true_harness_passed === true && consistency.passed ? "pass" : "fail",
+    detail: consistency.passed ? file : `${file}: ${consistency.errors.join("; ")}`
+  };
+}
+
+function preArchiveHarnessCheck(file: string): ArchiveCheck {
+  if (!fs.existsSync(file)) return { id: "pre-archive-harness", status: "fail", detail: `missing ${file}` };
+  const evidence = readJson<{ pre_archive_harness_passed?: boolean; missing_completed_wave_contracts?: unknown[]; invalid_handoffs?: unknown[]; missing_provider_receipt_contracts?: unknown[]; missing_standard_evidence?: unknown[] }>(file);
+  const blocked = [
+    ...(Array.isArray(evidence.missing_completed_wave_contracts) ? evidence.missing_completed_wave_contracts : []),
+    ...(Array.isArray(evidence.invalid_handoffs) ? evidence.invalid_handoffs.map((item) => JSON.stringify(item)) : []),
+    ...(Array.isArray(evidence.missing_provider_receipt_contracts) ? evidence.missing_provider_receipt_contracts : []),
+    ...(Array.isArray(evidence.missing_standard_evidence) ? evidence.missing_standard_evidence : [])
+  ].map(String);
+  return {
+    id: "pre-archive-harness",
+    status: evidence.pre_archive_harness_passed === true ? "pass" : "fail",
+    detail: blocked.length > 0 ? blocked.join(", ") : file
   };
 }
 
@@ -363,25 +407,72 @@ function archiveBlockedItems(checks: ArchiveCheck[]): string[] {
     .map((check) => `${check.id}: ${check.detail}`);
 }
 
-function writeDerivedFinalGates(cwd: string, runId: string, status: ArchiveStatus, checks: ArchiveCheck[]): string {
+function writeArchiveBlockerMatrix(cwd: string, runId: string, checks: ArchiveCheck[]): string {
+  const dir = runDir(cwd, runId);
+  const reviewDir = path.join(dir, "review");
+  ensureDir(reviewDir);
+  const run = readJson<RunMetadata>(path.join(dir, "run.json"));
+  const file = path.join(reviewDir, "blocker-matrix.json");
+  const rows = checks
+    .filter((check) => check.status === "fail")
+    .map((check) => ({
+      id: check.id,
+      source: "archive",
+      severity: check.id.includes("true-harness") || check.id.includes("pre-archive") ? "P0" : "P1",
+      status: "still_blocking",
+      summary: check.detail,
+      code_evidence: [],
+      test_evidence: check.id.includes("qa") || check.id.includes("test") ? ["evidence/test-results.md"] : [],
+      commit: run.final_head || null,
+      recheck: "archive gate blocked"
+    }));
+  writeText(file, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    final_head: run.final_head || null,
+    rows,
+    summary: {
+      total: rows.length,
+      still_blocking: rows.length,
+      resolved: 0,
+      accepted_residual: 0,
+      obsolete: 0
+    }
+  }, null, 2)}\n`);
+  return file;
+}
+
+function writeDerivedFinalGates(cwd: string, runId: string, status: ArchiveStatus, checks: ArchiveCheck[], projectUpdateFiles: string[]): string {
   const file = path.join(runDir(cwd, runId), "orchestration", "final-gates.json");
   const checkStatus = (id: string) => checks.find((check) => check.id === id)?.status === "pass";
+  const allTaskChecksPassed = checks.filter((check) => check.id.startsWith("task.")).every((check) => check.status === "pass");
+  const dispatchPassed = checkStatus("true-harness-evidence");
   const qaPassed = checkStatus("test-results") && checks.filter((check) => check.id.endsWith(".qa") || check.id.endsWith(".qa_handoff") || check.id.endsWith(".qa_gate")).every((check) => check.status === "pass");
   const reviewPassed = checkStatus("review") && checks.filter((check) => check.id.endsWith(".review") || check.id.endsWith(".review_handoff") || check.id.endsWith(".review_gate")).every((check) => check.status === "pass");
   const committerPassed = checkStatus("run-level.committer-handoff") && checkStatus("commit-outcome");
+  const pushPassed = checkStatus("push-outcome");
   const archivePassed = checkStatus("run-level.archive-status") && checkStatus("run-level.archive-handoff") && status === "completed";
+  const projectKnowledgePassed = status === "completed" && projectUpdateFiles.length > 0;
+  const gates = {
+    planning: checkStatus("project-context") && checkStatus("runtime-context") && checkStatus("task-graph") ? "pass" : "blocked",
+    dispatch: dispatchPassed ? "pass" : "blocked",
+    qa: qaPassed ? "pass" : "blocked",
+    review: reviewPassed ? "pass" : "blocked",
+    recheck_fix_loop: allTaskChecksPassed && qaPassed && reviewPassed ? "pass" : "blocked",
+    committer: committerPassed ? "pass" : "blocked",
+    push: pushPassed ? "pass" : "blocked",
+    archive: archivePassed ? "pass" : "blocked",
+    true_harness: checkStatus("true-harness-evidence") ? "pass" : "blocked",
+    project_knowledge: projectKnowledgePassed ? "pass" : "blocked"
+  };
   writeText(file, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
     generated_by: "imfine-runtime",
     generated_at: new Date().toISOString(),
     source: "derived_from_standard_evidence",
-    gates: {
-      qa: qaPassed ? "pass" : "blocked",
-      review: reviewPassed ? "pass" : "blocked",
-      committer: committerPassed ? "pass" : "blocked",
-      archive: archivePassed ? "pass" : "blocked"
-    },
+    gates,
     checks: checks.map((check) => ({ id: check.id, status: check.status, detail: check.detail }))
   }, null, 2)}\n`);
   return file;
@@ -433,6 +524,7 @@ function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, c
   const push = readTextIfExists(path.join(dir, "evidence", "push.md"));
   const harnessEvidence = path.join(dir, "orchestration", "true-harness-evidence.md");
   const harnessEvidenceJson = path.join(dir, "orchestration", "true-harness-evidence.json");
+  const methodProvenance = path.join(dir, "orchestration", "method-provenance.json");
   const harness = fs.existsSync(harnessEvidenceJson)
     ? readJson<{ harness_classification?: string; true_harness_passed?: boolean }>(harnessEvidenceJson)
     : null;
@@ -482,15 +574,22 @@ ${taskLines(graph, cwd, runId).join("\n")}
 
 - commit evidence: ${commits ? path.join(dir, "evidence", "commits.md") : "missing"}
 - commit hashes: ${run.commit_hashes?.length ? run.commit_hashes.join(", ") : "missing"}
+- commit set: ${run.commit_set?.length ? run.commit_set.join(", ") : "missing"}
+- implementation commit: ${run.implementation_commit || "missing"}
+- evidence sync commit: ${run.evidence_sync_commit || "none"}
+- archive commit: ${run.archive_commit || "missing"}
+- final head: ${run.final_head || "missing"}
 - commit blocker: ${run.commit_blocked_reason || "none"}
 - push evidence: ${push ? path.join(dir, "evidence", "push.md") : "missing"}
 - push status: ${run.push_status || "missing"}
 - push local commit: ${run.push_local_commit || run.commit_hashes?.at(-1) || "missing"}
+- pushed head: ${run.pushed_head || "missing"}
 - push user action: ${run.push_user_action || "none"}
 
 ## True Harness Evidence
 
 - true harness evidence: ${fs.existsSync(harnessEvidence) ? harnessEvidence : "missing"}
+- method provenance: ${fs.existsSync(methodProvenance) ? methodProvenance : "missing"}
 
 ## Project Knowledge Updates
 
@@ -570,14 +669,45 @@ ${specDeltaFiles.length > 0 ? specDeltaFiles.map((file) => `- ${file}`).join("\n
 `);
   files.push(capability);
   files.push(writeCapabilityTrace(cwd, runId, capability));
+  files.push(writeProjectKnowledgeFreshness(cwd, runId));
 
   return files;
 }
 
+function writeProjectKnowledgeFreshness(cwd: string, runId: string): string {
+  const projectDir = path.join(workspace(cwd), "project");
+  const file = path.join(projectDir, "project-knowledge-freshness.json");
+  const markers = ["initialized from limited evidence", "not detected", "unknown", ".gitignore only", "no source evidence", "no test evidence"];
+  const stale: Array<{ file: string; marker: string }> = [];
+  const walk = (dir: string): void => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const target = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(target);
+      else if (entry.isFile() && target.endsWith(".md")) {
+        const text = readTextIfExists(target).toLowerCase();
+        for (const marker of markers) {
+          if (text.includes(marker)) stale.push({ file: path.relative(cwd, target), marker });
+        }
+      }
+    }
+  };
+  walk(projectDir);
+  writeText(file, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    status: stale.length === 0 ? "fresh" : "stale_markers_found",
+    stale
+  }, null, 2)}\n`);
+  return file;
+}
+
 export function archiveRun(cwd: string, runId: string, options: ArchiveRunOptions = {}): ArchiveResult {
   const dir = runDir(cwd, runId);
-  writePreArchiveHarnessEvidence(cwd, runId);
+  const preArchiveEvidence = writePreArchiveHarnessEvidence(cwd, runId);
   assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString() }), `start archive for ${runId}`);
+  recordArchiveIdentity(cwd, runId);
   const graph = readTaskGraph(cwd, runId);
   const archiveDir = path.join(dir, "archive");
   const agentDir = path.join(dir, "agents", "archive");
@@ -590,6 +720,7 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
     checkFile("task-graph", path.join(dir, "planning", "task-graph.json")),
     checkFile("test-results", path.join(dir, "evidence", "test-results.md")),
     checkFile("review", path.join(dir, "evidence", "review.md")),
+    preArchiveHarnessCheck(preArchiveEvidence.json),
     ...runLevelGateChecks(cwd, runId),
     ...outcomeChecks(cwd, runId),
     ...taskEvidenceChecks(cwd, runId, graph)
@@ -655,6 +786,7 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   writeTrueHarnessEvidence(cwd, runId);
 
   const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), trueHarnessCheck(cwd, runId)];
+  const blockerMatrix = writeArchiveBlockerMatrix(cwd, runId, checks);
   blockedItems = archiveBlockedItems(checks);
   status = blockedItems.length === 0 ? "completed" : "blocked";
   if (status === "completed") writeRunTraceIndex(cwd, runId);
@@ -676,7 +808,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
 - blocked items: ${blockedItems.length}
 `);
 
-  writeDerivedFinalGates(cwd, runId, status, checks);
+  writeDerivedFinalGates(cwd, runId, status, checks, projectUpdateFiles);
   writeRunTraceIndex(cwd, runId);
   writeTrueHarnessEvidence(cwd, runId);
   updateRun(cwd, runId, status, {
@@ -695,7 +827,7 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
     projectUpdates,
     finalSummary,
     agent: agentDir,
-    checks,
+    checks: [...checks, { id: "blocker-matrix", status: fs.existsSync(blockerMatrix) ? "pass" : "fail", detail: blockerMatrix }],
     blockedItems
   };
 }

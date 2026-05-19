@@ -393,6 +393,11 @@ assert.ok(parallelExecution.wave_history.length > 0);
 
 const dispatchContracts = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
 assert.ok(dispatchContracts.contracts.length >= 7);
+const agentRegistry = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-runs.json"), "utf8"));
+assert.ok(agentRegistry.agents.every((agent) => agent.executionType === "native_agent_run"));
+assert.ok(Array.isArray(agentRegistry.runtime_gates));
+assert.ok(agentRegistry.runtime_gates.some((gate) => gate.executionType === "runtime_gate" || gate.executionType === "orchestrator_gate"));
+assert.equal(agentRegistry.execution_units.length, agentRegistry.agents.length + agentRegistry.runtime_gates.length);
 
 const session = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8"));
 assert.equal(session.decision_source, "orchestrator_agent");
@@ -439,8 +444,10 @@ assert.equal(finalGates.gates.qa, "pass");
 assert.equal(finalGates.gates.review, "pass");
 assert.equal(finalGates.gates.committer, "pass");
 assert.equal(finalGates.gates.archive, "pass");
+assert.equal(finalGates.gates.project_knowledge, "pass");
 for (const id of ["run-level.qa-evidence", "run-level.review-evidence", "run-level.committer-handoff", "run-level.archive-status", "run-level.archive-handoff"]) {
   assert.ok(finalGates.checks.some((check) => check.id === id && check.status === "pass"), `missing final gate check ${id}`);
 }
+assert.ok(fs.existsSync(path.join(project, ".imfine", "project", "project-knowledge-freshness.json")));
 
 console.log("harness acceptance ok");

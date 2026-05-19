@@ -16,6 +16,9 @@ export interface ProviderCapabilitySnapshot {
   detected_at: string;
   blocked: boolean;
   blocked_reason?: string;
+  resolved_by_receipts?: boolean;
+  resolved_receipt_count?: number;
+  resolved_at?: string;
 }
 
 export interface ProviderExecutionReceipt {
@@ -95,6 +98,10 @@ export function readProviderCapabilitySnapshot(cwd: string, runId: string): Prov
   const file = providerCapabilityFile(cwd, runId);
   if (!fs.existsSync(file)) return null;
   return JSON.parse(fs.readFileSync(file, "utf8")) as ProviderCapabilitySnapshot;
+}
+
+export function providerCapabilityResolutionFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), "orchestration", "provider-capability-resolution.json");
 }
 
 function receiptDir(cwd: string, runId: string): string {
@@ -192,4 +199,69 @@ export function providerReceipts(cwd: string, runId: string): ProviderExecutionR
     .filter((file) => file.endsWith(".json"))
     .sort()
     .map((file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as ProviderExecutionReceipt);
+}
+
+function receiptOutputExists(cwd: string, receipt: ProviderExecutionReceipt): boolean {
+  const output = path.isAbsolute(receipt.output_path) ? receipt.output_path : path.resolve(cwd, receipt.output_path);
+  return fs.existsSync(output);
+}
+
+export function receiptProvesNativeSubagent(cwd: string, receipt: ProviderExecutionReceipt): boolean {
+  return receipt.status === "completed"
+    && receipt.provider !== "unknown"
+    && receipt.provider_agent_id.trim().length > 0
+    && receipt.provider_session_id.trim().length > 0
+    && receipt.output_path.trim().length > 0
+    && receiptOutputExists(cwd, receipt);
+}
+
+export function resolveProviderCapabilityFromReceipts(cwd: string, runId: string): ProviderCapabilitySnapshot {
+  const snapshot = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
+  const receipts = providerReceipts(cwd, runId);
+  const proofReceipts = receipts.filter((receipt) => receiptProvesNativeSubagent(cwd, receipt));
+  const resolvedByReceipts = proofReceipts.length > 0;
+  const resolved = resolvedByReceipts
+    ? {
+      ...snapshot,
+      provider: proofReceipts[0].provider,
+      subagent_supported: "supported" as const,
+      detection_source: snapshot.subagent_supported === "supported" && snapshot.blocked === false
+        ? snapshot.detection_source
+        : "resolved_by_receipts",
+      blocked: false,
+      blocked_reason: undefined,
+      resolved_by_receipts: true,
+      resolved_receipt_count: proofReceipts.length,
+      resolved_at: new Date().toISOString()
+    }
+    : {
+      ...snapshot,
+      resolved_by_receipts: false,
+      resolved_receipt_count: 0
+    };
+  const capabilityFile = providerCapabilityFile(cwd, runId);
+  const resolutionFile = providerCapabilityResolutionFile(cwd, runId);
+  ensureDir(path.dirname(capabilityFile));
+  writeText(capabilityFile, `${JSON.stringify(resolved, null, 2)}\n`);
+  writeText(resolutionFile, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    provider: resolved.provider,
+    subagent_supported: resolved.subagent_supported,
+    blocked: resolved.blocked,
+    blocked_reason: resolved.blocked_reason,
+    resolved_by_receipts: resolvedByReceipts,
+    resolved_receipt_count: proofReceipts.length,
+    proof_receipts: proofReceipts.map((receipt) => ({
+      action_id: receipt.action_id,
+      agent_id: receipt.agent_id,
+      role: receipt.role,
+      provider: receipt.provider,
+      provider_agent_id: receipt.provider_agent_id,
+      provider_session_id: receipt.provider_session_id,
+      output_path: receipt.output_path
+    }))
+  }, null, 2)}\n`);
+  return resolved;
 }

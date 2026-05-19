@@ -90,6 +90,7 @@ export function formatStatus(result: StatusResult): string {
     `current run status: ${result.currentRunStatus || "none"}`,
     `current run execution mode: ${result.currentRunExecutionMode || "none"}`,
     `current run branch: ${result.currentRunBranch || "none"}`,
+    `current run consistency: ${result.currentRunConsistency || "none"}`,
     `current run gates: ${gates}`,
     `current run actions: ${actions}`,
     `current run blockers: ${blockers}`,

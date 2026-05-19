@@ -43,6 +43,7 @@ export interface AgentRun {
   preparedAt?: string;
   startedAt?: string;
   completedAt?: string;
+  executionType?: "native_agent_run";
   skills: string[];
   inputs: string[];
   outputs: string[];
@@ -558,10 +559,30 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     wave_history: Array.isArray(existingExecution?.wave_history) ? existingExecution.wave_history : []
   }, null, 2)}\n`);
   writeTimeline(files.timeline, result);
+  const nativeAgents = result.agentRuns.map((agent) => ({
+    ...agent,
+    executionType: "native_agent_run" as const
+  }));
+  const runtimeGates = result.nextActions
+    .filter((action) => action.kind === "runtime")
+    .map((action) => ({
+      id: action.id,
+      role: action.role,
+      action_id: action.id,
+      status: action.status,
+      executionType: action.role === "orchestrator" ? "orchestrator_gate" : "runtime_gate",
+      command: action.command,
+      inputs: action.inputs,
+      outputs: action.outputs,
+      dependsOn: action.dependsOn,
+      parallelGroup: action.parallelGroup
+    }));
   writeText(files.agentRuns, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
-    agents: result.agentRuns
+    agents: nativeAgents,
+    runtime_gates: runtimeGates,
+    execution_units: [...nativeAgents, ...runtimeGates]
   }, null, 2)}\n`);
   writeTrueHarnessEvidence(cwd, runId);
   return { ...result, dispatchContracts, files };

@@ -10,6 +10,7 @@ import { validateAgentSkills } from "../dist/core/skill-registry.js";
 import { writeProviderCapabilitySnapshot, writeProviderExecutionReceipt } from "../dist/core/provider-evidence.js";
 import { writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
 import { status } from "../dist/core/status.js";
+import { doctor } from "../dist/core/doctor.js";
 
 function makeRun(prefix = "imfine-implementation-optimization-") {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -264,6 +265,31 @@ try {
   });
   const positive = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(positive.true_harness_passed, true);
+  assert.ok(fs.existsSync(path.join(fixture.runDir, "orchestration", "method-provenance.json")));
+  const provenance = JSON.parse(fs.readFileSync(path.join(fixture.runDir, "orchestration", "method-provenance.json"), "utf8"));
+  assert.ok(provenance.sources.openspec_inspired.some((item) => item.artifact === "archive"));
+  assert.ok(provenance.sources.imfine_specific_contracts.some((item) => item.contract === "dispatch-contracts"));
+}
+
+{
+  const fixture = makeRun("imfine-provider-resolved-by-receipts-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture);
+  fs.writeFileSync(path.join(runDir, "orchestration", "provider-capability.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    provider: "codex",
+    entry_installed: true,
+    subagent_supported: "unknown",
+    detection_source: "test-fixture",
+    detected_at: "2026-01-01T00:00:00.000Z",
+    blocked: true,
+    blocked_reason: "not resolved yet"
+  }, null, 2) + "\n");
+  const value = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.equal(value.provider_capability.subagent_supported, "supported");
+  assert.equal(value.provider_capability.resolved_by_receipts, true);
+  assert.equal(value.true_harness_passed, true);
 }
 
 {
@@ -273,6 +299,18 @@ try {
   const value = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(value.true_harness_passed, false);
   assert.deepEqual(value.parallel_execution.missing_completed_wave_contracts, ["T1"]);
+}
+
+{
+  const fixture = makeRun("imfine-doctor-harness-mismatch-");
+  const { cwd, runId, runDir } = fixture;
+  fs.writeFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), JSON.stringify({
+    true_harness_passed: true
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "true-harness-evidence.md"), "# True Harness Evidence\n\n- true harness passed: no\n");
+  const report = doctor(cwd);
+  assert.ok(report.checks.some((item) => item.id === "run.true_harness.evidence_consistency" && item.status === "fail"));
+  assert.ok(report.checks.some((item) => item.id === "run.true_harness.runtime_evidence" && item.status === "fail"));
 }
 
 {
@@ -358,6 +396,29 @@ for (const runStatus of ["completed", "blocked", "waiting_for_agent_output", "ne
   const value = status(cwd);
   assert.equal(value.currentRunStatus, runStatus);
   assert.equal(value.currentRunGates.true_harness, "missing");
+  if (runStatus === "completed") {
+    assert.equal(value.currentRunConsistency, "inconsistent");
+    assert.equal(value.currentRunGates.status_consistency, "inconsistent_missing_final_gates");
+  }
+}
+
+{
+  const { cwd, runDir } = makeRun("imfine-status-incomplete-final-gates-");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: "run-1",
+    status: "completed",
+    execution_mode: "true_harness",
+    project_kind: "existing_project",
+    source: { type: "text", value: "test" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "final-gates.json"), JSON.stringify({
+    gates: { qa: "pass", review: "pass" }
+  }, null, 2) + "\n");
+  const value = status(cwd);
+  assert.equal(value.currentRunConsistency, "inconsistent");
+  const report = doctor(cwd);
+  assert.ok(report.checks.some((item) => item.id === "run.review.blocker_matrix" && item.status === "fail"));
 }
 
 console.log("implementation optimization ok");

@@ -13,6 +13,8 @@ Updates user-facing or developer-facing documentation when the delivery run chan
 ## Outputs
 
 - Documentation updates or an explicit no-docs-needed note.
+- For new application demos or Chinese requirements, default to Chinese documentation unless the user requested another language.
+- For API/database-backed demos, maintain `README.md`, `docs/api.md`, `docs/database-schema.md`, and `docs/verification.md` in sync with the delivered code.
 - Writer-to-Archive handoff.
 
 ## Handoff Schema

@@ -11,6 +11,7 @@ export interface StatusResult {
   currentRunExecutionMode: string | null;
   currentRunBranch: string | null;
   currentRunGates: Record<string, string> | null;
+  currentRunConsistency: "consistent" | "inconsistent" | null;
   currentRunActions: {
     ready: number;
     waiting: number;
@@ -46,6 +47,23 @@ export interface ReportResult {
   content?: string;
 }
 
+function gatesAreComplete(gates: Record<string, string> | null): boolean {
+  if (!gates) return false;
+  const required = [
+    "planning",
+    "dispatch",
+    "qa",
+    "review",
+    "recheck_fix_loop",
+    "committer",
+    "push",
+    "archive",
+    "true_harness",
+    "project_knowledge"
+  ];
+  return required.every((key) => gates[key] === "pass");
+}
+
 export function status(cwd: string): StatusResult {
   const workspace = path.join(cwd, ".imfine");
   const currentFile = path.join(workspace, "state", "current.json");
@@ -54,6 +72,7 @@ export function status(cwd: string): StatusResult {
   let currentRunExecutionMode: string | null = null;
   let currentRunBranch: string | null = null;
   let currentRunGates: StatusResult["currentRunGates"] = null;
+  let currentRunConsistency: StatusResult["currentRunConsistency"] = null;
   let currentRunActions: StatusResult["currentRunActions"] = null;
   let currentRunBlockers: StatusResult["currentRunBlockers"] = null;
   let currentRunLatestCheckpoint: StatusResult["currentRunLatestCheckpoint"] = null;
@@ -123,9 +142,13 @@ export function status(cwd: string): StatusResult {
           currentRunGates = gates.gates
             ? Object.fromEntries(Object.entries(gates.gates).map(([key, value]) => [key, String(value)]))
             : null;
+          currentRunConsistency = currentRunStatus === "completed" && !gatesAreComplete(currentRunGates)
+            ? "inconsistent"
+            : "consistent";
         } else {
           const trueHarness = path.join(runRoot, "orchestration", "true-harness-evidence.json");
           currentRunGates = {
+            status_consistency: currentRunStatus === "completed" ? "inconsistent_missing_final_gates" : "not_finalized",
             qa: fs.existsSync(path.join(runRoot, "evidence", "test-results.md")) ? "present" : "missing",
             review: fs.existsSync(path.join(runRoot, "evidence", "review.md")) ? "present" : "missing",
             committer: fs.existsSync(path.join(runRoot, "agents", "committer", "handoff.json")) ? "present" : "missing",
@@ -135,6 +158,7 @@ export function status(cwd: string): StatusResult {
               ? JSON.parse(fs.readFileSync(trueHarness, "utf8")).true_harness_passed === true ? "pass" : "blocked"
               : "missing"
           };
+          currentRunConsistency = currentRunStatus === "completed" ? "inconsistent" : "consistent";
         }
         const queue = path.join(runRoot, "orchestration", "queue.json");
         if (fs.existsSync(queue)) {
@@ -148,7 +172,9 @@ export function status(cwd: string): StatusResult {
           };
         }
         const blockerFile = path.join(runRoot, "orchestration", "blocker-summary.json");
-        const blockers = blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
+        const blockers = fs.existsSync(blockerFile) && !fs.existsSync(finalGates)
+          ? JSON.parse(fs.readFileSync(blockerFile, "utf8")) as { status?: string; sources?: Array<{ blockers?: unknown[] }> }
+          : blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
         if (blockers.sources && blockers.sources.length > 0) {
           currentRunBlockers = {
             file: blockerFile,
@@ -189,6 +215,7 @@ export function status(cwd: string): StatusResult {
     currentRunExecutionMode,
     currentRunBranch,
     currentRunGates,
+    currentRunConsistency,
     currentRunActions,
     currentRunBlockers,
     currentRunLatestCheckpoint,

@@ -541,7 +541,11 @@ export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?
     committed_at: new Date().toISOString(),
     run_branch: runBranch,
     run_worktree: runWorktree,
-    commit_hashes: commits.map((commit) => commit.hash)
+    commit_hashes: commits.map((commit) => commit.hash),
+    commit_set: commits.map((commit) => commit.hash),
+    implementation_commit: commits[0]?.hash,
+    final_head: optionalGit(runWorktree, ["rev-parse", "HEAD"]).stdout.trim() || commits.at(-1)?.hash,
+    archive_commit: optionalGit(runWorktree, ["rev-parse", "HEAD"]).stdout.trim() || commits.at(-1)?.hash
   });
   refreshOrchestrationSnapshot(cwd, runId);
 
@@ -589,7 +593,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
     const status: PushStatus = "push_blocked_no_remote";
     const output = remoteProbe.stderr || "origin remote is not configured";
     appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: ${status}\n- remote: origin\n- local commit: ${localHead}\n- user action: ${userActionForPush(status, runBranch)}\n- output: ${output}`);
-    updateRun(cwd, runId, "blocked", { push_status: status, push_blocked_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_user_action: userActionForPush(status, runBranch), push_local_commit: localHead });
+    updateRun(cwd, runId, "blocked", { push_status: status, push_blocked_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_user_action: userActionForPush(status, runBranch), push_local_commit: localHead.trim(), pushed_head: undefined });
     refreshOrchestrationSnapshot(cwd, runId);
     return { runId, runBranch, runWorktree, remote: "origin", status, evidence, output };
   }
@@ -598,7 +602,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
   const output = [pushed.stdout, pushed.stderr, pushed.error].filter(Boolean).join("\n");
   if (pushed.code === 0) {
     appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: pushed\n- remote: ${remoteProbe.stdout}\n- local commit: ${localHead}\n- output: ${output || "ok"}`);
-    updateRun(cwd, runId, "pushing", { push_status: "pushed", pushed_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree });
+    updateRun(cwd, runId, "pushing", { push_status: "pushed", pushed_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_local_commit: localHead.trim(), pushed_head: localHead.trim() });
     refreshOrchestrationSnapshot(cwd, runId);
     return { runId, runBranch, runWorktree, remote: remoteProbe.stdout, status: "pushed", evidence, output };
   }
@@ -611,7 +615,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
       finalOutput = [finalOutput, `\nretry ${attempt}:`, pushed.stdout, pushed.stderr, pushed.error].filter(Boolean).join("\n");
       if (pushed.code === 0) {
         appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: pushed\n- remote: ${remoteProbe.stdout}\n- local commit: ${localHead}\n- retries: ${attempt - 1}\n- output: ${finalOutput || "ok"}`);
-        updateRun(cwd, runId, "pushing", { push_status: "pushed", pushed_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree });
+        updateRun(cwd, runId, "pushing", { push_status: "pushed", pushed_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_local_commit: localHead.trim(), pushed_head: localHead.trim() });
         refreshOrchestrationSnapshot(cwd, runId);
         return { runId, runBranch, runWorktree, remote: remoteProbe.stdout, status: "pushed", evidence, output: finalOutput };
       }
@@ -620,7 +624,7 @@ export function pushRun(cwd: string, runId: string): PushResult {
     }
   }
   appendEvidence(evidence, "Push Evidence", `## ${runBranch}\n\n- status: ${status}\n- remote: ${remoteProbe.stdout}\n- local commit: ${localHead}\n- user action: ${userActionForPush(status, runBranch)}\n- output: ${finalOutput || "push failed"}`);
-  updateRun(cwd, runId, "blocked", { push_status: status, push_blocked_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_user_action: userActionForPush(status, runBranch), push_local_commit: localHead });
+  updateRun(cwd, runId, "blocked", { push_status: status, push_blocked_at: new Date().toISOString(), run_branch: runBranch, run_worktree: runWorktree, push_user_action: userActionForPush(status, runBranch), push_local_commit: localHead.trim(), pushed_head: undefined });
   refreshOrchestrationSnapshot(cwd, runId);
   return { runId, runBranch, runWorktree, remote: remoteProbe.stdout, status, evidence, output: finalOutput };
 }
