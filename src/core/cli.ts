@@ -1,4 +1,5 @@
 import { archiveRun } from "./archive.js";
+import { completeAgentAction } from "./agent-complete.js";
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
 import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
@@ -12,6 +13,7 @@ import { resolveCwd } from "./paths.js";
 import { requestDesignRework, type ReviewDecision, type VerificationStatus, reviewTask, verifyTask } from "./quality.js";
 import { requestTaskPlannerReplan } from "./replan.js";
 import { recoverTask } from "./recovery.js";
+import { finalizeRun, reconcileRun } from "./reconcile.js";
 import { createDeliveryRun } from "./run.js";
 import { summarizeAutoOrchestratorSession, summarizeOrchestratorSession } from "./session-summary.js";
 import { readReport, status } from "./status.js";
@@ -89,11 +91,14 @@ function isInternalCommand(command: string): boolean {
     "doctor",
     "report",
     "agents",
+    "agent",
     "skills",
     "templates",
     "workflows",
     "library",
-    "resume"
+    "resume",
+    "reconcile",
+    "finalize"
   ].includes(command);
 }
 
@@ -240,6 +245,32 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       if (!runId || !taskId) throw new Error("Expected recover task <run-id> <task-id>.");
       const result = recoverTask(cwd, runId, taskId);
       print(result, json, () => formatRecovery(result));
+      return;
+    }
+
+    if (command === "agent") {
+      if (args.positional[1] !== "complete") throw new Error("Expected agent complete <run-id> <action-id>.");
+      const runId = args.positional[2];
+      const actionId = args.positional[3];
+      if (!runId || !actionId) throw new Error("Expected agent complete <run-id> <action-id>.");
+      const result = completeAgentAction(cwd, runId, actionId);
+      print(result, json, () => `agent ${result.actionId}: ${result.status}\n${result.errors.map((error) => `- ${error}`).join("\n")}${result.errors.length ? "\n" : ""}`);
+      return;
+    }
+
+    if (command === "reconcile") {
+      const runId = args.positional[1];
+      if (!runId) throw new Error("Expected reconcile <run-id>.");
+      const result = reconcileRun(cwd, runId);
+      print(result, json, () => `reconcile ${result.runId}: ${result.status}\n${result.gates.map((gate) => `- ${gate.id}: ${gate.status} (${gate.detail})`).join("\n")}\n`);
+      return;
+    }
+
+    if (command === "finalize") {
+      const runId = args.positional[1];
+      if (!runId) throw new Error("Expected finalize <run-id>.");
+      const result = finalizeRun(cwd, runId);
+      print(result, json, () => `finalize ${result.runId}: ${result.status}\n${result.gates.map((gate) => `- ${gate.id}: ${gate.status} (${gate.detail})`).join("\n")}\n`);
       return;
     }
 

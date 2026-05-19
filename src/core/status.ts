@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { writeBlockerSummary } from "./blocker-summary.js";
+import { blockerSummary } from "./blocker-summary.js";
 
 export interface StatusResult {
   cwd: string;
@@ -147,9 +147,9 @@ export function status(cwd: string): StatusResult {
             currentParallelGroups: Array.from(new Set(actions.map((action) => action.parallelGroup).filter((item): item is string => typeof item === "string")))
           };
         }
-        const blockerFile = writeBlockerSummary(cwd, currentRunId);
-        if (fs.existsSync(blockerFile)) {
-          const blockers = JSON.parse(fs.readFileSync(blockerFile, "utf8")) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
+        const blockerFile = path.join(runRoot, "orchestration", "blocker-summary.json");
+        const blockers = blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
+        if (blockers.sources && blockers.sources.length > 0) {
           currentRunBlockers = {
             file: blockerFile,
             status: blockers.status || "unknown",

@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "imfine orchestrator session",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "decision_source",
+    "execution_mode",
+    "harness_classification",
+    "status",
+    "next_actions",
+    "agent_runs"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "decision_source": { "type": "string", "const": "orchestrator_agent" },
+    "execution_mode": { "type": "string", "const": "true_harness" },
+    "harness_classification": { "type": "string", "const": "true_harness" },
+    "status": { "type": "string", "minLength": 1 },
+    "next_actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "agent_runs": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/agent_run" }
+    }
+  },
+  "$defs": {
+    "string_list": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "status",
+        "role",
+        "reason",
+        "inputs",
+        "outputs",
+        "dependsOn",
+        "parallelGroup"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["runtime", "agent"] },
+        "status": { "type": "string", "enum": ["ready", "waiting", "blocked", "done"] },
+        "role": { "type": "string", "minLength": 1 },
+        "taskId": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "inputs": { "$ref": "#/$defs/string_list" },
+        "outputs": { "$ref": "#/$defs/string_list" },
+        "dependsOn": { "$ref": "#/$defs/string_list" },
+        "parallelGroup": { "type": "string", "minLength": 1 }
+      }
+    },
+    "agent_run": {
+      "type": "object",
+      "required": [
+        "id",
+        "role",
+        "status",
+        "skills",
+        "inputs",
+        "outputs",
+        "readScope",
+        "writeScope",
+        "dependsOn",
+        "parallelGroup"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "role": { "type": "string", "minLength": 1 },
+        "taskId": { "type": "string", "minLength": 1 },
+        "workflowState": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["ready", "waiting", "planned", "completed"] },
+        "skills": { "$ref": "#/$defs/string_list" },
+        "inputs": { "$ref": "#/$defs/string_list" },
+        "outputs": { "$ref": "#/$defs/string_list" },
+        "readScope": { "$ref": "#/$defs/string_list" },
+        "writeScope": { "$ref": "#/$defs/string_list" },
+        "dependsOn": { "$ref": "#/$defs/string_list" },
+        "parallelGroup": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -7,8 +7,8 @@ import { isRunState, normalizeRunState, transitionRunState, type RunState } from
 import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import type { ExecutionMode } from "./execution-mode.js";
 import { writeBlockerSummary } from "./blocker-summary.js";
-import { readProviderCapabilitySnapshot, writeProviderCapabilitySnapshot } from "./provider-evidence.js";
-import { isRuntimeRole } from "./role-registry.js";
+import { readProviderCapabilitySnapshot, writeProviderCapabilitySnapshot, writeProviderDispatchReceipt } from "./provider-evidence.js";
+import { isRuntimeRole, normalizeRuntimeRole } from "./role-registry.js";
 import { validateAgentSkills } from "./skill-registry.js";
 
 export type OrchestrationActionKind = "runtime" | "agent";
@@ -106,6 +106,7 @@ interface AgentAuthoredSession {
   status?: string;
   summary?: string;
   next_actions?: OrchestrationAction[];
+  next_action?: unknown[];
   agent_runs?: AgentRun[];
 }
 
@@ -232,6 +233,76 @@ function actionMatchesAgent(action: OrchestrationAction, agent: AgentRun): boole
   return action.role === agent.role
     && (action.taskId || "") === (agent.taskId || "")
     && (action.parallelGroup === agent.parallelGroup || derivedId === agent.id);
+}
+
+function normalizeArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function normalizeRoleOrOriginal(role: unknown): string {
+  if (typeof role !== "string") return "";
+  return normalizeRuntimeRole(role) || role;
+}
+
+function normalizeAction(value: unknown): unknown {
+  if (!isObject(value)) return value;
+  const role = normalizeRoleOrOriginal(value.role);
+  const id = typeof value.id === "string" && value.id.trim() ? value.id : role ? `agent-${role}` : "";
+  const description = typeof value.description === "string" ? value.description : undefined;
+  return {
+    ...value,
+    id,
+    kind: typeof value.kind === "string" ? value.kind : "agent",
+    status: value.status === "completed" ? "done" : value.status || "ready",
+    role,
+    reason: typeof value.reason === "string" && value.reason.trim() ? value.reason : description || "orchestrator declared action",
+    inputs: normalizeArray(value.inputs),
+    outputs: normalizeArray(value.outputs),
+    dependsOn: normalizeArray(value.dependsOn),
+    parallelGroup: typeof value.parallelGroup === "string" && value.parallelGroup.trim() ? value.parallelGroup : role || "default"
+  };
+}
+
+function normalizeAgentRun(value: unknown): unknown {
+  if (!isObject(value)) return value;
+  const role = normalizeRoleOrOriginal(value.role);
+  const id = typeof value.id === "string" && value.id.trim()
+    ? value.id
+    : typeof value.taskId === "string" && value.taskId.trim()
+      ? value.taskId
+      : role || "";
+  return {
+    ...value,
+    id,
+    role,
+    status: value.status === "done" ? "completed" : value.status || "planned",
+    skills: normalizeArray(value.skills),
+    inputs: normalizeArray(value.inputs),
+    outputs: normalizeArray(value.outputs),
+    readScope: normalizeArray(value.readScope),
+    writeScope: normalizeArray(value.writeScope),
+    dependsOn: normalizeArray(value.dependsOn),
+    parallelGroup: typeof value.parallelGroup === "string" && value.parallelGroup.trim() ? value.parallelGroup : role || "default"
+  };
+}
+
+function normalizeSession(session: AgentAuthoredSession): { session: AgentAuthoredSession; changed: boolean } {
+  const sourceActions = Array.isArray(session.next_actions)
+    ? session.next_actions
+    : Array.isArray(session.next_action)
+      ? session.next_action
+      : [];
+  const normalized = {
+    ...session,
+    schema_version: session.schema_version || 1,
+    next_actions: sourceActions.map(normalizeAction) as OrchestrationAction[],
+    agent_runs: (Array.isArray(session.agent_runs) ? session.agent_runs : []).map(normalizeAgentRun) as AgentRun[]
+  };
+  delete normalized.next_action;
+  return {
+    session: normalized,
+    changed: JSON.stringify(normalized) !== JSON.stringify(session)
+  };
 }
 
 function executionMetadata(runDirPath: string, agentId: string): ExecutionMetadata | null {
@@ -434,6 +505,20 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
   const dispatchContracts = exists(files.session) && result.nextActions.length > 0 && result.agentRuns.length > 0
     ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
     : [];
+  for (const contract of dispatchContracts.filter((item) => item.status === "ready" || item.status === "waiting")) {
+    writeProviderDispatchReceipt(cwd, runId, {
+      actionId: contract.action_id,
+      agentId: contract.id,
+      role: contract.role,
+      taskId: contract.task_id,
+      parallelGroup: contract.parallel_group,
+      metadata: {
+        dispatch_contract_id: contract.id,
+        ready_reason: contract.ready_reason,
+        required_outputs: contract.required_outputs
+      }
+    });
+  }
   const actionable = result.nextActions.filter((action) => action.status !== "done");
   const existingExecution = optionalJson<{ wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] }>(files.parallelExecution);
 
@@ -498,21 +583,88 @@ function waitingForOrchestratorDecision(cwd: string, runId: string, mode: Orches
   return persist(cwd, runId, result);
 }
 
+function readRunStatus(cwd: string, runId: string): RunState {
+  return normalizeRunState(readJson<RunMetadata>(path.join(runDir(cwd, runId), "run.json")).status);
+}
+
+function completedSnapshot(cwd: string, runId: string, mode: OrchestratorResult["mode"]): OrchestratorResult {
+  const runDirPath = runDir(cwd, runId);
+  const orchestrationDir = path.join(runDirPath, "orchestration");
+  const files = {
+    session: path.join(orchestrationDir, "orchestrator-session.json"),
+    state: path.join(orchestrationDir, "state.json"),
+    queue: path.join(orchestrationDir, "queue.json"),
+    agentRuns: path.join(orchestrationDir, "agent-runs.json"),
+    dispatchContracts: path.join(orchestrationDir, "dispatch-contracts.json"),
+    parallelPlan: path.join(orchestrationDir, "parallel-plan.json"),
+    parallelExecution: path.join(orchestrationDir, "parallel-execution.json"),
+    timeline: path.join(orchestrationDir, "auto-timeline.md")
+  };
+  const session = optionalJson<AgentAuthoredSession>(files.session);
+  const agents = optionalJson<{ agents?: AgentRun[] }>(files.agentRuns);
+  const dispatch = optionalJson<{ contracts?: DispatchContract[] }>(files.dispatchContracts);
+  return {
+    runId,
+    runDir: runDirPath,
+    mode,
+    status: "completed",
+    executionMode: "true_harness",
+    nextActions: Array.isArray(session?.next_actions) ? session.next_actions : [],
+    agentRuns: Array.isArray(agents?.agents) ? agents.agents : [],
+    dispatchContracts: Array.isArray(dispatch?.contracts) ? dispatch.contracts : [],
+    parallelGroups: Array.isArray(session?.next_actions) ? groupActions(session.next_actions) : [],
+    files
+  };
+}
+
+function readOnlySnapshot(cwd: string, runId: string, mode: OrchestratorResult["mode"]): OrchestratorResult {
+  const runDirPath = runDir(cwd, runId);
+  const orchestrationDir = path.join(runDirPath, "orchestration");
+  const files = {
+    session: path.join(orchestrationDir, "orchestrator-session.json"),
+    state: path.join(orchestrationDir, "state.json"),
+    queue: path.join(orchestrationDir, "queue.json"),
+    agentRuns: path.join(orchestrationDir, "agent-runs.json"),
+    dispatchContracts: path.join(orchestrationDir, "dispatch-contracts.json"),
+    parallelPlan: path.join(orchestrationDir, "parallel-plan.json"),
+    parallelExecution: path.join(orchestrationDir, "parallel-execution.json"),
+    timeline: path.join(orchestrationDir, "auto-timeline.md")
+  };
+  const session = optionalJson<AgentAuthoredSession>(files.session);
+  const agents = optionalJson<{ agents?: AgentRun[] }>(files.agentRuns);
+  const dispatch = optionalJson<{ contracts?: DispatchContract[] }>(files.dispatchContracts);
+  const nextActions = Array.isArray(session?.next_actions) ? session.next_actions : [];
+  const sessionAgents = Array.isArray(session?.agent_runs) ? session.agent_runs : [];
+  const virtualDispatchContracts = fs.existsSync(files.session) && nextActions.length > 0 && sessionAgents.length > 0
+    ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
+    : [];
+  const currentStatus = readRunStatus(cwd, runId);
+  const sessionStatus = typeof session?.status === "string" && isRunState(session.status) ? session.status : currentStatus;
+  const status = currentStatus === "completed" || currentStatus === "blocked" ? currentStatus : sessionStatus;
+  return {
+    runId,
+    runDir: runDirPath,
+    mode,
+    status,
+    executionMode: "true_harness",
+    nextActions,
+    agentRuns: Array.isArray(agents?.agents) ? agents.agents : sessionAgents,
+    dispatchContracts: Array.isArray(dispatch?.contracts) ? dispatch.contracts : virtualDispatchContracts,
+    parallelGroups: nextActions.length > 0 ? groupActions(nextActions) : [],
+    files
+  };
+}
+
 function buildSessionDrivenDecision(cwd: string, runId: string, mode: OrchestratorResult["mode"]): Omit<OrchestratorResult, "files"> {
   const runDirPath = runDir(cwd, runId);
-  const provider = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
-  if (provider.blocked) {
-    transitionRunState(cwd, runId, "blocked", {
-      blocked_at: new Date().toISOString(),
-      blocked_reason: provider.blocked_reason,
-      provider_capability: path.join(runDirPath, "orchestration", "provider-capability.json")
-    });
-    writeBlockerSummary(cwd, runId);
+  const currentMetadata = readJson<RunMetadata>(path.join(runDirPath, "run.json"));
+  const currentNormalizedStatus = normalizeRunState(currentMetadata.status);
+  if (currentNormalizedStatus === "completed") {
     return {
       runId,
       runDir: runDirPath,
       mode,
-      status: "blocked",
+      status: "completed",
       executionMode: "true_harness",
       nextActions: [],
       agentRuns: [],
@@ -535,7 +687,40 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
     };
   }
 
-  const session = readJson<AgentAuthoredSession>(sessionFile);
+  const provider = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
+  if (provider.blocked) {
+    transitionRunState(cwd, runId, "blocked", {
+      blocked_at: new Date().toISOString(),
+      blocked_reason: provider.blocked_reason,
+      provider_capability: path.join(runDirPath, "orchestration", "provider-capability.json")
+    });
+    writeBlockerSummary(cwd, runId);
+    return {
+      runId,
+      runDir: runDirPath,
+      mode,
+      status: "blocked",
+      executionMode: "true_harness",
+      nextActions: [],
+      agentRuns: [],
+      dispatchContracts: [],
+      parallelGroups: []
+    };
+  }
+
+  const rawSession = readJson<AgentAuthoredSession>(sessionFile);
+  const normalized = normalizeSession(rawSession);
+  const session = normalized.session;
+  if (normalized.changed) {
+    writeText(path.join(runDirPath, "orchestration", "orchestrator-session.normalization.json"), `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status: "normalized",
+      normalized_at: new Date().toISOString(),
+      source_file: sessionFile
+    }, null, 2)}\n`);
+    writeText(sessionFile, `${JSON.stringify(session, null, 2)}\n`);
+  }
   const validationErrors = validateSession(session, runId);
   if (validationErrors.length > 0) {
     writeText(path.join(runDirPath, "orchestration", "session-validation.json"), `${JSON.stringify({
@@ -564,8 +749,8 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
     };
   }
 
-  const metadata = readJson<RunMetadata>(path.join(runDirPath, "run.json"));
-  const currentStatus = normalizeRunState(metadata.status);
+  const metadata = currentMetadata;
+  const currentStatus = currentNormalizedStatus;
   const sessionStatus = normalizeRunState(session.status);
   const status = effectiveStatus(currentStatus, sessionStatus);
   if (status !== currentStatus) {
@@ -620,6 +805,8 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
 
 export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorResult["mode"] = "orchestrate"): OrchestratorResult {
   const sessionFile = path.join(runDir(cwd, runId), "orchestration", "orchestrator-session.json");
+  if (mode === "resume") return readOnlySnapshot(cwd, runId, mode);
+  if (readRunStatus(cwd, runId) === "completed") return completedSnapshot(cwd, runId, mode);
   if (!exists(sessionFile)) return waitingForOrchestratorDecision(cwd, runId, mode);
   return persist(cwd, runId, buildSessionDrivenDecision(cwd, runId, mode));
 }

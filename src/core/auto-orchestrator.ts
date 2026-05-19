@@ -8,7 +8,7 @@ import { validateHandoff, type HandoffRole } from "./handoff-validator.js";
 import { writeBlockerSummary } from "./blocker-summary.js";
 import { writeProviderExecutionReceipt } from "./provider-evidence.js";
 import { acquireLock, isActionCompleted, readLatestCheckpoint, releaseLock, writeCheckpoint } from "./reliability.js";
-import { resumeRun, type OrchestrationAction, type OrchestratorResult } from "./orchestrator.js";
+import { orchestrateRun, type OrchestrationAction, type OrchestratorResult } from "./orchestrator.js";
 import { materializeTaskGraphArtifacts } from "./plan.js";
 import { reviewTask, type ReviewDecision, type VerificationStatus, verifyTask } from "./quality.js";
 import { transitionRunState } from "./state-machine.js";
@@ -462,7 +462,7 @@ function writeAutoTimeline(cwd: string, runId: string, steps: AutoOrchestratorSt
 
 export async function runAutoOrchestrator(cwd: string, runId: string, options: AutoOrchestratorOptions): Promise<AutoOrchestratorResult> {
   const steps: AutoOrchestratorStep[] = [];
-  let last = resumeRun(cwd, runId);
+  let last = orchestrateRun(cwd, runId);
   const runLock = acquireLock(cwd, runId, "run");
   if (!runLock.acquired) {
     const step = {
@@ -492,12 +492,12 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
       });
     }
     for (let iteration = 1; iteration <= options.maxIterations; iteration += 1) {
-      last = resumeRun(cwd, runId);
+      last = orchestrateRun(cwd, runId);
       const action = firstReadyAction(cwd, runId, last);
       if (!action) {
-        const status: AutoOrchestratorResult["status"] = last.status === "completed" ? "completed" : "waiting_for_agent_output";
+        const status: AutoOrchestratorResult["status"] = last.status === "completed" ? "completed" : last.status === "blocked" ? "blocked" : "waiting_for_agent_output";
         const waitingOnDependencies = last.nextActions.some((candidate) => candidate.status === "ready" && !isActionCompleted(cwd, runId, candidate.id));
-        writeCheckpoint(cwd, runId, "orchestrator-idle", "after", status === "completed" ? "completed" : "waiting_for_agent_output", waitingOnDependencies ? "ready actions are waiting for completed dependencies" : `no ready action; run state is ${last.status}`, []);
+        writeCheckpoint(cwd, runId, "orchestrator-idle", "after", status === "completed" ? "completed" : status === "blocked" ? "blocked" : "waiting_for_agent_output", waitingOnDependencies ? "ready actions are waiting for completed dependencies" : `no ready action; run state is ${last.status}`, []);
         const timeline = writeAutoTimeline(cwd, runId, steps, status);
         return { runId, status, iterations: iteration - 1, steps, lastOrchestration: last, timeline };
       }
@@ -542,7 +542,7 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         if (step.status === "blocked") {
           writeBlockerSummary(cwd, runId);
           const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");
-          return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
+          return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: orchestrateRun(cwd, runId), timeline };
         }
         continue;
       }
@@ -551,7 +551,7 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         const waveStartedAt = new Date().toISOString();
         const readyForProcessing = batch.every((item) => agentActionReadyForProcessing(cwd, runId, last.runDir, item));
         if (options.dryRun || !readyForProcessing) {
-          const latest = resumeRun(cwd, runId);
+          const latest = orchestrateRun(cwd, runId);
           for (const item of batch) {
             writeProviderExecutionReceipt(cwd, runId, {
               actionId: item.id,
@@ -625,7 +625,7 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
             });
             const status = processed.status === "blocked" ? "blocked" : "waiting_for_agent_output";
             const timeline = writeAutoTimeline(cwd, runId, steps, status);
-            return { runId, status, iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
+            return { runId, status, iterations: iteration, steps, lastOrchestration: orchestrateRun(cwd, runId), timeline };
           }
         }
         recordParallelWave(cwd, runId, {
@@ -650,7 +650,7 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
         writeCheckpoint(cwd, runId, action.id, "after", "failed", detail, []);
         updateRunStatus(cwd, runId, "blocked", { auto_failed_at: new Date().toISOString(), auto_failed_reason: detail });
         const timeline = writeAutoTimeline(cwd, runId, steps, "blocked");
-        return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
+        return { runId, status: "blocked", iterations: iteration, steps, lastOrchestration: orchestrateRun(cwd, runId), timeline };
       } finally {
         releaseLock(cwd, actionLock);
       }
@@ -658,7 +658,7 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
 
     const timeline = writeAutoTimeline(cwd, runId, steps, "max_iterations");
     writeCheckpoint(cwd, runId, "orchestrator-max-iterations", "after", "blocked", "max iterations reached", [timeline]);
-    return { runId, status: "max_iterations", iterations: options.maxIterations, steps, lastOrchestration: resumeRun(cwd, runId), timeline };
+    return { runId, status: "max_iterations", iterations: options.maxIterations, steps, lastOrchestration: orchestrateRun(cwd, runId), timeline };
   } finally {
     releaseLock(cwd, runLock);
   }

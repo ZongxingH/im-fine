@@ -151,6 +151,7 @@ Runtime files such as:
 
 - \`dispatch-contracts.json\`
 - \`agent-runs.json\`
+- \`orchestrator-session.schema.json\`
 - \`parallel-plan.json\`
 - \`parallel-execution.json\`
 
@@ -318,6 +319,7 @@ runtime 文件例如：
 
 - \`dispatch-contracts.json\`
 - \`agent-runs.json\`
+- \`orchestrator-session.schema.json\`
 - \`parallel-plan.json\`
 - \`parallel-execution.json\`
 

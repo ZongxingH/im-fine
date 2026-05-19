@@ -50,6 +50,18 @@ function collectErrors(value: unknown): string[] {
 }
 
 export function writeBlockerSummary(cwd: string, runId: string): string {
+  const file = path.join(runDir(cwd, runId), "orchestration", "blocker-summary.json");
+  writeText(file, `${JSON.stringify(blockerSummary(cwd, runId), null, 2)}\n`);
+  return file;
+}
+
+export function blockerSummary(cwd: string, runId: string): {
+  schema_version: 1;
+  run_id: string;
+  generated_at: string;
+  status: "blocked" | "clear";
+  sources: Array<{ id: string; file: string; blockers: string[] }>;
+} {
   const root = runDir(cwd, runId);
   const orchestration = path.join(root, "orchestration");
   const sources: SummarySource[] = [
@@ -66,14 +78,12 @@ export function writeBlockerSummary(cwd: string, runId: string): string {
       file: rel(cwd, source.file),
       blockers: collectErrors(readJson(source.file))
     }));
-  const file = path.join(orchestration, "blocker-summary.json");
-  ensureDir(path.dirname(file));
-  writeText(file, `${JSON.stringify({
+  ensureDir(orchestration);
+  return {
     schema_version: 1,
     run_id: runId,
     generated_at: new Date().toISOString(),
     status: summaries.some((summary) => summary.blockers.length > 0) ? "blocked" : "clear",
     sources: summaries
-  }, null, 2)}\n`);
-  return file;
+  };
 }

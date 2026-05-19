@@ -265,6 +265,8 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const passed = orchestratorDeclaredTrueHarness
     && hasTrueHarnessAgent
     && hasDispatchContract
+    && providerCapability.blocked === false
+    && providerCapability.subagent_supported === "supported"
     && hasCompletedWave
     && allContractsHaveCompletedWave
     && allContractsHaveProviderReceipt

@@ -59,6 +59,16 @@ function validTaskGraph(runId = "run-1") {
 
 function writeHarnessFixture(fixture, options = {}) {
   const { cwd, runId, runDir } = fixture;
+  fs.writeFileSync(path.join(runDir, "orchestration", "provider-capability.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    provider: "codex",
+    entry_installed: true,
+    subagent_supported: "supported",
+    detection_source: "test-fixture",
+    detected_at: "2026-01-01T00:00:00.000Z",
+    blocked: false
+  }, null, 2) + "\n");
   const patchFile = path.join(runDir, "agents", "T1", "patch.diff");
   if (options.writePatch !== false) fs.writeFileSync(patchFile, "diff --git a/src/index.js b/src/index.js\n");
   fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
@@ -214,7 +224,7 @@ try {
   const unknown = writeProviderCapabilitySnapshot(cwd, runId);
   assert.equal(unknown.provider, "unknown");
   assert.equal(unknown.subagent_supported, "unknown");
-  assert.equal(unknown.blocked, false);
+  assert.equal(unknown.blocked, true);
 } finally {
   if (previousProvider === undefined) delete process.env.IMFINE_PROVIDER;
   else process.env.IMFINE_PROVIDER = previousProvider;

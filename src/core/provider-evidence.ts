@@ -30,6 +30,9 @@ export interface ProviderExecutionReceipt {
   provider_agent_id: string;
   provider_session_id: string;
   status: ProviderReceiptStatus;
+  output_path: string;
+  started_at: string;
+  completed_at?: string;
   metadata: Record<string, unknown>;
   recorded_at: string;
 }
@@ -66,7 +69,7 @@ export function providerCapabilityFile(cwd: string, runId: string): string {
 export function writeProviderCapabilitySnapshot(cwd: string, runId: string): ProviderCapabilitySnapshot {
   const provider = normalizeProvider(process.env.IMFINE_PROVIDER);
   const subagentSupport = normalizeSubagentSupport(process.env.IMFINE_SUBAGENT_SUPPORTED);
-  const blocked = subagentSupport === "unsupported";
+  const blocked = subagentSupport !== "supported";
   const snapshot: ProviderCapabilitySnapshot = {
     schema_version: 1,
     run_id: runId,
@@ -76,7 +79,11 @@ export function writeProviderCapabilitySnapshot(cwd: string, runId: string): Pro
     detection_source: "environment_and_installed_entry_probe",
     detected_at: new Date().toISOString(),
     blocked,
-    blocked_reason: blocked ? "current provider explicitly reports unsupported native subagent dispatch" : undefined
+    blocked_reason: blocked
+      ? subagentSupport === "unsupported"
+        ? "current provider explicitly reports unsupported native subagent dispatch"
+        : "current provider has not confirmed native subagent dispatch support"
+      : undefined
   };
   const file = providerCapabilityFile(cwd, runId);
   ensureDir(path.dirname(file));
@@ -102,6 +109,42 @@ export function providerReceiptFile(cwd: string, runId: string, actionId: string
   return path.join(receiptDir(cwd, runId), `${safeFilePart(actionId)}.json`);
 }
 
+function readExistingReceipt(cwd: string, runId: string, actionId: string): ProviderExecutionReceipt | null {
+  const file = providerReceiptFile(cwd, runId, actionId);
+  if (!fs.existsSync(file)) return null;
+  return JSON.parse(fs.readFileSync(file, "utf8")) as ProviderExecutionReceipt;
+}
+
+function defaultOutputPath(cwd: string, runId: string, agentId: string): string {
+  return path.join(runDir(cwd, runId), "agents", agentId, "handoff.json");
+}
+
+function isTerminalStatus(status: ProviderReceiptStatus): boolean {
+  return status === "completed" || status === "blocked" || status === "failed";
+}
+
+export function writeProviderDispatchReceipt(cwd: string, runId: string, input: {
+  actionId: string;
+  agentId: string;
+  role: string;
+  taskId?: string;
+  parallelGroup: string;
+  metadata?: Record<string, unknown>;
+}): ProviderExecutionReceipt {
+  const existing = readExistingReceipt(cwd, runId, input.actionId);
+  if (existing && isTerminalStatus(existing.status)) return existing;
+  return writeProviderExecutionReceipt(cwd, runId, {
+    ...input,
+    status: "waiting_for_agent_output",
+    outputPath: existing?.output_path,
+    metadata: {
+      ...(existing?.metadata || {}),
+      ...(input.metadata || {}),
+      dispatch_recorded: true
+    }
+  });
+}
+
 export function writeProviderExecutionReceipt(cwd: string, runId: string, input: {
   actionId: string;
   agentId: string;
@@ -109,9 +152,12 @@ export function writeProviderExecutionReceipt(cwd: string, runId: string, input:
   taskId?: string;
   parallelGroup: string;
   status: ProviderReceiptStatus;
+  outputPath?: string;
   metadata?: Record<string, unknown>;
 }): ProviderExecutionReceipt {
   const capability = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
+  const existing = readExistingReceipt(cwd, runId, input.actionId);
+  const now = new Date().toISOString();
   const receipt: ProviderExecutionReceipt = {
     schema_version: 1,
     run_id: runId,
@@ -121,11 +167,17 @@ export function writeProviderExecutionReceipt(cwd: string, runId: string, input:
     task_id: input.taskId,
     parallel_group: input.parallelGroup,
     provider: capability.provider,
-    provider_agent_id: process.env.IMFINE_PROVIDER_AGENT_ID || `${capability.provider}:${input.agentId}`,
-    provider_session_id: process.env.IMFINE_PROVIDER_SESSION_ID || process.env.TERM_SESSION_ID || `${capability.provider}:current-session`,
+    provider_agent_id: existing?.provider_agent_id || process.env.IMFINE_PROVIDER_AGENT_ID || `${capability.provider}:${input.agentId}`,
+    provider_session_id: existing?.provider_session_id || process.env.IMFINE_PROVIDER_SESSION_ID || process.env.TERM_SESSION_ID || `${capability.provider}:current-session`,
     status: input.status,
-    metadata: input.metadata || {},
-    recorded_at: new Date().toISOString()
+    output_path: input.outputPath || existing?.output_path || defaultOutputPath(cwd, runId, input.agentId),
+    started_at: existing?.started_at || now,
+    completed_at: isTerminalStatus(input.status) ? now : existing?.completed_at,
+    metadata: {
+      ...(existing?.metadata || {}),
+      ...(input.metadata || {})
+    },
+    recorded_at: now
   };
   const file = providerReceiptFile(cwd, runId, input.actionId);
   ensureDir(path.dirname(file));

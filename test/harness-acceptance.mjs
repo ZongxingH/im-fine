@@ -11,7 +11,7 @@ const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-harness-home-"));
 function run(args, cwd, extraEnv = {}) {
   return execFileSync(process.execPath, [cli, ...args], {
     cwd,
-    env: { ...process.env, HOME: tempHome, ...extraEnv },
+    env: { ...process.env, HOME: tempHome, IMFINE_PROVIDER: "codex", IMFINE_SUBAGENT_SUPPORTED: "supported", ...extraEnv },
     encoding: "utf8"
   });
 }

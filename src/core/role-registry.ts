@@ -201,8 +201,57 @@ const ROLE_CONTRACTS: Record<RuntimeRole, RoleContract> = {
 
 export const RUNTIME_ROLES = Object.freeze(Object.keys(ROLE_CONTRACTS) as RuntimeRole[]);
 
+const ROLE_ALIASES: Record<string, RuntimeRole> = {
+  architect: "architect",
+  "architecture-agent": "architect",
+  "task planner": "task-planner",
+  task_planner: "task-planner",
+  taskplanner: "task-planner",
+  planner: "task-planner",
+  intake: "intake",
+  "project analyzer": "project-analyzer",
+  project_analyzer: "project-analyzer",
+  "product planner": "product-planner",
+  product_planner: "product-planner",
+  dev: "dev",
+  developer: "dev",
+  "backend dev": "dev",
+  backend_dev: "dev",
+  "frontend dev": "dev",
+  frontend_dev: "dev",
+  qa: "qa",
+  tester: "qa",
+  reviewer: "reviewer",
+  review: "reviewer",
+  "code reviewer": "reviewer",
+  code_reviewer: "reviewer",
+  "risk reviewer": "risk-reviewer",
+  risk_reviewer: "risk-reviewer",
+  risk: "risk-reviewer",
+  "merge agent": "merge-agent",
+  merge_agent: "merge-agent",
+  merge: "merge-agent",
+  archive: "archive",
+  archiver: "archive",
+  committer: "committer",
+  commit: "committer",
+  "technical writer": "technical-writer",
+  technical_writer: "technical-writer",
+  writer: "technical-writer",
+  "project knowledge updater": "project-knowledge-updater",
+  project_knowledge_updater: "project-knowledge-updater",
+  knowledge_updater: "project-knowledge-updater"
+};
+
 export function isRuntimeRole(role: string): role is RuntimeRole {
   return Object.prototype.hasOwnProperty.call(ROLE_CONTRACTS, role);
+}
+
+export function normalizeRuntimeRole(role: string): RuntimeRole | null {
+  const normalized = role.trim().toLowerCase().replace(/\s+/g, " ");
+  const hyphenated = normalized.replaceAll("_", "-").replaceAll(" ", "-");
+  if (isRuntimeRole(hyphenated)) return hyphenated;
+  return ROLE_ALIASES[normalized] || ROLE_ALIASES[hyphenated] || null;
 }
 
 export function roleContract(role: RuntimeRole): RoleContract {

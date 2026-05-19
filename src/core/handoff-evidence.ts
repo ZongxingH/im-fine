@@ -26,10 +26,13 @@ export function isHandoffRole(role: string): role is HandoffRole {
 }
 
 export function agentHandoffCandidates(agent: AgentHandoffTarget, runDirPath: string): string[] {
+  const taskScopedDirectory = agent.taskId && (agent.role === "dev" || agent.role === "technical-writer")
+    ? path.join(runDirPath, "agents", agent.taskId, "handoff.json")
+    : undefined;
   const candidates = [
     agent.handoffFile,
     path.join(runDirPath, "agents", agent.id, "handoff.json"),
-    agent.taskId ? path.join(runDirPath, "agents", agent.taskId, "handoff.json") : undefined,
+    taskScopedDirectory,
     agent.taskId ? path.join(runDirPath, "agents", `${agent.role}-${agent.taskId}`, "handoff.json") : undefined,
     path.join(runDirPath, "agents", agent.role, "handoff.json")
   ].filter((item): item is string => typeof item === "string" && item.length > 0);
