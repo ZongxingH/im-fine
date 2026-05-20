@@ -2,8 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
-import { type ProviderName, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "./provider-evidence.js";
-import { recordActionStatus } from "./reliability.js";
+import { type ProviderName, writeProviderOriginReceipt } from "./provider-evidence.js";
 
 export interface AgentCompleteResult {
   runId: string;
@@ -130,42 +129,6 @@ function recordWave(dir: string, runId: string, action: ActionRecord, status: Ag
     wave_history: waveHistory
   }, null, 2)}\n`);
   return file;
-}
-
-export function completeAgentAction(cwd: string, runId: string, actionId: string): AgentCompleteResult {
-  const dir = runDir(cwd, runId);
-  const action = findAction(dir, actionId);
-  const agentId = agentIdFor(action);
-  const validation = validateAgentHandoff({ id: agentId, role: action.role, taskId: action.taskId }, dir, runId);
-  const status: AgentCompleteResult["status"] = validation.passed ? "completed" : "blocked";
-  const receipt = writeProviderExecutionReceipt(cwd, runId, {
-    actionId,
-    agentId,
-    role: action.role,
-    taskId: action.taskId,
-    parallelGroup: action.parallelGroup,
-    status
-  });
-  const agentRuns = updateAgentRuns(dir, runId, action, agentId, status, validation.file);
-  const wave = recordWave(dir, runId, action, status);
-  const ledgerFile = path.join(dir, "orchestration", "action-ledger.json");
-  ensureDir(path.dirname(ledgerFile));
-  const ledger = fs.existsSync(ledgerFile) ? readJson<{ actions?: Record<string, unknown>; history?: unknown[] }>(ledgerFile) : {};
-  const actions = ledger.actions || {};
-  const history = Array.isArray(ledger.history) ? ledger.history : [];
-  actions[actionId] = { action_id: actionId, status, detail: validation.errors.join("; ") || "agent completed", updated_at: new Date().toISOString() };
-  history.push({ action_id: actionId, status, recorded_at: new Date().toISOString() });
-  writeText(ledgerFile, `${JSON.stringify({ schema_version: 1, run_id: runId, updated_at: new Date().toISOString(), actions, history }, null, 2)}\n`);
-  recordActionStatus(cwd, runId, actionId, status, validation.errors.join("; ") || "agent completed", [validation.file].filter((file): file is string => Boolean(file)));
-  return {
-    runId,
-    actionId,
-    agentId,
-    role: action.role,
-    status,
-    files: [validation.file, agentRuns, wave, ledgerFile].filter((file): file is string => Boolean(file)),
-    errors: validation.errors
-  };
 }
 
 export function recordProviderOriginAgentCompletion(cwd: string, runId: string, actionId: string, input: AgentReceiptInput): AgentCompleteResult {

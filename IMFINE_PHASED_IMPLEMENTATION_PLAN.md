@@ -459,13 +459,13 @@ runtime 不再替它推导 workflow、role、action 或并行边界。
 
 当前目标路径要求 `orchestrator agent` 在当前 provider 会话中直接启动独立原生子 Agent。runtime 只负责记录这些调度决策、校验产物并执行确定性后端动作。
 
-runtime 在 dispatch 合同生成时会写入 provider dispatch receipt；子 Agent 产物返回后必须通过 runtime 的 `agent complete <run-id> <action-id>` 或 auto orchestrator 处理入口完成原子落盘：
+runtime 在 dispatch 合同生成时会写入 provider dispatch receipt；当前会话 Orchestrator 启动的子 Agent 产物返回后，必须通过 runtime 的 `agent complete <run-id> <action-id> --provider ...` 完成 provider-origin 原子落盘：
 
 - 校验 handoff schema 与 evidence 文件存在性
 - 更新 `agent-runs.json`
 - 更新 `parallel-execution.json` wave history
 - 更新 `action-ledger.json`
-- 将 provider receipt 从 `waiting_for_agent_output` 收敛为 provider-origin completed receipt，或记录 runtime processed / blocked / failed 诊断 receipt
+- 将 provider receipt 从 `waiting_for_agent_output` 收敛为 provider-origin completed receipt；缺少 provider-origin metadata 时只能保持 waiting/blocked 诊断，不能写成 completed
 
 当前 `agent-runs.json` 不再只表达 native agent 列表，还会写入：
 
@@ -484,7 +484,7 @@ provider-origin receipt 必须满足：
 - output path 指向存在的 provider output snapshot 或 handoff
 - `integrity.output_sha256` 与 output snapshot 当前内容一致
 
-runtime-only receipt 只能用于 waiting / diagnostic / runtime gate 记录，不能让 `receiptProvesNativeSubagent` 通过，也不能把 provider capability 从 unknown 解析为 supported。
+runtime-only receipt 只能用于 waiting / diagnostic / runtime gate 记录，不能完成 Agent action，不能让 `receiptProvesNativeSubagent` 通过，也不能把 provider capability 从 unknown 解析为 supported。
 
 ### 9.2 Intake Agent
 

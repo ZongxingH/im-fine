@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { completeAgentAction, recordProviderOriginAgentCompletion } from "../dist/core/agent-complete.js";
+import { recordProviderOriginAgentCompletion } from "../dist/core/agent-complete.js";
 import { orchestrateRun, resumeRun } from "../dist/core/orchestrator.js";
 import { reconcileRun } from "../dist/core/reconcile.js";
 import { status as readStatus } from "../dist/core/status.js";
@@ -359,44 +359,6 @@ function writeHappyHarness(cwd, runDir, runId) {
   }
   const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
   assert.equal(freshness.status, "fresh");
-}
-
-{
-  const cwd = makeProject("imfine-agent-complete-", true);
-  const runId = "agent";
-  const runDir = makeRun(cwd, runId);
-  writeProviderSupported(runDir, runId);
-  writeSession(runDir, runId);
-  const patch = path.join(runDir, "agents", "T1", "patch.diff");
-  fs.writeFileSync(patch, "diff --git a/src/index.js b/src/index.js\n");
-  fs.writeFileSync(path.join(runDir, "agents", "T1", "handoff.json"), JSON.stringify({
-    run_id: runId,
-    task_id: "T1",
-    role: "dev",
-    from: "dev",
-    to: "qa",
-    status: "ready",
-    summary: "done",
-    commands: [],
-    evidence: [patch],
-    next_state: "verifying",
-    files_changed: ["src/index.js"],
-    verification: []
-  }, null, 2) + "\n");
-  const orchestrated = orchestrateRun(cwd, runId);
-  assert.equal(orchestrated.status, "planned");
-  const startedReceipt = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), "utf8"));
-  assert.equal(startedReceipt.status, "waiting_for_agent_output");
-  assert.ok(startedReceipt.started_at);
-  assert.ok(startedReceipt.output_path.endsWith(path.join("agents", "T1", "handoff.json")));
-  const result = completeAgentAction(cwd, runId, "agent-dev-T1");
-  assert.equal(result.status, "completed");
-  const completedReceipt = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), "utf8"));
-  assert.equal(completedReceipt.status, "completed");
-  assert.notEqual(completedReceipt.origin, "provider_native_subagent");
-  assert.ok(completedReceipt.completed_at);
-  assert.equal(completedReceipt.started_at, startedReceipt.started_at);
-  assert.ok(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8")).wave_history.length > 0);
 }
 
 {

@@ -4,7 +4,6 @@ import type { DoctorReport, InitResult } from "./types.js";
 import type { CommitResult, PushResult } from "./gitflow.js";
 import type { InstallResult } from "./install.js";
 import type { LibraryEntry, LibrarySyncResult } from "./library.js";
-import type { NewProjectDeliveryResult } from "./new-project.js";
 import type { OrchestratorResult } from "./orchestrator.js";
 import type { DesignReworkResult, ReviewResult, VerificationResult } from "./quality.js";
 import type { ReplanResult } from "./replan.js";
@@ -253,19 +252,6 @@ export function formatArchive(result: ArchiveResult): string {
     `final summary: ${result.finalSummary}`,
     `agent: ${result.agent}`,
     `blocked items: ${result.blockedItems.length}`,
-    ""
-  ].join("\n");
-}
-
-export function formatNewProjectDelivery(result: NewProjectDeliveryResult): string {
-  return [
-    `delivered new project run ${result.runId}: ${result.status}`,
-    `project worktree: ${result.projectWorktree}`,
-    `run branch: ${result.commit.runBranch}`,
-    `commits: ${result.commit.commits.map((commit) => commit.hash).join(", ")}`,
-    `push: ${result.push.status}`,
-    `archive report: ${result.archive.archiveReport}`,
-    `user report: ${result.archive.userReport}`,
     ""
   ].join("\n");
 }

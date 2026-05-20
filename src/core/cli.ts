@@ -1,5 +1,5 @@
 import { archiveRun } from "./archive.js";
-import { completeAgentAction, recordProviderOriginAgentCompletion } from "./agent-complete.js";
+import { recordProviderOriginAgentCompletion } from "./agent-complete.js";
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
 import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
@@ -254,23 +254,19 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       const actionId = args.positional[3];
       if (!runId || !actionId) throw new Error("Expected agent complete <run-id> <action-id>.");
       const provider = readStringFlag(args, "provider");
-      if (provider) {
-        if (provider !== "codex" && provider !== "claude") throw new Error("Invalid --provider. Expected codex or claude.");
-        if (!readStringFlag(args, "providerAgentId")) throw new Error("Missing --provider-agent-id for provider-origin agent completion.");
-        if (!readStringFlag(args, "providerSessionId")) throw new Error("Missing --provider-session-id for provider-origin agent completion.");
-        if (!readStringFlag(args, "providerTaskHandle")) throw new Error("Missing --provider-task-handle for provider-origin agent completion.");
-        const result = recordProviderOriginAgentCompletion(cwd, runId, actionId, {
-          provider,
-          providerAgentId: readStringFlag(args, "providerAgentId") || "",
-          providerSessionId: readStringFlag(args, "providerSessionId") || "",
-          providerTraceId: readStringFlag(args, "providerTraceId"),
-          providerTaskHandle: readStringFlag(args, "providerTaskHandle") || "",
-          outputPath: readStringFlag(args, "outputPath")
-        });
-        print(result, json, () => `agent ${result.actionId}: ${result.status}\n${result.errors.map((error) => `- ${error}`).join("\n")}${result.errors.length ? "\n" : ""}`);
-        return;
-      }
-      const result = completeAgentAction(cwd, runId, actionId);
+      if (!provider) throw new Error("agent complete requires --provider and provider-origin metadata from the current Codex/Claude session.");
+      if (provider !== "codex" && provider !== "claude") throw new Error("Invalid --provider. Expected codex or claude.");
+      if (!readStringFlag(args, "providerAgentId")) throw new Error("Missing --provider-agent-id for provider-origin agent completion.");
+      if (!readStringFlag(args, "providerSessionId")) throw new Error("Missing --provider-session-id for provider-origin agent completion.");
+      if (!readStringFlag(args, "providerTaskHandle")) throw new Error("Missing --provider-task-handle for provider-origin agent completion.");
+      const result = recordProviderOriginAgentCompletion(cwd, runId, actionId, {
+        provider,
+        providerAgentId: readStringFlag(args, "providerAgentId") || "",
+        providerSessionId: readStringFlag(args, "providerSessionId") || "",
+        providerTraceId: readStringFlag(args, "providerTraceId"),
+        providerTaskHandle: readStringFlag(args, "providerTaskHandle") || "",
+        outputPath: readStringFlag(args, "outputPath")
+      });
       print(result, json, () => `agent ${result.actionId}: ${result.status}\n${result.errors.map((error) => `- ${error}`).join("\n")}${result.errors.length ? "\n" : ""}`);
       return;
     }
