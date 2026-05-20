@@ -2,6 +2,7 @@
   "name": "imfine",
   "version": "0.1.0",
   "description": "Project-level autonomous multi-agent harness for Codex and Claude.",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "bin": {
     "imfine": "./dist/cli/imfine.js",
