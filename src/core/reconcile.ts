@@ -202,17 +202,9 @@ function requirementText(dir: string): string {
   ].join("\n").toLowerCase();
 }
 
-function existsAny(cwd: string, files: string[]): boolean {
-  return files.some((file) => fs.existsSync(path.join(cwd, file)));
-}
-
-function countExisting(cwd: string, files: string[]): number {
-  return files.filter((file) => fs.existsSync(path.join(cwd, file))).length;
-}
-
 interface AcceptanceItem {
   id: string;
-  category: "product_shape" | "architecture" | "persistence" | "frontend_surface" | "backend_api" | "tests" | "git_delivery" | "archive_evidence";
+  category: string;
   requirement_level: "required" | "negotiable";
   classification: "required" | "negotiable" | "demo-substitute" | "deviation";
   status: "pass" | "blocked";
@@ -223,196 +215,71 @@ interface AcceptanceItem {
   evidence: string[];
 }
 
-function matrixItem(input: {
-  id: string;
-  category: AcceptanceItem["category"];
-  required: boolean;
-  passed: boolean;
-  detail: string;
-  expected: string;
-  observed: string;
-  evidence?: string[];
-  substitute?: boolean;
-  deviation?: boolean;
-  accepted?: boolean;
-}): AcceptanceItem {
-  const classification: AcceptanceItem["classification"] = input.passed
-    ? input.required ? "required" : "negotiable"
-    : input.substitute ? "demo-substitute" : input.deviation ? "deviation" : input.required ? "required" : "negotiable";
-  return {
-    id: input.id,
-    category: input.category,
-    requirement_level: input.required ? "required" : "negotiable",
-    classification,
-    status: input.passed || !input.required || input.accepted ? "pass" : "blocked",
-    detail: input.detail,
-    expected: input.expected,
-    observed: input.observed,
-    accepted_by_review: input.accepted === true,
-    evidence: input.evidence || []
-  };
+function readAgentAcceptanceItems(dir: string): AcceptanceItem[] {
+  const sources = [
+    path.join(dir, "orchestration", "agent-acceptance-matrix.json"),
+    path.join(dir, "agents", "product-planner", "acceptance-matrix.json"),
+    path.join(dir, "agents", "architect", "acceptance-matrix.json"),
+    path.join(dir, "agents", "qa", "acceptance-matrix.json"),
+    path.join(dir, "agents", "reviewer", "acceptance-matrix.json")
+  ];
+  const items: AcceptanceItem[] = [];
+  for (const file of sources) {
+    if (!fs.existsSync(file)) continue;
+    const parsed = readJson<{ items?: unknown[] }>(file);
+    const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+    for (const raw of rawItems) {
+      if (!raw || typeof raw !== "object") continue;
+      const item = raw as Partial<AcceptanceItem>;
+      if (typeof item.id !== "string" || typeof item.category !== "string") continue;
+      if (item.requirement_level !== "required" && item.requirement_level !== "negotiable") continue;
+      if (!["required", "negotiable", "demo-substitute", "deviation"].includes(String(item.classification))) continue;
+      if (item.status !== "pass" && item.status !== "blocked") continue;
+      items.push({
+        id: item.id,
+        category: item.category,
+        requirement_level: item.requirement_level,
+        classification: item.classification as AcceptanceItem["classification"],
+        status: item.status,
+        detail: typeof item.detail === "string" ? item.detail : "",
+        expected: typeof item.expected === "string" ? item.expected : "",
+        observed: typeof item.observed === "string" ? item.observed : "",
+        accepted_by_review: item.accepted_by_review === true,
+        evidence: Array.isArray(item.evidence) ? item.evidence.filter((entry): entry is string => typeof entry === "string") : []
+      });
+    }
+  }
+  return items;
 }
 
 export function writeAcceptanceMatrix(cwd: string, runId: string): string {
   const dir = runDir(cwd, runId);
-  const text = requirementText(dir);
-  const requiresMiniProgram = text.includes("小程序") || text.includes("mini-program");
-  const requiresAdmin = text.includes("管理后台") || text.includes("admin");
-  const requiresDatabase = text.includes("数据库") || text.includes("schema");
-  const requiresFrontendBackend = text.includes("前后端") || text.includes("front/back") || requiresMiniProgram || requiresAdmin;
-  const requiresSystemDocs = requiresDatabase || requiresFrontendBackend || text.includes("文档") || text.includes("documentation");
-  const hasMiniProgram = existsAny(cwd, ["frontend/miniprogram/app.json", "frontend/miniprogram/app.js"]);
-  const hasStaticFrontend = existsAny(cwd, ["frontend/index.html", "frontend/app.js"]);
-  const hasAdminDirectory = fs.existsSync(path.join(cwd, "frontend", "admin"));
-  const adminPageCount = hasAdminDirectory
-    ? fs.readdirSync(path.join(cwd, "frontend", "admin")).filter((file) => file.endsWith(".html")).length
-    : 0;
-  const hasBackend = fs.existsSync(path.join(cwd, "backend"));
-  const hasDbSchema = existsAny(cwd, ["backend/db/schema.sql", "backend/src/main/resources/schema.sql", "docs/database.md", "docs/database-schema.md"]);
-  const hasDbRuntime = fs.existsSync(path.join(cwd, "backend", "db")) || text.includes("in-memory") === false && existsAny(cwd, ["backend/app/database.py", "backend/database.py"]);
-  const hasBackendApi = existsAny(cwd, [
-    "backend/app/server.py",
-    "backend/app/handlers.py",
-    "backend/server.py",
-    "backend/api.py",
-    "backend/src/main/java/com/imfine/studyroom/StudyRoomServer.java",
-    "backend/src/main/java/com/imfine/studyroom/App.java",
-    "docs/api.md"
-  ]);
-  const backendTestFiles = [
-    "backend/run-tests.sh",
-    "backend/tests/test_api.py",
-    "backend/src/test/java/com/imfine/studyroom/BackendTestRunner.java"
-  ];
-  const documentationFiles = ["README.md", "docs/api.md", "docs/database-schema.md", "docs/verification.md"];
-  const frontendContractFiles = [
-    "tests/frontend-contract.test.js",
-    "tests/frontend-contract.mjs",
-    "tests/frontend_contract.py",
-    "frontend/tests/contract.test.js",
-    "playwright.config.js",
-    "playwright.config.ts"
-  ];
-  const archiveEvidence = [
-    path.join(dir, "archive", "archive-report.md"),
-    path.join(dir, "agents", "archive", "handoff.json")
-  ];
-  const commitCount = gitCommitRecords(cwd).length;
-  const items = [
-    matrixItem({
-      id: "product_shape.user-mini-program",
-      category: "product_shape",
-      required: requiresMiniProgram,
-      passed: hasMiniProgram,
-      substitute: !hasMiniProgram && hasStaticFrontend,
-      detail: requiresMiniProgram ? "user requested mini-program-style frontend" : "not explicitly required",
-      expected: "frontend/miniprogram app files",
-      observed: hasMiniProgram ? "mini-program files present" : hasStaticFrontend ? "static frontend substitute present" : "missing user frontend",
-      evidence: ["frontend/miniprogram/app.json", "frontend/miniprogram/app.js"].filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "frontend_surface.admin-console",
-      category: "frontend_surface",
-      required: requiresAdmin,
-      passed: hasAdminDirectory && adminPageCount >= 2,
-      substitute: !hasAdminDirectory && hasStaticFrontend,
-      detail: requiresAdmin ? "admin console requested" : "not explicitly required",
-      expected: "dedicated admin console pages",
-      observed: hasAdminDirectory ? `${adminPageCount} admin html page(s)` : hasStaticFrontend ? "single static page substitute" : "missing admin UI",
-      evidence: hasAdminDirectory ? [path.join("frontend", "admin")] : []
-    }),
-    matrixItem({
-      id: "architecture.front-back-separated",
-      category: "architecture",
-      required: requiresFrontendBackend,
-      passed: fs.existsSync(path.join(cwd, "frontend")) && hasBackend,
-      detail: "front/back separated project structure",
-      expected: "separate frontend and backend directories",
-      observed: `${fs.existsSync(path.join(cwd, "frontend")) ? "frontend present" : "frontend missing"}, ${hasBackend ? "backend present" : "backend missing"}`,
-      evidence: ["frontend", "backend"].filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "persistence.database-schema",
-      category: "persistence",
-      required: requiresDatabase,
-      passed: hasDbSchema,
-      detail: requiresDatabase ? "database schema requested" : "not explicitly required",
-      expected: "schema SQL or database schema documentation",
-      observed: hasDbSchema ? "database schema evidence present" : "database schema missing",
-      evidence: ["backend/db/schema.sql", "backend/src/main/resources/schema.sql", "docs/database.md", "docs/database-schema.md"].filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "persistence.runtime-storage",
-      category: "persistence",
-      required: requiresDatabase,
-      passed: hasDbRuntime,
-      substitute: hasDbSchema && !hasDbRuntime,
-      detail: "runtime persistence implementation",
-      expected: "database-backed runtime storage",
-      observed: hasDbRuntime ? "runtime database/storage implementation present" : hasDbSchema ? "schema-only substitute" : "runtime storage missing",
-      evidence: ["backend/db", "backend/app/database.py", "backend/database.py"].filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "backend_api.surface",
-      category: "backend_api",
-      required: true,
-      passed: hasBackendApi,
-      detail: "backend API surface",
-      expected: "server/handler implementation or API documentation",
-      observed: hasBackendApi ? "backend API evidence present" : "backend API evidence missing",
-      evidence: ["backend/app/server.py", "backend/app/handlers.py", "backend/server.py", "backend/api.py", "backend/src/main/java/com/imfine/studyroom/StudyRoomServer.java", "backend/src/main/java/com/imfine/studyroom/App.java", "docs/api.md"].filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "tests.backend",
-      category: "tests",
-      required: true,
-      passed: countExisting(cwd, backendTestFiles) > 0,
-      detail: "backend test command or test runner evidence",
-      expected: "backend test runner",
-      observed: countExisting(cwd, backendTestFiles) > 0 ? "backend tests present" : "backend tests missing",
-      evidence: backendTestFiles.filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "tests.frontend-contract",
-      category: "tests",
-      required: requiresFrontendBackend,
-      passed: countExisting(cwd, frontendContractFiles) > 0,
-      detail: requiresFrontendBackend ? "front/back contract or browser smoke verification" : "not explicitly required",
-      expected: "frontend contract test or Playwright smoke",
-      observed: countExisting(cwd, frontendContractFiles) > 0 ? "frontend contract/smoke evidence present" : "frontend contract/smoke evidence missing",
-      evidence: frontendContractFiles.filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "documentation.delivery-set",
-      category: "archive_evidence",
-      required: requiresSystemDocs,
-      passed: documentationFiles.every((file) => fs.existsSync(path.join(cwd, file))),
-      detail: requiresSystemDocs ? "system delivery documentation" : "not explicitly required",
-      expected: "README.md, docs/api.md, docs/database-schema.md, docs/verification.md",
-      observed: `${countExisting(cwd, documentationFiles)}/${documentationFiles.length} documentation file(s) present`,
-      evidence: documentationFiles.filter((file) => fs.existsSync(path.join(cwd, file)))
-    }),
-    matrixItem({
-      id: "git_delivery.commits",
-      category: "git_delivery",
-      required: true,
-      passed: commitCount > 0,
-      detail: "git delivery evidence",
-      expected: "at least one git commit",
-      observed: `${commitCount} commit(s) detected`,
+  const items = readAgentAcceptanceItems(dir);
+  if (items.length === 0) {
+    items.push({
+      id: "agent_authored_acceptance_matrix.missing",
+      category: "acceptance_contract",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "Agent-authored acceptance matrix is required; runtime does not infer product shape from requirement keywords.",
+      expected: "Product Planner, Architect, QA, or Reviewer writes an acceptance matrix artifact.",
+      observed: `No accepted source matrix found for request: ${requirementText(dir).trim().slice(0, 160) || "unknown"}`,
+      accepted_by_review: false,
       evidence: []
-    }),
-    matrixItem({
-      id: "archive_evidence.final-archive",
-      category: "archive_evidence",
-      required: true,
-      passed: archiveEvidence.every((file) => fs.existsSync(file)),
-      detail: "archive handoff and final report evidence",
-      expected: "archive report, final report, and archive handoff",
-      observed: `${archiveEvidence.filter((file) => fs.existsSync(file)).length}/${archiveEvidence.length} archive evidence file(s) present`,
-      evidence: archiveEvidence.filter((file) => fs.existsSync(file))
-    })
-  ];
+    });
+  }
+  const evidenceMissing = items.flatMap((item) => item.evidence.filter((file) => !fs.existsSync(path.isAbsolute(file) ? file : path.join(cwd, file))));
+  for (const item of items) {
+    if (item.requirement_level === "required" && item.status === "pass" && item.evidence.length === 0) {
+      item.status = item.accepted_by_review ? "pass" : "blocked";
+      item.detail = `${item.detail}; required item lacks evidence`;
+    }
+    if (item.evidence.some((file) => evidenceMissing.includes(file))) {
+      item.status = item.accepted_by_review ? "pass" : "blocked";
+      item.detail = `${item.detail}; missing evidence`;
+    }
+  }
   const file = path.join(dir, "orchestration", "acceptance-matrix.json");
   writeText(file, `${JSON.stringify({
     schema_version: 1,

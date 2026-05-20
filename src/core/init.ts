@@ -84,6 +84,24 @@ function bullet(items: string[], fallback = "- 未发现明确证据"): string {
   return items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : fallback;
 }
 
+function evidenceBackedDoc(title: string, status: "confirmed" | "partial" | "unknown", evidenceItems: string[], conclusions: string[]): string {
+  return markdown(title, `
+## 状态
+
+- ${status}
+- owner: architect
+- source: init architect evidence synthesis
+
+## 结论
+
+${conclusions.map((item) => `- ${item}`).join("\n")}
+
+## 文件证据
+
+${bullet(evidenceItems)}
+`);
+}
+
 function placeholder(title: string, evidenceTitle: string, evidenceItems: string[], nextOwner: string, notes: string[] = []): string {
   return markdown(title, `
 ## 状态
@@ -114,6 +132,11 @@ function writeArchitectureDocs(cwd: string, workspace: string, created: string[]
 
   const files = walkFiles(cwd);
   const evidence = detectEvidence(files);
+  const architectureStatus: "confirmed" | "partial" | "unknown" = evidence.sourceFiles.length > 0 && evidence.packageFiles.length > 0
+    ? "confirmed"
+    : evidence.sourceFiles.length > 0 || evidence.packageFiles.length > 0
+      ? "partial"
+      : "unknown";
   const generated: string[] = [];
   const add = (name: string, content: string): void => {
     const file = path.join(architectureDir, name);
@@ -194,7 +217,62 @@ ${bullet(evidence.testFiles)}
 ${generated.map((file) => `- ${file}`).join("\n")}
 `));
 
-  return { mode, files: generated, architectInput };
+  const projectDir = path.join(workspace, "project");
+  const confirmedArchitecture = [
+    {
+      file: path.join(projectDir, "architecture.md"),
+      content: evidenceBackedDoc("Architecture", architectureStatus, [...evidence.packageFiles, ...evidence.sourceFiles, ...evidence.entrypointFiles], [
+        architectureStatus === "unknown" ? "unknown: no source or package evidence found." : "Project architecture is derived only from listed repository files.",
+        evidence.entrypointFiles.length > 0 ? `Entrypoint candidates: ${evidence.entrypointFiles.join(", ")}` : "unknown: no entrypoint candidate detected."
+      ])
+    },
+    {
+      file: path.join(projectDir, "tech-stack.md"),
+      content: evidenceBackedDoc("Tech Stack", evidence.packageFiles.length > 0 ? "confirmed" : "unknown", [...evidence.packageFiles, ...evidence.configFiles], [
+        evidence.packageFiles.length > 0 ? `Package/build evidence: ${evidence.packageFiles.join(", ")}` : "unknown: no package/build file detected.",
+        evidence.configFiles.length > 0 ? `Configuration evidence: ${evidence.configFiles.join(", ")}` : "unknown: no configuration file detected."
+      ])
+    },
+    {
+      file: path.join(projectDir, "module-map.md"),
+      content: evidenceBackedDoc("Module Map", evidence.sourceFiles.length > 0 ? "partial" : "unknown", evidence.sourceFiles, [
+        evidence.sourceFiles.length > 0 ? `Source evidence sampled: ${evidence.sourceFiles.join(", ")}` : "unknown: no source files detected.",
+        "Module boundaries require future Agent updates when deeper domain context is available."
+      ])
+    },
+    {
+      file: path.join(projectDir, "test-strategy.md"),
+      content: evidenceBackedDoc("Test Strategy", evidence.testFiles.length > 0 ? "confirmed" : "unknown", evidence.testFiles, [
+        evidence.testFiles.length > 0 ? `Test evidence: ${evidence.testFiles.join(", ")}` : "unknown: no test files detected.",
+        "Runtime does not invent test commands; commands must be confirmed by Agent-authored plans."
+      ])
+    }
+  ];
+  for (const item of confirmedArchitecture) {
+    writeText(item.file, item.content);
+    generated.push(item.file);
+  }
+
+  const handoffFile = path.join(architectDir, "handoff.json");
+  writeText(handoffFile, `${JSON.stringify({
+    run_id: "init",
+    task_id: "init",
+    role: "architect",
+    from: "architect",
+    to: "orchestrator",
+    status: architectureStatus === "unknown" ? "blocked" : "ready",
+    summary: architectureStatus === "unknown" ? "Architect analysis blocked by missing project evidence" : "Architect analysis completed from repository evidence",
+    commands: [],
+    evidence: [...evidence.packageFiles, ...evidence.configFiles, ...evidence.sourceFiles, ...evidence.testFiles].map((file) => path.join(cwd, file)),
+    architecture_files: confirmedArchitecture.map((item) => item.file),
+    unknowns: [
+      ...(evidence.entrypointFiles.length === 0 ? ["entrypoints"] : []),
+      ...(evidence.testFiles.length === 0 ? ["test strategy"] : [])
+    ],
+    next_state: architectureStatus === "unknown" ? "blocked" : "planned"
+  }, null, 2)}\n`);
+
+  return { mode, files: generated, architectInput, architectHandoff: handoffFile, status: architectureStatus };
 }
 
 export function initProject(cwd: string): InitResult {
@@ -241,6 +319,16 @@ export function initProject(cwd: string): InitResult {
   writeFileIfMissing(path.join(workspace, "runs", ".gitkeep"), "", created, preserved);
   writeFileIfMissing(path.join(workspace, "reports", ".gitkeep"), "", created, preserved);
   const architecture = writeArchitectureDocs(cwd, workspace, created, preserved);
+  const freshnessFile = path.join(workspace, "project", "project-knowledge-freshness.json");
+  writeText(freshnessFile, `${JSON.stringify({
+    schema_version: 1,
+    generated_at: new Date().toISOString(),
+    status: architecture.mode === "empty" ? "empty" : architecture.status || "unknown",
+    source: "init-architect-analysis",
+    architect_handoff: architecture.architectHandoff || null,
+    files: architecture.files
+  }, null, 2)}\n`);
+  created.push(freshnessFile);
 
   writeJsonIfMissing(path.join(workspace, "state", "current.json"), {
     schema_version: 1,

@@ -7,10 +7,11 @@ import { RUNTIME_ROLES, allowedTransitionsForRole, evidenceRequirementsForRole, 
 import { buildDispatchContracts } from "../dist/core/dispatch.js";
 import { isHandoffRole } from "../dist/core/handoff-evidence.js";
 import { validateAgentSkills } from "../dist/core/skill-registry.js";
-import { writeProviderCapabilitySnapshot, writeProviderExecutionReceipt } from "../dist/core/provider-evidence.js";
+import { writeProviderCapabilitySnapshot, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
 import { writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
 import { status } from "../dist/core/status.js";
 import { doctor } from "../dist/core/doctor.js";
+import { initProject } from "../dist/core/init.js";
 
 function makeRun(prefix = "imfine-implementation-optimization-") {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -60,12 +61,20 @@ function validTaskGraph(runId = "run-1") {
 
 function writeHarnessFixture(fixture, options = {}) {
   const { cwd, runId, runDir } = fixture;
+  const provider = options.provider || "codex";
   fs.writeFileSync(path.join(runDir, "orchestration", "provider-capability.json"), JSON.stringify({
     schema_version: 1,
     run_id: runId,
-    provider: "codex",
+    provider,
     entry_installed: true,
     subagent_supported: "supported",
+    capabilities: {
+      supports_subagent: "supported",
+      supports_parallel_subagent: "supported",
+      supports_agent_file_output: "supported",
+      supports_agent_wait: "supported",
+      supports_agent_interrupt: "unknown"
+    },
     detection_source: "test-fixture",
     detected_at: "2026-01-01T00:00:00.000Z",
     blocked: false
@@ -110,17 +119,29 @@ function writeHarnessFixture(fixture, options = {}) {
       verification: []
     }, null, 2) + "\n");
   }
-  if (options.receipt !== false) {
-    writeProviderExecutionReceipt(cwd, runId, {
+  const handoffFile = path.join(runDir, "agents", "T1", "handoff.json");
+  if (options.receipt !== false && fs.existsSync(handoffFile)) {
+    writeProviderOriginReceipt(cwd, runId, {
       actionId: "agent-dev-T1",
       agentId: "T1",
       role: "dev",
       taskId: "T1",
       parallelGroup: "delivery",
-      status: "completed"
+      provider,
+      providerAgentId: `${provider}-agent-real-T1`,
+      providerSessionId: `${provider}-session-real-run-1`,
+      providerTaskHandle: `${provider}-task-handle-T1`,
+      outputPath: handoffFile
     });
   }
   return { patchFile };
+}
+
+function writeAgentAcceptanceMatrix(runDir, items) {
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify({
+    schema_version: 1,
+    items
+  }, null, 2) + "\n");
 }
 
 for (const contract of runtimeRoleContracts()) {
@@ -216,12 +237,16 @@ try {
   assert.equal(unsupported.provider, "codex");
   assert.equal(unsupported.subagent_supported, "unsupported");
   assert.equal(unsupported.blocked, true);
+  assert.equal(unsupported.capabilities.supports_subagent, "unsupported");
   process.env.IMFINE_SUBAGENT_SUPPORTED = "supported";
+  process.env.IMFINE_SUPPORTS_PARALLEL_SUBAGENT = "unsupported";
   const supported = writeProviderCapabilitySnapshot(cwd, runId);
   assert.equal(supported.subagent_supported, "supported");
   assert.equal(supported.blocked, false);
+  assert.equal(supported.capabilities.supports_parallel_subagent, "unsupported");
   delete process.env.IMFINE_PROVIDER;
   delete process.env.IMFINE_SUBAGENT_SUPPORTED;
+  delete process.env.IMFINE_SUPPORTS_PARALLEL_SUBAGENT;
   const unknown = writeProviderCapabilitySnapshot(cwd, runId);
   assert.equal(unknown.provider, "unknown");
   assert.equal(unknown.subagent_supported, "unknown");
@@ -231,6 +256,25 @@ try {
   else process.env.IMFINE_PROVIDER = previousProvider;
   if (previousSubagent === undefined) delete process.env.IMFINE_SUBAGENT_SUPPORTED;
   else process.env.IMFINE_SUBAGENT_SUPPORTED = previousSubagent;
+  delete process.env.IMFINE_SUPPORTS_PARALLEL_SUBAGENT;
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-init-architect-"));
+  fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }, null, 2));
+  fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "src", "index.js"), "export const value = 1;\n");
+  fs.mkdirSync(path.join(cwd, "test"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "test", "index.test.js"), "import test from 'node:test';\n");
+  const result = initProject(cwd);
+  assert.equal(result.projectMode, "existing");
+  assert.equal(result.architecture.status, "confirmed");
+  assert.ok(result.architecture.architectHandoff);
+  assert.ok(fs.existsSync(result.architecture.architectHandoff));
+  const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
+  assert.equal(freshness.status, "confirmed");
+  const architecture = fs.readFileSync(path.join(cwd, ".imfine", "project", "architecture.md"), "utf8");
+  assert.match(architecture, /src\/index\.js/);
 }
 
 try {
@@ -248,10 +292,10 @@ try {
   else process.env.IMFINE_SUBAGENT_SUPPORTED = previousSubagent;
 }
 
-{
-  const fixture = makeRun("imfine-true-harness-negative-");
+for (const provider of ["codex", "claude"]) {
+  const fixture = makeRun(`imfine-${provider}-true-harness-negative-`);
   const { cwd, runId } = fixture;
-  writeHarnessFixture(fixture, { receipt: false });
+  writeHarnessFixture(fixture, { provider, receipt: false });
   const negative = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(negative.true_harness_passed, false);
   assert.deepEqual(negative.provider_execution_receipts.missing_provider_receipt_contracts, ["T1"]);
@@ -263,12 +307,40 @@ try {
     parallelGroup: "delivery",
     status: "completed"
   });
+  const runtimeOnly = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.equal(runtimeOnly.true_harness_passed, false);
+  assert.deepEqual(runtimeOnly.provider_execution_receipts.missing_provider_receipt_contracts, ["T1"]);
+  assert.equal(runtimeOnly.provider_execution_receipts.receipts[0].valid_native_subagent_proof, false);
+  writeProviderOriginReceipt(cwd, runId, {
+    actionId: "agent-dev-T1",
+    agentId: "T1",
+    role: "dev",
+    taskId: "T1",
+    parallelGroup: "delivery",
+    provider,
+    providerAgentId: `${provider}-agent-real-T1`,
+    providerSessionId: `${provider}-session-real-run-1`,
+    providerTaskHandle: `${provider}-task-handle-T1`,
+    outputPath: path.join(fixture.runDir, "agents", "T1", "handoff.json")
+  });
   const positive = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(positive.true_harness_passed, true);
+  assert.equal(positive.provider_execution_receipts.receipts[0].provider_agent_id, `${provider}-agent-real-T1`);
   assert.ok(fs.existsSync(path.join(fixture.runDir, "orchestration", "method-provenance.json")));
   const provenance = JSON.parse(fs.readFileSync(path.join(fixture.runDir, "orchestration", "method-provenance.json"), "utf8"));
   assert.ok(provenance.sources.openspec_inspired.some((item) => item.artifact === "archive"));
   assert.ok(provenance.sources.imfine_specific_contracts.some((item) => item.contract === "dispatch-contracts"));
+}
+
+for (const provider of ["codex", "claude"]) {
+  const fixture = makeRun(`imfine-${provider}-provider-origin-`);
+  const { cwd, runId } = fixture;
+  writeHarnessFixture(fixture, { provider });
+  const value = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.equal(value.true_harness_passed, true);
+  assert.equal(value.provider_execution_receipts.valid_receipt_count, 1);
+  assert.equal(value.provider_execution_receipts.receipts[0].valid_native_subagent_proof, true);
+  assert.equal(value.provider_execution_receipts.receipts[0].provider_agent_id, `${provider}-agent-real-T1`);
 }
 
 {

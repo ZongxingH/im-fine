@@ -66,7 +66,7 @@ export function blockerSummary(cwd: string, runId: string): {
   run_id: string;
   generated_at: string;
   status: "blocked" | "clear";
-  sources: Array<{ id: string; file: string; blockers: string[] }>;
+  sources: Array<{ id: string; file: string; blockers: Array<{ reason: string; owner: string; required_evidence: string[]; suggested_agent: string }> }>;
 } {
   const root = runDir(cwd, runId);
   const orchestration = path.join(root, "orchestration");
@@ -82,7 +82,12 @@ export function blockerSummary(cwd: string, runId: string): {
     .map((source) => ({
       id: source.id,
       file: rel(cwd, source.file),
-      blockers: collectErrors(readJson(source.file))
+      blockers: collectErrors(readJson(source.file)).map((blocker) => ({
+        reason: blocker,
+        owner: source.id.includes("provider") ? "orchestrator" : source.id.includes("handoff") ? "agent" : "runtime",
+        required_evidence: source.id.includes("provider") ? ["orchestration/provider-receipts/"] : [rel(cwd, source.file)],
+        suggested_agent: source.id.includes("handoff") ? "current action agent" : "orchestrator"
+      }))
     }));
   ensureDir(orchestration);
   return {

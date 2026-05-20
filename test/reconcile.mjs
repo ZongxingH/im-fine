@@ -3,11 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { completeAgentAction } from "../dist/core/agent-complete.js";
+import { completeAgentAction, recordProviderOriginAgentCompletion } from "../dist/core/agent-complete.js";
 import { orchestrateRun, resumeRun } from "../dist/core/orchestrator.js";
 import { reconcileRun } from "../dist/core/reconcile.js";
 import { status as readStatus } from "../dist/core/status.js";
-import { writeProviderExecutionReceipt } from "../dist/core/provider-evidence.js";
+import { writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
 
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-reconcile-home-"));
 
@@ -59,9 +59,23 @@ function writeProviderSupported(runDir, runId) {
     provider: "codex",
     entry_installed: true,
     subagent_supported: "supported",
+    capabilities: {
+      supports_subagent: "supported",
+      supports_parallel_subagent: "supported",
+      supports_agent_file_output: "supported",
+      supports_agent_wait: "supported",
+      supports_agent_interrupt: "unknown"
+    },
     detection_source: "test",
     detected_at: "2026-01-01T00:00:00.000Z",
     blocked: false
+  }, null, 2) + "\n");
+}
+
+function writeAgentAcceptanceMatrix(runDir, items) {
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify({
+    schema_version: 1,
+    items
   }, null, 2) + "\n");
 }
 
@@ -145,13 +159,17 @@ function writeHappyHarness(cwd, runDir, runId) {
     run_id: runId,
     wave_history: [{ status: "completed", action_ids: ["agent-dev-T1"], roles: ["dev"], task_ids: ["T1"] }]
   }, null, 2) + "\n");
-  writeProviderExecutionReceipt(cwd, runId, {
+  writeProviderOriginReceipt(cwd, runId, {
     actionId: "agent-dev-T1",
     agentId: "T1",
     role: "dev",
     taskId: "T1",
     parallelGroup: "delivery",
-    status: "completed"
+    provider: "codex",
+    providerAgentId: "codex-agent-real-T1",
+    providerSessionId: `codex-session-real-${runId}`,
+    providerTaskHandle: "codex-task-real-agent-dev-T1",
+    outputPath: path.join(runDir, "agents", "T1", "handoff.json")
   });
   fs.mkdirSync(path.join(runDir, "evidence"), { recursive: true });
   fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Tests\n\npass\n");
@@ -195,6 +213,18 @@ function writeHappyHarness(cwd, runDir, runId) {
     strategy: "parallel",
     tasks: []
   }, null, 2) + "\n");
+  writeAgentAcceptanceMatrix(runDir, [{
+    id: "backend_api.surface",
+    category: "backend_api",
+    requirement_level: "required",
+    classification: "required",
+    status: "pass",
+    detail: "agent accepted backend fixture",
+    expected: "backend test runner",
+    observed: "backend/run-tests.sh",
+    accepted_by_review: true,
+    evidence: ["backend/run-tests.sh"]
+  }]);
 }
 
 {
@@ -210,6 +240,32 @@ function writeHappyHarness(cwd, runDir, runId) {
   fs.writeFileSync(path.join(cwd, "frontend", "admin", "rooms.html"), "<!doctype html>\n");
   fs.writeFileSync(path.join(cwd, "backend", "db", "schema.sql"), "create table users(id integer);\n");
   fs.writeFileSync(path.join(runDir, "orchestration", "final-gates.json"), JSON.stringify({ gates: { archive: "pass" } }, null, 2) + "\n");
+  writeAgentAcceptanceMatrix(runDir, [
+    {
+      id: "product_shape.user-mini-program",
+      category: "product_shape",
+      requirement_level: "required",
+      classification: "required",
+      status: "pass",
+      detail: "Product Planner accepted mini-program evidence",
+      expected: "frontend/miniprogram app files",
+      observed: "mini-program files present",
+      accepted_by_review: true,
+      evidence: ["frontend/miniprogram/app.json", "frontend/miniprogram/app.js"]
+    },
+    {
+      id: "git_delivery.commits",
+      category: "git_delivery",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "Commit evidence missing",
+      expected: "at least one git commit",
+      observed: "no commit",
+      accepted_by_review: false,
+      evidence: []
+    }
+  ]);
   const result = reconcileRun(cwd, runId);
   assert.equal(result.status, "blocked");
   assert.equal(result.gates.find((gate) => gate.id === "commit").status, "blocked");
@@ -229,6 +285,44 @@ function writeHappyHarness(cwd, runDir, runId) {
   fs.writeFileSync(path.join(runDir, "review", "qa-report.md"), "Status: pass\n");
   fs.writeFileSync(path.join(runDir, "review", "code-review.md"), "Status: pass\nBlocker: 普通用户 stats 403 需要修复\nBlocker: 资源管理缺 CRUD\n");
   fs.writeFileSync(path.join(runDir, "review", "risk-review.md"), "Status: pass\nBlocker: 举报审核语义错误，需要复审证据\n");
+  writeAgentAcceptanceMatrix(runDir, [
+    {
+      id: "product_shape.user-mini-program",
+      category: "product_shape",
+      requirement_level: "required",
+      classification: "demo-substitute",
+      status: "blocked",
+      detail: "QA marked static frontend as substitute, not accepted final product",
+      expected: "frontend/miniprogram app files",
+      observed: "static frontend substitute",
+      accepted_by_review: false,
+      evidence: ["frontend/index.html"]
+    },
+    {
+      id: "tests.frontend-contract",
+      category: "tests",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "Reviewer requires frontend contract evidence",
+      expected: "frontend contract test",
+      observed: "missing",
+      accepted_by_review: false,
+      evidence: []
+    },
+    {
+      id: "documentation.delivery-set",
+      category: "archive_evidence",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "Technical Writer requires delivery docs",
+      expected: "README and docs",
+      observed: "missing",
+      accepted_by_review: false,
+      evidence: []
+    }
+  ]);
   const result = reconcileRun(cwd, runId);
   assert.equal(result.status, "blocked");
   assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "blocked");
@@ -299,9 +393,49 @@ function writeHappyHarness(cwd, runDir, runId) {
   assert.equal(result.status, "completed");
   const completedReceipt = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), "utf8"));
   assert.equal(completedReceipt.status, "completed");
+  assert.notEqual(completedReceipt.origin, "provider_native_subagent");
   assert.ok(completedReceipt.completed_at);
   assert.equal(completedReceipt.started_at, startedReceipt.started_at);
   assert.ok(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8")).wave_history.length > 0);
+}
+
+{
+  const cwd = makeProject("imfine-provider-origin-agent-complete-", true);
+  const runId = "agent-provider";
+  const runDir = makeRun(cwd, runId);
+  writeProviderSupported(runDir, runId);
+  writeSession(runDir, runId);
+  const patch = path.join(runDir, "agents", "T1", "patch.diff");
+  fs.writeFileSync(patch, "diff --git a/src/index.js b/src/index.js\n");
+  fs.writeFileSync(path.join(runDir, "agents", "T1", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "dev",
+    from: "dev",
+    to: "qa",
+    status: "ready",
+    summary: "done",
+    commands: [],
+    evidence: [patch],
+    next_state: "verifying",
+    files_changed: ["src/index.js"],
+    verification: []
+  }, null, 2) + "\n");
+  orchestrateRun(cwd, runId);
+  const result = recordProviderOriginAgentCompletion(cwd, runId, "agent-dev-T1", {
+    provider: "codex",
+    providerAgentId: "codex-agent-real-T1",
+    providerSessionId: `codex-session-real-${runId}`,
+    providerTaskHandle: "codex-task-real-agent-dev-T1"
+  });
+  assert.equal(result.status, "completed");
+  const receipt = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), "utf8"));
+  assert.equal(receipt.origin, "provider_native_subagent");
+  assert.equal(receipt.receipt_type, "provider_completed");
+  assert.equal(receipt.provider_task_handle, "codex-task-real-agent-dev-T1");
+  assert.ok(receipt.output_path.endsWith(path.join("orchestration", "provider-outputs", "agent-dev-T1.json")));
+  assert.equal(receipt.metadata.handoff_file, path.join(runDir, "agents", "T1", "handoff.json"));
+  assert.ok(receipt.integrity.output_sha256);
 }
 
 {

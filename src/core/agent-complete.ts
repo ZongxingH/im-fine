@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
-import { writeProviderExecutionReceipt } from "./provider-evidence.js";
+import { type ProviderName, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "./provider-evidence.js";
+import { recordActionStatus } from "./reliability.js";
 
 export interface AgentCompleteResult {
   runId: string;
@@ -12,6 +13,15 @@ export interface AgentCompleteResult {
   status: "completed" | "blocked";
   files: string[];
   errors: string[];
+}
+
+export interface AgentReceiptInput {
+  provider: ProviderName;
+  providerAgentId: string;
+  providerSessionId: string;
+  providerTraceId?: string;
+  providerTaskHandle: string;
+  outputPath?: string;
 }
 
 interface ActionRecord {
@@ -79,6 +89,17 @@ function updateAgentRuns(dir: string, runId: string, action: ActionRecord, agent
   return file;
 }
 
+function providerOutputSnapshotFile(dir: string, actionId: string): string {
+  return path.join(dir, "orchestration", "provider-outputs", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`);
+}
+
+function writeProviderOutputSnapshot(dir: string, actionId: string, sourceFile: string): string {
+  const file = providerOutputSnapshotFile(dir, actionId);
+  ensureDir(path.dirname(file));
+  fs.copyFileSync(sourceFile, file);
+  return file;
+}
+
 function recordWave(dir: string, runId: string, action: ActionRecord, status: AgentCompleteResult["status"]): string {
   const file = path.join(dir, "orchestration", "parallel-execution.json");
   const current = fs.existsSync(file)
@@ -135,6 +156,7 @@ export function completeAgentAction(cwd: string, runId: string, actionId: string
   actions[actionId] = { action_id: actionId, status, detail: validation.errors.join("; ") || "agent completed", updated_at: new Date().toISOString() };
   history.push({ action_id: actionId, status, recorded_at: new Date().toISOString() });
   writeText(ledgerFile, `${JSON.stringify({ schema_version: 1, run_id: runId, updated_at: new Date().toISOString(), actions, history }, null, 2)}\n`);
+  recordActionStatus(cwd, runId, actionId, status, validation.errors.join("; ") || "agent completed", [validation.file].filter((file): file is string => Boolean(file)));
   return {
     runId,
     actionId,
@@ -143,5 +165,54 @@ export function completeAgentAction(cwd: string, runId: string, actionId: string
     status,
     files: [validation.file, agentRuns, wave, ledgerFile].filter((file): file is string => Boolean(file)),
     errors: validation.errors
+  };
+}
+
+export function recordProviderOriginAgentCompletion(cwd: string, runId: string, actionId: string, input: AgentReceiptInput): AgentCompleteResult {
+  const dir = runDir(cwd, runId);
+  const action = findAction(dir, actionId);
+  const agentId = agentIdFor(action);
+  const validation = validateAgentHandoff({ id: agentId, role: action.role, taskId: action.taskId }, dir, runId);
+  if (!validation.passed || !validation.file) {
+    return {
+      runId,
+      actionId,
+      agentId,
+      role: action.role,
+      status: "blocked",
+      files: [validation.file].filter((file): file is string => Boolean(file)),
+      errors: validation.errors
+    };
+  }
+  const status: AgentCompleteResult["status"] = "completed";
+  const outputSnapshot = input.outputPath || writeProviderOutputSnapshot(dir, actionId, validation.file);
+  const receipt = writeProviderOriginReceipt(cwd, runId, {
+    actionId,
+    agentId,
+    role: action.role,
+    taskId: action.taskId,
+    parallelGroup: action.parallelGroup,
+    provider: input.provider,
+    providerAgentId: input.providerAgentId,
+    providerSessionId: input.providerSessionId,
+    providerTraceId: input.providerTraceId,
+    providerTaskHandle: input.providerTaskHandle,
+    outputPath: outputSnapshot,
+    metadata: {
+      completed_by: "current-session-orchestrator",
+      handoff_file: validation.file,
+      provider_output_snapshot: outputSnapshot
+    }
+  });
+  const agentRuns = updateAgentRuns(dir, runId, action, agentId, status, validation.file);
+  const wave = recordWave(dir, runId, action, status);
+  return {
+    runId,
+    actionId,
+    agentId,
+    role: action.role,
+    status,
+    files: [validation.file, agentRuns, wave, receipt ? path.join(dir, "orchestration", "provider-receipts", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`) : null].filter((file): file is string => Boolean(file)),
+    errors: []
   };
 }

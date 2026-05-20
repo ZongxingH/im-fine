@@ -32,6 +32,8 @@ export interface InitResult {
     mode: "empty" | "existing";
     files: string[];
     architectInput?: string;
+    architectHandoff?: string;
+    status?: "confirmed" | "partial" | "unknown";
   };
   created: string[];
   updated: string[];

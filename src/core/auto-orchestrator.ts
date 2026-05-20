@@ -270,7 +270,7 @@ function executeRuntimeAction(cwd: string, runId: string, action: OrchestrationA
     const result = pushRun(cwd, runId);
     return { iteration: 0, actionId: action.id, kind: action.kind, status: "completed", detail: `push status: ${result.status}`, artifacts: [result.evidence] };
   }
-  if (action.id === "agent-archive") {
+  if (action.id === "runtime-archive-finalize") {
     const result = archiveRun(cwd, runId, {
       archiveAction: {
         id: action.id,
@@ -524,19 +524,8 @@ export async function runAutoOrchestrator(cwd: string, runId: string, options: A
 
       try {
         writeCheckpoint(cwd, runId, action.id, "before", "started", action.reason, action.inputs);
-      if (action.kind === "runtime" || action.id === "agent-archive") {
+      if (action.kind === "runtime") {
         const step = { ...executeRuntimeAction(cwd, runId, action), iteration };
-        if (action.id === "agent-archive") {
-          writeProviderExecutionReceipt(cwd, runId, {
-            actionId: action.id,
-            agentId: "archive",
-            role: action.role,
-            taskId: action.taskId,
-            parallelGroup: action.parallelGroup,
-            status: step.status === "completed" ? "completed" : step.status === "blocked" ? "blocked" : step.status === "waiting_for_agent_output" ? "waiting_for_agent_output" : "failed",
-            metadata: { detail: step.detail, artifacts: step.artifacts }
-          });
-        }
         steps.push(step);
         writeCheckpoint(cwd, runId, action.id, "after", step.status === "completed" ? "completed" : step.status, step.detail, step.artifacts);
         if (step.status === "blocked") {

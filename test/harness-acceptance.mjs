@@ -7,13 +7,34 @@ import { execFileSync } from "node:child_process";
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "dist", "cli", "imfine.js");
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-harness-home-"));
+let activeProvider = "codex";
 
 function run(args, cwd, extraEnv = {}) {
   return execFileSync(process.execPath, [cli, ...args], {
     cwd,
-    env: { ...process.env, HOME: tempHome, IMFINE_PROVIDER: "codex", IMFINE_SUBAGENT_SUPPORTED: "supported", ...extraEnv },
+    env: { ...process.env, HOME: tempHome, IMFINE_PROVIDER: activeProvider, IMFINE_SUBAGENT_SUPPORTED: "supported", ...extraEnv },
     encoding: "utf8"
   });
+}
+
+function completeProviderAgent(cwd, runId, actionId, agentId) {
+  return run([
+    "agent",
+    "complete",
+    runId,
+    actionId,
+    "--provider",
+    activeProvider,
+    "--provider-agent-id",
+    `${activeProvider}-agent-real-${agentId}`,
+    "--provider-session-id",
+    `${activeProvider}-session-real-${runId}`,
+    "--provider-task-handle",
+    `${activeProvider}-task-real-${actionId}`,
+    "--provider-trace-id",
+    `${activeProvider}-trace-real-${actionId}`,
+    "--json"
+  ], cwd, { IMFINE_INTERNAL: "1" });
 }
 
 function makeGitProject(prefix) {
@@ -92,7 +113,8 @@ function writeOrchestratorSession(runDir, runId) {
       action("runtime-push-run", "runtime", "orchestrator", "push run", ["runtime-commit-run"]),
       action("agent-technical-writer", "agent", "technical-writer", "prepare final summary", ["runtime-push-run"], undefined, "archive-prep"),
       action("agent-project-knowledge-updater", "agent", "project-knowledge-updater", "update project knowledge", ["runtime-push-run"], undefined, "archive-prep"),
-      action("agent-archive", "agent", "archive", "archive run", ["agent-technical-writer", "agent-project-knowledge-updater"], undefined, "archive")
+      action("agent-archive", "agent", "archive", "archive run", ["agent-technical-writer", "agent-project-knowledge-updater"], undefined, "archive"),
+      action("runtime-archive-finalize", "runtime", "orchestrator", "finalize archive", ["agent-archive"], undefined, "archive-finalize")
     ],
     agent_runs: [
       {
@@ -339,7 +361,9 @@ function writeArchiveHandoff(runDir, runId) {
   });
 }
 
-const { project } = makeGitProject("imfine-harness-");
+function exerciseHarness(provider) {
+activeProvider = provider;
+const { project } = makeGitProject(`imfine-harness-${provider}-`);
 const created = JSON.parse(run(["run", "Implement the requested change", "--plan-only", "--json"], project));
 writeTaskGraph(created.runDir, created.runId);
 writeOrchestratorSession(created.runDir, created.runId);
@@ -354,24 +378,35 @@ fs.writeFileSync(path.join(taskWorktree, "test", "index.test.js"), "import test 
 
 auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
+completeProviderAgent(project, created.runId, "agent-dev-T1", "T1");
+
+auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(auto.status, "waiting_for_agent_output");
 writeQaHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-qa-T1", "qa-T1");
 
 auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 writeReviewerHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-reviewer-T1", "reviewer-T1");
 
 auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 fs.writeFileSync(path.join(project, "src", "index.js"), "export const value = 2;\n");
 fs.writeFileSync(path.join(project, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
 writeMergeAgentHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-merge-agent-T1", "merge-agent-T1");
 
 auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");
 writeCommitterHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-committer", "committer");
 writeTechnicalWriterHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-technical-writer", "technical-writer");
 writeProjectKnowledgeHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-project-knowledge-updater", "project-knowledge-updater");
 writeArchiveHandoff(created.runDir, created.runId);
+completeProviderAgent(project, created.runId, "agent-archive", "archive");
 
 auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "completed");
@@ -405,15 +440,29 @@ assert.equal(session.execution_mode, "true_harness");
 assert.equal(session.harness_classification, "true_harness");
 
 const evidence = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
+const agentContracts = dispatchContracts.contracts.filter((contract) => contract.kind !== "runtime");
 assert.equal(evidence.harness_classification, "true_harness");
 assert.equal(evidence.orchestrator_declaration.passed, true);
 assert.equal(evidence.true_harness_passed, true);
+assert.equal(evidence.provider_capability.provider, provider);
+assert.equal(evidence.provider_capability.resolved_by_receipts, true);
+assert.equal(evidence.provider_execution_receipts.receipt_count, agentContracts.length);
+assert.equal(evidence.provider_execution_receipts.valid_receipt_count, agentContracts.length);
+assert.equal(evidence.provider_execution_receipts.all_contracts_have_provider_receipt, true);
+assert.deepEqual(evidence.provider_execution_receipts.missing_provider_receipt_contracts, []);
+assert.ok(evidence.provider_execution_receipts.receipts.every((receipt) => receipt.provider_agent_id.startsWith(`${provider}-agent-real-`)));
 assert.ok(evidence.parallel_execution.wave_count > 0);
 assert.equal(evidence.parallel_execution.all_contracts_have_completed_wave, true);
 assert.deepEqual(evidence.parallel_execution.missing_completed_wave_contracts, []);
-assert.equal(evidence.handoff_validation.required_agent_count, dispatchContracts.contracts.length);
-assert.equal(evidence.handoff_validation.valid_agent_count, dispatchContracts.contracts.length);
+assert.equal(evidence.handoff_validation.required_agent_count, agentContracts.length);
+assert.equal(evidence.handoff_validation.valid_agent_count, agentContracts.length);
 assert.ok(evidence.handoff_evidence_chain.length > 0);
+
+const actionLedger = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "action-ledger.json"), "utf8"));
+for (const contract of dispatchContracts.contracts) {
+  const actionId = contract.action_id;
+  assert.equal(actionLedger.actions[actionId].status, "completed", `missing completed action ledger entry for ${actionId}`);
+}
 
 const archive = JSON.parse(fs.readFileSync(path.join(runDir, "agents", "archive", "status.json"), "utf8"));
 assert.equal(archive.status, "completed");
@@ -449,5 +498,11 @@ for (const id of ["run-level.qa-evidence", "run-level.review-evidence", "run-lev
   assert.ok(finalGates.checks.some((check) => check.id === id && check.status === "pass"), `missing final gate check ${id}`);
 }
 assert.ok(fs.existsSync(path.join(project, ".imfine", "project", "project-knowledge-freshness.json")));
+assert.equal(actionLedger.actions["runtime-archive-finalize"].status, "completed");
+}
+
+for (const provider of ["codex", "claude"]) {
+  exerciseHarness(provider);
+}
 
 console.log("harness acceptance ok");

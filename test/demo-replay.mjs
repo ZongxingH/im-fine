@@ -27,10 +27,28 @@ function runIds(cwd) {
     .sort();
 }
 
+function ensureAgentAcceptanceMatrix(cwd, runId, items) {
+  const file = path.join(cwd, ".imfine", "runs", runId, "orchestration", "agent-acceptance-matrix.json");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ schema_version: 1, items }, null, 2) + "\n");
+}
+
 {
   const cwd = copyDemo(demoRoots.early, "imfine-real-early-demo-");
   const runId = runIds(cwd).find((id) => !id.endsWith("-2"));
   assert.ok(runId);
+  ensureAgentAcceptanceMatrix(cwd, runId, [{
+    id: "git_delivery.commits",
+    category: "git_delivery",
+    requirement_level: "required",
+    classification: "required",
+    status: "blocked",
+    detail: "commit evidence missing",
+    expected: "commit evidence",
+    observed: "missing",
+    accepted_by_review: false,
+    evidence: []
+  }]);
   const result = reconcileRun(cwd, runId);
   assert.equal(result.status, "blocked");
   assert.equal(result.gates.find((gate) => gate.id === "commit").status, "blocked");
@@ -42,6 +60,18 @@ function runIds(cwd) {
   const cwd = copyDemo(demoRoots.current, "imfine-real-current-demo-");
   const runId = runIds(cwd)[0];
   assert.ok(runId);
+  ensureAgentAcceptanceMatrix(cwd, runId, [{
+    id: "product_shape.user-mini-program",
+    category: "product_shape",
+    requirement_level: "required",
+    classification: "demo-substitute",
+    status: "blocked",
+    detail: "QA rejected substitute frontend as final mini-program evidence",
+    expected: "mini-program frontend",
+    observed: "static frontend substitute",
+    accepted_by_review: false,
+    evidence: []
+  }]);
   const result = reconcileRun(cwd, runId);
   assert.equal(result.status, "blocked");
   assert.equal(result.gates.find((gate) => gate.id === "commit").status, "pass");

@@ -343,6 +343,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     provider_capability: {
       provider: providerCapability.provider,
       subagent_supported: providerCapability.subagent_supported,
+      capabilities: providerCapability.capabilities,
       entry_installed: providerCapability.entry_installed,
       blocked: providerCapability.blocked,
       detection_source: providerCapability.detection_source,
@@ -362,7 +363,11 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
         status: receipt.status,
         valid_native_subagent_proof: receiptProvesNativeSubagent(cwd, receipt),
         provider_agent_id: receipt.provider_agent_id,
-        provider_session_id: receipt.provider_session_id
+        provider_session_id: receipt.provider_session_id,
+        provider_trace_id: receipt.provider_trace_id || null,
+        provider_task_handle: receipt.provider_task_handle || null,
+        origin: receipt.origin || "missing",
+        receipt_type: receipt.receipt_type || "missing"
       }))
     },
     skill_evidence_contracts: {
@@ -484,6 +489,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 
 - provider: ${payload.provider_capability.provider}
 - subagent supported: ${payload.provider_capability.subagent_supported}
+- capabilities: ${JSON.stringify(payload.provider_capability.capabilities)}
 - entry installed: ${payload.provider_capability.entry_installed}
 - blocked: ${payload.provider_capability.blocked ? "yes" : "no"}
 - detection source: ${payload.provider_capability.detection_source}

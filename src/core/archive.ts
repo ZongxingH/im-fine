@@ -3,7 +3,6 @@ import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
 import { validateHandoff } from "./handoff-validator.js";
-import { writeProviderExecutionReceipt } from "./provider-evidence.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
@@ -775,14 +774,6 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   writeText(archiveReport, preliminaryReport);
   writeText(userReport, preliminaryReport);
   recordArchiveWave(cwd, runId, options, status);
-  writeProviderExecutionReceipt(cwd, runId, {
-    actionId: options.archiveAction?.id || "agent-archive",
-    agentId: "archive",
-    role: "archive",
-    parallelGroup: options.archiveAction?.parallelGroup || "archive",
-    status,
-    metadata: { phase: "archive-run", archive_report: archiveReport, user_report: userReport }
-  });
   writeTrueHarnessEvidence(cwd, runId);
 
   const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), trueHarnessCheck(cwd, runId)];

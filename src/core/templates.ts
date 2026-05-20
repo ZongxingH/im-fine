@@ -146,6 +146,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js templates list
 ## Native Subagent Dispatch
 
 Independent agent work must be launched from the current session through the environment's native subagent capability.
+The runtime CLI does not launch provider subagents. It only materializes dispatch contracts and validates provider-origin receipts.
 
 Runtime files such as:
 
@@ -156,6 +157,20 @@ Runtime files such as:
 - \`parallel-execution.json\`
 
 are execution records and deterministic materializations. They are not the source of orchestration authority.
+
+For every native subagent completion, record provider-origin proof with:
+
+\`\`\`bash
+node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <action-id> \\
+  --provider <codex|claude> \\
+  --provider-agent-id <provider-agent-id> \\
+  --provider-session-id <provider-session-id> \\
+  --provider-task-handle <provider-task-handle> \\
+  --provider-trace-id <provider-trace-id-if-available> \\
+  --output-path <handoff-or-output-path>
+\`\`\`
+
+The provider agent id, session id, and task handle must come from the native provider run. Do not invent placeholder ids. Runtime-only receipts do not prove true harness execution.
 
 ## Hard Rules
 
@@ -314,6 +329,7 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js templates list
 ## 原生子 Agent 调度
 
 独立 Agent 工作必须由当前会话通过环境原生子 Agent 能力直接拉起。
+runtime CLI 不负责拉起 provider 子 Agent。runtime 只负责物化 dispatch contract，并校验 provider-origin receipt。
 
 runtime 文件例如：
 
@@ -324,6 +340,20 @@ runtime 文件例如：
 - \`parallel-execution.json\`
 
 只是执行记录和确定性物化产物，不是编排权力来源。
+
+每个原生子 Agent 完成后，必须用以下命令记录 provider-origin 证明：
+
+\`\`\`bash
+node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <action-id> \\
+  --provider <codex|claude> \\
+  --provider-agent-id <provider-agent-id> \\
+  --provider-session-id <provider-session-id> \\
+  --provider-task-handle <provider-task-handle> \\
+  --provider-trace-id <provider-trace-id-if-available> \\
+  --output-path <handoff-or-output-path>
+\`\`\`
+
+provider agent id、session id 和 task handle 必须来自原生 provider run。不要编造占位 id。runtime-only receipt 不能证明 true harness 执行。
 
 ## 硬性规则
 

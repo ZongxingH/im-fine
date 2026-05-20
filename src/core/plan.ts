@@ -32,6 +32,7 @@ export interface TaskGraph {
 export interface TaskGraphValidation {
   passed: boolean;
   errors: string[];
+  warnings: string[];
   parallelGroups: string[][];
   serialTasks: string[];
   serialReason: string | null;
@@ -93,6 +94,18 @@ function scopeOverlaps(left: string, right: string): boolean {
   const a = normalize(left);
   const b = normalize(right);
   return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+}
+
+function broadScope(scope: string): boolean {
+  return scope === "**" || scope === "." || scope === "./**" || scope === "src/**" || scope === "app/**" || scope === "backend/**" || scope === "frontend/**";
+}
+
+function vagueText(value: string): boolean {
+  return /^(done|fix|test|review|dev|implement|update|完成|修复|测试)$/i.test(value.trim());
+}
+
+function highConflictScope(scope: string): boolean {
+  return /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|go\.sum|Cargo\.lock|pom\.xml|build\.gradle|db\/migrations|migrations|schema\.sql|openapi|proto|graphql|config|\.env)/i.test(scope);
 }
 
 const TASK_TYPES = new Set(["dev", "docs", "qa", "qa_gate", "review", "review_gate", "archive", "delivery_gate"]);
@@ -157,6 +170,7 @@ export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidation
     return {
       passed: false,
       errors: ["Task graph must be an object"],
+      warnings: [],
       parallelGroups: [],
       serialTasks: [],
       serialReason: null,
@@ -168,6 +182,7 @@ export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidation
     errors.push(`Task graph run_id mismatch: expected ${options.expectedRunId}, got ${graph.run_id || "missing"}`);
   }
   if (!Array.isArray(graph.tasks)) errors.push("Task graph tasks must be an array");
+  const warnings: string[] = [];
 
   const normalizedTasks = Array.isArray(graph.tasks)
     ? graph.tasks.map((task) => ({
@@ -206,6 +221,15 @@ export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidation
     if (!commit || typeof commit !== "object" || typeof (commit as { message?: unknown }).message !== "string" || !(commit as { message: string }).message.trim()) {
       errors.push(`Task ${label} missing commit message`);
     }
+    if (task.write_scope.some(broadScope) && task.acceptance.length <= 1) warnings.push(`Task ${label} has broad write_scope and should be split or justify boundary safety`);
+    if (task.acceptance.some(vagueText)) warnings.push(`Task ${label} has unverifiable acceptance wording`);
+    if (task.dev_plan.some(vagueText) || task.test_plan.some(vagueText) || task.review_plan.some(vagueText)) warnings.push(`Task ${label} has generic plan wording`);
+    if (task.verification.some((command) => !/^(npm|pnpm|yarn|bun|node|python|pytest|mvn|gradle|cargo|go|make|sh|bash)\b/.test(command))) {
+      warnings.push(`Task ${label} verification command is not aligned with known project command patterns`);
+    }
+    if (task.type === "dev" && (task.write_scope.some((scope) => /api|schema|proto|graphql|db|migration/i.test(scope))) && !task.acceptance.some((item) => /contract|schema|api|migration/i.test(item))) {
+      warnings.push(`Task ${label} changes shared contract/schema surfaces without declaring contract evidence`);
+    }
   }
 
   for (const task of normalizedTasks) {
@@ -223,6 +247,9 @@ export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidation
       const right = parallelCandidates[j];
       const overlaps = left.write_scope.some((a) => right.write_scope.some((b) => scopeOverlaps(a, b)));
       if (overlaps) errors.push(`Parallel tasks ${left.id} and ${right.id} have overlapping write_scope`);
+      if (left.write_scope.some(highConflictScope) || right.write_scope.some(highConflictScope)) {
+        errors.push(`Parallel tasks ${left.id} and ${right.id} touch high-conflict scope and require explicit serial dependency or conflict strategy`);
+      }
     }
   }
 
@@ -236,11 +263,13 @@ export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidation
           ? "task_graph: dependencies leave no independently runnable batch"
           : null;
   const replanRecommended = graph.strategy === "serial" && graph.tasks.length > 1
-    || errors.some((error) => error.includes("overlapping write_scope"));
+    || errors.some((error) => error.includes("overlapping write_scope") || error.includes("high-conflict scope"))
+    || warnings.length > 0;
 
   return {
     passed: errors.length === 0,
     errors,
+    warnings,
     parallelGroups: parallelCandidates.length > 1 && errors.length === 0 ? [parallelCandidates.map((task) => task.id)] : [],
     serialTasks: normalizedTasks.filter((task) => task.depends_on.length > 0 || graph.strategy !== "parallel").map((task) => task.id).filter(Boolean),
     serialReason,

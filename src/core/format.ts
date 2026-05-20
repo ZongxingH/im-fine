@@ -30,8 +30,10 @@ export function formatInit(result: InitResult): string {
   return [
     `initialized imfine workspace: ${result.workspace}`,
     `project mode: ${result.projectMode}`,
-    `architecture placeholders: ${result.architecture.files.length}`,
+    `architecture files: ${result.architecture.files.length}`,
+    `architecture status: ${result.architecture.status || result.architecture.mode}`,
     result.architecture.architectInput ? `architect input: ${result.architecture.architectInput}` : "architect input: none",
+    result.architecture.architectHandoff ? `architect handoff: ${result.architecture.architectHandoff}` : "architect handoff: none",
     `created: ${result.created.length}`,
     `updated: ${result.updated.length}`,
     `preserved: ${result.preserved.length}`,
@@ -77,7 +79,7 @@ export function formatStatus(result: StatusResult): string {
     ? `ready=${result.currentRunActions.ready}, waiting=${result.currentRunActions.waiting}, blocked=${result.currentRunActions.blocked}, groups=${result.currentRunActions.currentParallelGroups.join(",") || "none"}`
     : "none";
   const blockers = result.currentRunBlockers
-    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}`
+    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}, next=${result.currentRunBlockers.nextAction || "none"}`
     : "none";
   const checkpoint = result.currentRunLatestCheckpoint
     ? `${result.currentRunLatestCheckpoint.actionId}:${result.currentRunLatestCheckpoint.status} (${result.currentRunLatestCheckpoint.detail})`

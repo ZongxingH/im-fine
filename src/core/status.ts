@@ -22,6 +22,7 @@ export interface StatusResult {
     file: string;
     status: string;
     items: number;
+    nextAction: string | null;
   } | null;
   currentRunLatestCheckpoint: {
     file: string;
@@ -176,10 +177,16 @@ export function status(cwd: string): StatusResult {
           ? JSON.parse(fs.readFileSync(blockerFile, "utf8")) as { status?: string; sources?: Array<{ blockers?: unknown[] }> }
           : blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
         if (blockers.sources && blockers.sources.length > 0) {
+          const firstBlocker = blockers.sources.flatMap((source) => Array.isArray(source.blockers) ? source.blockers : [])[0];
           currentRunBlockers = {
             file: blockerFile,
             status: blockers.status || "unknown",
-            items: Array.isArray(blockers.sources) ? blockers.sources.reduce((total, source) => total + (Array.isArray(source.blockers) ? source.blockers.length : 0), 0) : 0
+            items: Array.isArray(blockers.sources) ? blockers.sources.reduce((total, source) => total + (Array.isArray(source.blockers) ? source.blockers.length : 0), 0) : 0,
+            nextAction: firstBlocker && typeof firstBlocker === "object"
+              ? `owner=${String((firstBlocker as { owner?: unknown }).owner || "orchestrator")}; evidence=${Array.isArray((firstBlocker as { required_evidence?: unknown }).required_evidence) ? ((firstBlocker as { required_evidence: unknown[] }).required_evidence).join(", ") : "unknown"}`
+              : typeof firstBlocker === "string"
+                ? firstBlocker
+                : null
           };
         }
         const checkpointFile = path.join(runRoot, "orchestration", "checkpoints", "latest.json");
