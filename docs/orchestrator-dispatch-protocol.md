@@ -1,14 +1,14 @@
-# Orchestrator Dispatch Protocol
+# Orchestrator 调度协议
 
-The current Codex or Claude session is the Orchestrator. Runtime only materializes dispatch contracts and validates the result.
+当前 Codex 或 Claude 会话是 Orchestrator。Runtime 只负责物化 dispatch contracts 并校验结果。
 
-For each ready dispatch contract:
+对于每个 ready dispatch contract，Orchestrator 必须：
 
-1. Read the contract inputs, required outputs, dependencies, scopes, role, and parallel group.
-2. Launch one native provider subagent for that contract.
-3. Require the subagent to write the declared handoff or output path.
-4. Record `orchestration/agent-name-map.json` when the provider exposes display names, so UI names can be traced to action ids, roles, parallel groups, and expected outputs.
-5. Record provider-origin completion:
+1. 读取 contract 的输入、required outputs、dependencies、scopes、role 和 parallel group。
+2. 为该 contract 启动一个原生 provider subagent。
+3. 要求 subagent 写入声明的 handoff 或 output path。
+4. 当 provider 暴露 display name 时，记录 `orchestration/agent-name-map.json`，让 UI 名称可以追溯到 action id、role、parallel group 和 expected outputs。
+5. 记录 provider-origin completion：
 
 ```bash
 node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <action-id> \
@@ -20,9 +20,9 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <actio
   --output-path <handoff-or-output-path>
 ```
 
-The provider agent id, session id, and task handle must come from the native provider run. Placeholder ids, runtime-only receipts, and default environment-derived receipts do not prove true harness execution.
+`provider-agent-id`、`provider-session-id` 和 `provider-task-handle` 必须来自真实原生 provider run。占位 id、runtime-only receipt、默认环境变量派生 receipt 都不能证明 true harness execution。
 
-Codex and Claude share the same contracts:
+Codex 和 Claude 共用同一套 contract：
 
 - `dispatch-contracts.json`
 - `provider-receipts/*.json`
@@ -30,6 +30,6 @@ Codex and Claude share the same contracts:
 - `parallel-execution.json`
 - `action-ledger.json`
 
-Provider capability is explicit. If a provider cannot launch native subagents, wait for them, write file outputs, or run a parallel batch, the run must be blocked or explicitly degraded with `true_harness_passed=false`.
+Provider capability 必须显式记录。如果 provider 不能启动原生 subagent、等待 subagent、写文件输出或执行 parallel batch，run 必须 blocked，或显式降级并保持 `true_harness_passed=false`。
 
-Runtime and CLI must not launch Codex or Claude agents. There is no supported `launch codex agent`, `launch claude agent`, `spawn provider agent`, or equivalent runtime entry. The launch action happens only inside the current Codex or Claude session; runtime records and validates the handback.
+Runtime 和 CLI 禁止启动 Codex 或 Claude agent。不存在受支持的 `launch codex agent`、`launch claude agent`、`spawn provider agent` 或同类 runtime 入口。启动动作只发生在当前 Codex/Claude 会话层；runtime 只记录和校验 handback。

@@ -144,4 +144,4 @@ imfine writes run and project evidence under `.imfine/`, including:
 - `.imfine/runs/<run-id>/**`: request, analysis, planning, agent handoffs, provider receipts, evidence, gates, and archive artifacts.
 - `.imfine/reports/<run-id>.md`: final run report.
 
-The design baseline is [IMFINE_PHASED_IMPLEMENTATION_PLAN.md](./IMFINE_PHASED_IMPLEMENTATION_PLAN.md).
+The design baseline is [IMFINE_PHASED_IMPLEMENTATION_PLAN.md](./docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md).

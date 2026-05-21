@@ -1,31 +1,31 @@
-# Runtime Boundary
+# Runtime 边界
 
-imfine has three layers:
+imfine 分为三层：
 
-- Method layer: role, workflow, skill, and template knowledge.
-- Model orchestration layer: the current provider session Orchestrator and its native subagents.
-- Deterministic runtime layer: local state, validation, patch, git, evidence, and archive materialization.
+- 方法层：角色、workflow、skill 和模板知识。
+- 模型编排层：当前 provider 会话中的 Orchestrator 以及它启动的原生子 Agent。
+- 确定性 runtime 层：本地状态、校验、patch、git、evidence 和 archive 物化。
 
-The runtime may:
+Runtime 可以做：
 
-- create run directories and deterministic artifacts;
-- validate task graph structure and engineering semantics;
-- materialize dispatch contracts;
-- validate handoffs, receipts, evidence files, and final gates;
-- collect patches, run git operations, and write archive reports.
+- 创建 run 目录和确定性 artifact；
+- 校验 task graph 结构和工程语义；
+- 物化 dispatch contracts；
+- 校验 handoff、receipt、evidence 文件和 final gates；
+- 收集 patch、执行 git 操作、写 archive report。
 
-The public workflow remains only:
+公开用户流程只保留：
 
 - `/imfine init`
-- `/imfine run <requirement text|requirement-file>`
+- `/imfine run <需求文本|需求文件>`
 - `/imfine status`
 
-The runtime must not:
+Runtime 禁止做：
 
-- infer product shape from requirement keywords;
-- decide architecture, task decomposition, QA verdicts, review verdicts, or archive readiness as model judgment;
-- launch provider subagents;
-- expose commands that launch, spawn, or start Codex/Claude provider agents;
-- turn runtime-only receipts into true harness proof.
+- 从需求关键词推断产品形态；
+- 代替模型判断架构、任务拆分、QA 结论、Review 结论或 Archive readiness；
+- 启动 provider subagent；
+- 暴露任何用于 launch、spawn 或 start Codex/Claude provider agent 的命令；
+- 把 runtime-only receipt 伪装成 true harness proof。
 
-Agent-authored artifacts carry product, architecture, acceptance, QA, review, and archive judgments. Runtime artifacts only verify that those artifacts exist, satisfy schemas, and reference evidence.
+Agent-authored artifacts 承载产品、架构、验收、QA、Review 和 Archive 判断。Runtime artifacts 只验证这些 artifacts 是否存在、是否满足 schema、是否引用了有效 evidence。
