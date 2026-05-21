@@ -9,6 +9,7 @@ import { assertTransitionAccepted, transitionRunState } from "./state-machine.js
 import { validateTrueHarnessEvidenceFiles, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { writeCapabilityTrace, writeRunTraceIndex } from "./trace.js";
 import { runCommand } from "./shell.js";
+import { recordActionStatus } from "./reliability.js";
 
 export type ArchiveStatus = "completed" | "blocked";
 
@@ -528,7 +529,8 @@ function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, c
     ? readJson<{ harness_classification?: string; true_harness_passed?: boolean }>(harnessEvidenceJson)
     : null;
 
-  return `# Archive Report
+  const title = status === "completed" ? "Final Archive Report" : "Blocked Archive Report";
+  return `# ${title}
 
 ## Run
 
@@ -774,6 +776,9 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   writeText(archiveReport, preliminaryReport);
   writeText(userReport, preliminaryReport);
   recordArchiveWave(cwd, runId, options, status);
+  if (status === "completed" && options.archiveAction) {
+    recordActionStatus(cwd, runId, options.archiveAction.id, "completed", "archive finalize evidence prepared", [archiveReport, userReport]);
+  }
   writeTrueHarnessEvidence(cwd, runId);
 
   const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), trueHarnessCheck(cwd, runId)];
@@ -800,6 +805,9 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
 `);
 
   writeDerivedFinalGates(cwd, runId, status, checks, projectUpdateFiles);
+  if (status === "blocked" && options.archiveAction) {
+    recordActionStatus(cwd, runId, options.archiveAction.id, "blocked", "archive finalize blocked by final gates", [archiveReport, userReport]);
+  }
   writeRunTraceIndex(cwd, runId);
   writeTrueHarnessEvidence(cwd, runId);
   updateRun(cwd, runId, status, {

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { blockerSummary } from "./blocker-summary.js";
+import { staleTrueHarnessEvidence } from "./true-harness-evidence.js";
 
 export interface StatusResult {
   cwd: string;
@@ -23,6 +24,7 @@ export interface StatusResult {
     status: string;
     items: number;
     nextAction: string | null;
+    diagnosticDoc: string | null;
   } | null;
   currentRunLatestCheckpoint: {
     file: string;
@@ -63,6 +65,42 @@ function gatesAreComplete(gates: Record<string, string> | null): boolean {
     "project_knowledge"
   ];
   return required.every((key) => gates[key] === "pass");
+}
+
+function readJson<T>(file: string): T {
+  return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+}
+
+function runConsistency(runRoot: string, runStatus: string | null, gates: Record<string, string> | null): StatusResult["currentRunConsistency"] {
+  const orchestration = path.join(runRoot, "orchestration");
+  const sessionFile = path.join(orchestration, "orchestrator-session.json");
+  const trueHarness = path.join(orchestration, "true-harness-evidence.json");
+  const agentRunsFile = path.join(orchestration, "agent-runs.json");
+  const dispatchFile = path.join(orchestration, "dispatch-contracts.json");
+  const parallelFile = path.join(orchestration, "parallel-execution.json");
+  if (runStatus === "completed" && !gatesAreComplete(gates)) return "inconsistent";
+  if (fs.existsSync(sessionFile)) {
+    const session = readJson<{ status?: unknown }>(sessionFile);
+    const sessionCompleted = session.status === "completed";
+    if (sessionCompleted && runStatus !== "completed") return "inconsistent";
+    if (sessionCompleted && !fs.existsSync(path.join(orchestration, "final-gates.json"))) return "inconsistent";
+  }
+  if (fs.existsSync(trueHarness) && staleTrueHarnessEvidence(trueHarness).length > 0) return "inconsistent";
+  if (fs.existsSync(agentRunsFile) && fs.existsSync(dispatchFile)) {
+    const agentRuns = readJson<{ agents?: unknown[] }>(agentRunsFile);
+    const dispatch = readJson<{ contracts?: unknown[] }>(dispatchFile);
+    if (Array.isArray(agentRuns.agents) && Array.isArray(dispatch.contracts) && dispatch.contracts.length > 0 && agentRuns.agents.length === 0) {
+      return "inconsistent";
+    }
+  }
+  if (fs.existsSync(dispatchFile) && fs.existsSync(parallelFile)) {
+    const dispatch = readJson<{ contracts?: unknown[] }>(dispatchFile);
+    const parallel = readJson<{ wave_history?: unknown[] }>(parallelFile);
+    if (Array.isArray(dispatch.contracts) && dispatch.contracts.length > 0 && (!Array.isArray(parallel.wave_history) || parallel.wave_history.length === 0)) {
+      return "inconsistent";
+    }
+  }
+  return "consistent";
 }
 
 export function status(cwd: string): StatusResult {
@@ -139,31 +177,40 @@ export function status(cwd: string): StatusResult {
         const runRoot = path.join(workspace, "runs", currentRunId);
         const finalGates = path.join(runRoot, "orchestration", "final-gates.json");
         if (fs.existsSync(finalGates)) {
-          const gates = JSON.parse(fs.readFileSync(finalGates, "utf8")) as { gates?: Record<string, unknown> };
+          const gates = readJson<{ gates?: Record<string, unknown> }>(finalGates);
           currentRunGates = gates.gates
             ? Object.fromEntries(Object.entries(gates.gates).map(([key, value]) => [key, String(value)]))
             : null;
-          currentRunConsistency = currentRunStatus === "completed" && !gatesAreComplete(currentRunGates)
-            ? "inconsistent"
-            : "consistent";
+          currentRunConsistency = runConsistency(runRoot, currentRunStatus, currentRunGates);
         } else {
           const trueHarness = path.join(runRoot, "orchestration", "true-harness-evidence.json");
+          const sessionFile = path.join(runRoot, "orchestration", "orchestrator-session.json");
+          const session = fs.existsSync(sessionFile) ? readJson<{ status?: unknown }>(sessionFile) : {};
+          const providerObservations = path.join(runRoot, "orchestration", "provider-observations");
+          const trueHarnessStatus = fs.existsSync(trueHarness)
+            ? staleTrueHarnessEvidence(trueHarness).length > 0
+              ? "stale"
+              : readJson<{ true_harness_passed?: unknown }>(trueHarness).true_harness_passed === true ? "pass" : "blocked"
+            : "missing";
           currentRunGates = {
-            status_consistency: currentRunStatus === "completed" ? "inconsistent_missing_final_gates" : "not_finalized",
+            status_consistency: currentRunStatus === "completed"
+              ? "inconsistent_missing_final_gates"
+              : session.status === "completed"
+                ? "orchestrator_session_unadopted"
+                : "not_finalized",
             qa: fs.existsSync(path.join(runRoot, "evidence", "test-results.md")) ? "present" : "missing",
             review: fs.existsSync(path.join(runRoot, "evidence", "review.md")) ? "present" : "missing",
             committer: fs.existsSync(path.join(runRoot, "agents", "committer", "handoff.json")) ? "present" : "missing",
             push: fs.existsSync(path.join(runRoot, "evidence", "push.md")) ? "present" : "missing",
             archive: fs.existsSync(path.join(runRoot, "agents", "archive", "handoff.json")) ? "present" : "missing",
-            true_harness: fs.existsSync(trueHarness)
-              ? JSON.parse(fs.readFileSync(trueHarness, "utf8")).true_harness_passed === true ? "pass" : "blocked"
-              : "missing"
+            true_harness: trueHarnessStatus,
+            provider_observations: fs.existsSync(providerObservations) && fs.readdirSync(providerObservations).some((file) => file.endsWith(".json")) ? "present" : "missing"
           };
-          currentRunConsistency = currentRunStatus === "completed" ? "inconsistent" : "consistent";
+          currentRunConsistency = runConsistency(runRoot, currentRunStatus, currentRunGates);
         }
         const queue = path.join(runRoot, "orchestration", "queue.json");
         if (fs.existsSync(queue)) {
-          const parsedQueue = JSON.parse(fs.readFileSync(queue, "utf8")) as { actions?: Array<{ status?: string; parallelGroup?: string }> };
+          const parsedQueue = readJson<{ actions?: Array<{ status?: string; parallelGroup?: string }> }>(queue);
           const actions = Array.isArray(parsedQueue.actions) ? parsedQueue.actions : [];
           currentRunActions = {
             ready: actions.filter((action) => action.status === "ready").length,
@@ -174,7 +221,7 @@ export function status(cwd: string): StatusResult {
         }
         const blockerFile = path.join(runRoot, "orchestration", "blocker-summary.json");
         const blockers = fs.existsSync(blockerFile) && !fs.existsSync(finalGates)
-          ? JSON.parse(fs.readFileSync(blockerFile, "utf8")) as { status?: string; sources?: Array<{ blockers?: unknown[] }> }
+          ? readJson<{ status?: string; sources?: Array<{ blockers?: unknown[] }> }>(blockerFile)
           : blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
         if (blockers.sources && blockers.sources.length > 0) {
           const firstBlocker = blockers.sources.flatMap((source) => Array.isArray(source.blockers) ? source.blockers : [])[0];
@@ -186,18 +233,21 @@ export function status(cwd: string): StatusResult {
               ? `owner=${String((firstBlocker as { owner?: unknown }).owner || "orchestrator")}; evidence=${Array.isArray((firstBlocker as { required_evidence?: unknown }).required_evidence) ? ((firstBlocker as { required_evidence: unknown[] }).required_evidence).join(", ") : "unknown"}`
               : typeof firstBlocker === "string"
                 ? firstBlocker
-                : null
+                : null,
+            diagnosticDoc: firstBlocker && typeof firstBlocker === "object" && typeof (firstBlocker as { diagnostic_doc?: unknown }).diagnostic_doc === "string"
+              ? (firstBlocker as { diagnostic_doc: string }).diagnostic_doc
+              : null
           };
         }
         const checkpointFile = path.join(runRoot, "orchestration", "checkpoints", "latest.json");
         if (fs.existsSync(checkpointFile)) {
-          const checkpoint = JSON.parse(fs.readFileSync(checkpointFile, "utf8")) as {
+          const checkpoint = readJson<{
             file?: unknown;
             action_id?: unknown;
             status?: unknown;
             detail?: unknown;
             recorded_at?: unknown;
-          };
+          }>(checkpointFile);
           currentRunLatestCheckpoint = {
             file: typeof checkpoint.file === "string" ? checkpoint.file : checkpointFile,
             actionId: typeof checkpoint.action_id === "string" ? checkpoint.action_id : "unknown",

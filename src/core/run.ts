@@ -5,6 +5,7 @@ import type { ExecutionMode } from "./execution-mode.js";
 import { ensureDir, writeText } from "./fs.js";
 import { initProject } from "./init.js";
 import { writeProviderCapabilitySnapshot } from "./provider-evidence.js";
+import { runCommand } from "./shell.js";
 import { assertTransitionAccepted, isRunState, transitionRunState, type RunState } from "./state-machine.js";
 
 export interface DeliveryRunResult {
@@ -268,6 +269,7 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[], option
   const runId = uniqueRunId(workspace, source.content);
   const runDir = path.join(workspace, "runs", runId);
   const artifacts: string[] = [];
+  const gitHasHead = runCommand("git", ["rev-parse", "--verify", "HEAD"], cwd).code === 0;
 
   for (const dir of [
     "request",
@@ -295,6 +297,14 @@ export function createDeliveryRun(cwd: string, requirementArgs: string[], option
     status: "created",
     execution_mode: executionMode,
     project_kind: analysis.kind,
+    commit_policy: {
+      auto_commit_allowed: true,
+      commit_requires_user_approval: false,
+      push_allowed: true,
+      push_requires_remote: true,
+      new_project_requires_initial_baseline: true,
+      initial_baseline_commit_required: analysis.kind === "new_project" && !gitHasHead
+    },
     source: sourceInfo,
     created_at: new Date().toISOString()
   }, null, 2)}\n`, artifacts);
@@ -366,6 +376,8 @@ You must:
 - mark the run blocked if the current provider session cannot launch independent subagents
 
 Runtime will only materialize what you write in that file and will only perform deterministic backend actions.
+
+Default commit policy: runtime may create local implementation commits after Committer readiness; push requires an origin remote and otherwise records a recoverable blocker.
 `, artifacts);
   writeArtifact(path.join(runDir, "orchestration", "state.json"), `${JSON.stringify({
     schema_version: 1,

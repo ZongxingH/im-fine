@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
@@ -31,6 +32,8 @@ interface DispatchContractRecord {
   role?: string;
   task_id?: string;
   status?: string;
+  kind?: string;
+  action_id?: string;
 }
 
 interface ParallelPlanWave {
@@ -64,10 +67,30 @@ interface OrchestratorSessionRecord {
   decision_source?: string;
   execution_mode?: string;
   harness_classification?: string;
+  status?: string;
+}
+
+interface SourceArtifactRecord {
+  id: string;
+  file: string;
+  exists: boolean;
+  mtime_ms: number | null;
+  sha256: string | null;
+}
+
+interface ProviderObservationRecord {
+  file: string;
+  observed_agent_names: string[];
+  observed_closed_count: number | null;
+  timestamp: string | null;
 }
 
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
+}
+
+function sha256File(file: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
 function runDir(cwd: string, runId: string): string {
@@ -83,6 +106,112 @@ function rel(cwd: string, file: string): string {
 function optionalJson<T>(file: string): T | null {
   if (!fs.existsSync(file)) return null;
   return readJson<T>(file);
+}
+
+function sourceArtifact(cwd: string, id: string, file: string): SourceArtifactRecord {
+  if (!fs.existsSync(file)) {
+    return { id, file: rel(cwd, file), exists: false, mtime_ms: null, sha256: null };
+  }
+  const stat = fs.statSync(file);
+  return {
+    id,
+    file: rel(cwd, file),
+    exists: true,
+    mtime_ms: stat.mtimeMs,
+    sha256: sha256File(file)
+  };
+}
+
+function sourceArtifacts(cwd: string, runDirPath: string): SourceArtifactRecord[] {
+  const orchestration = path.join(runDirPath, "orchestration");
+  const files: Array<[string, string]> = [
+    ["run", path.join(runDirPath, "run.json")],
+    ["orchestrator_session", path.join(orchestration, "orchestrator-session.json")],
+    ["agent_runs", path.join(orchestration, "agent-runs.json")],
+    ["dispatch_contracts", path.join(orchestration, "dispatch-contracts.json")],
+    ["parallel_execution", path.join(orchestration, "parallel-execution.json")],
+    ["provider_capability", path.join(orchestration, "provider-capability.json")],
+    ["provider_capability_resolution", path.join(orchestration, "provider-capability-resolution.json")],
+    ["acceptance_matrix", path.join(orchestration, "acceptance-matrix.json")],
+    ["final_gates", path.join(orchestration, "final-gates.json")]
+  ];
+  const providerReceiptDir = path.join(orchestration, "provider-receipts");
+  if (fs.existsSync(providerReceiptDir)) {
+    for (const file of fs.readdirSync(providerReceiptDir).filter((item) => item.endsWith(".json")).sort()) {
+      files.push([`provider_receipt:${file}`, path.join(providerReceiptDir, file)]);
+    }
+  }
+  const agentsDir = path.join(runDirPath, "agents");
+  if (fs.existsSync(agentsDir)) {
+    for (const agent of fs.readdirSync(agentsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort()) {
+      files.push([`handoff:${agent}`, path.join(agentsDir, agent, "handoff.json")]);
+    }
+  }
+  return files.map(([id, file]) => sourceArtifact(cwd, id, file));
+}
+
+export function staleTrueHarnessEvidence(jsonFile: string): string[] {
+  if (!fs.existsSync(jsonFile)) return [`missing ${jsonFile}`];
+  const payload = readJson<{ source_artifacts?: SourceArtifactRecord[]; generated_at?: string }>(jsonFile);
+  if (!Array.isArray(payload.source_artifacts)) return ["missing source_artifacts"];
+  const runDirPath = path.dirname(path.dirname(jsonFile));
+  const cwd = path.dirname(path.dirname(path.dirname(runDirPath)));
+  const stale: string[] = [];
+  for (const source of payload.source_artifacts) {
+    const file = path.isAbsolute(source.file) ? source.file : path.resolve(cwd, source.file);
+    if (!fs.existsSync(file)) {
+      if (source.exists) stale.push(`${source.id}: missing after evidence generation`);
+      continue;
+    }
+    if (!source.exists) {
+      stale.push(`${source.id}: created after evidence generation`);
+      continue;
+    }
+    const stat = fs.statSync(file);
+    const currentHash = sha256File(file);
+    if (source.sha256 !== currentHash || (typeof source.mtime_ms === "number" && stat.mtimeMs > source.mtime_ms + 1)) {
+      stale.push(`${source.id}: changed after evidence generation`);
+    }
+  }
+  return stale;
+}
+
+function providerObservationFiles(runDirPath: string): string[] {
+  const dir = path.join(runDirPath, "orchestration", "provider-observations");
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((file) => file.endsWith(".json"))
+    .sort()
+    .map((file) => path.join(dir, file));
+}
+
+function providerObservations(cwd: string, runDirPath: string): ProviderObservationRecord[] {
+  return providerObservationFiles(runDirPath).map((file) => {
+    const parsed = optionalJson<{
+      observed_agent_names?: unknown[];
+      agent_names?: unknown[];
+      observed_closed_count?: unknown;
+      closed_count?: unknown;
+      timestamp?: unknown;
+      observed_at?: unknown;
+    }>(file) || {};
+    const names = Array.isArray(parsed.observed_agent_names)
+      ? parsed.observed_agent_names
+      : Array.isArray(parsed.agent_names)
+        ? parsed.agent_names
+        : [];
+    const count = typeof parsed.observed_closed_count === "number"
+      ? parsed.observed_closed_count
+      : typeof parsed.closed_count === "number"
+        ? parsed.closed_count
+        : null;
+    return {
+      file: rel(cwd, file),
+      observed_agent_names: names.filter((item): item is string => typeof item === "string"),
+      observed_closed_count: count,
+      timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : typeof parsed.observed_at === "string" ? parsed.observed_at : null
+    };
+  });
 }
 
 function taskStatuses(runDirPath: string): string[] {
@@ -209,6 +338,8 @@ export function validateTrueHarnessEvidenceFiles(jsonFile: string, markdownFile:
   if (jsonPassed && (receiptCount === 0 || validReceiptCount === 0)) errors.push("true harness passed without valid provider receipts");
   if (jsonPassed && (waveCount === 0 || dispatchCount === 0)) errors.push("true harness passed without dispatch contracts or wave history");
   if (jsonPassed && json.handoff_validation?.passed !== true) errors.push("true harness passed without handoff validation");
+  const stale = staleTrueHarnessEvidence(jsonFile);
+  if (stale.length > 0) errors.push(`true harness evidence stale: ${stale.join("; ")}`);
   return { passed: errors.length === 0, errors };
 }
 
@@ -229,6 +360,9 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const dispatchContracts = optionalJson<{ contracts?: DispatchContractRecord[] }>(path.join(orchestrationDir, "dispatch-contracts.json"));
   const orchestratorSessionFile = path.join(orchestrationDir, "orchestrator-session.json");
   const orchestratorSession = optionalJson<OrchestratorSessionRecord>(orchestratorSessionFile);
+  const observations = providerObservations(cwd, runDirPath);
+  const agentNameMapFile = path.join(orchestrationDir, "agent-name-map.json");
+  const agentNameMap = optionalJson<{ mappings?: unknown[] }>(agentNameMapFile);
   const handoffs = collectHandoffs(runDirPath, cwd);
   const handoffEvidenceFiles = handoffs.flatMap((handoff) => handoff.evidence);
   const taskStatusValues = taskStatuses(runDirPath);
@@ -261,13 +395,22 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const contractTargets = Array.isArray(dispatchContracts?.contracts)
     ? dispatchContracts.contracts.map((contract) => ({
       id: typeof contract.id === "string" ? contract.id : "",
+      actionId: typeof contract.action_id === "string" ? contract.action_id : typeof contract.id === "string" ? contract.id : "",
       role: typeof contract.role === "string" ? contract.role : "",
-      taskId: typeof contract.task_id === "string" ? contract.task_id : undefined
+      taskId: typeof contract.task_id === "string" ? contract.task_id : undefined,
+      kind: contract.kind === "runtime" ? "runtime" : "agent"
     })).filter((contract) => contract.id && contract.role)
     : [];
-  const handoffValidations = contractTargets.map((contract) => validateAgentHandoff(contract, runDirPath, runId));
+  const agentContractTargets = contractTargets.filter((contract) => contract.kind === "agent");
+  const runtimeContractTargets = contractTargets.filter((contract) => contract.kind === "runtime");
+  const actionLedger = optionalJson<{ actions?: Record<string, { status?: string }> }>(path.join(orchestrationDir, "action-ledger.json"));
+  const runtimeContractsWithoutLedger = runtimeContractTargets
+    .filter((contract) => actionLedger?.actions?.[contract.actionId]?.status !== "completed")
+    .map((contract) => contract.actionId);
+  const allRuntimeContractsCompleted = runtimeContractsWithoutLedger.length === 0;
+  const handoffValidations = agentContractTargets.map((contract) => validateAgentHandoff(contract, runDirPath, runId));
   const allContractHandoffsPassed = hasDispatchContract
-    && handoffValidations.length === contractTargets.length
+    && handoffValidations.length === agentContractTargets.length
     && handoffValidations.every((item) => item.passed);
   const completedWaveActionIds = new Set(waves
     .filter((wave) => wave.status === "completed")
@@ -275,11 +418,12 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const archiveStatus = optionalJson<{ status?: string }>(path.join(runDirPath, "agents", "archive", "status.json"))?.status;
   const archiveReadyForCompletion = archiveStatus === "completed";
   const waveRequiredContracts = archiveReadyForCompletion
-    ? contractTargets
-    : contractTargets.filter((contract) => contract.role !== "archive");
+    ? agentContractTargets
+    : agentContractTargets.filter((contract) => contract.role !== "archive");
   const missingCompletedWaveContracts = waveRequiredContracts
     .filter((contract) => {
       const actionIds = [
+        contract.actionId,
         contract.id,
         `agent-${contract.id}`,
         `agent-${contract.role}`,
@@ -292,9 +436,10 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const receipts = providerReceipts(cwd, runId);
   const validReceipts = receipts.filter((receipt) => receiptProvesNativeSubagent(cwd, receipt));
   const receiptActionIds = new Set(validReceipts.map((receipt) => receipt.action_id));
-  const missingProviderReceiptContracts = contractTargets
+  const missingProviderReceiptContracts = agentContractTargets
     .filter((contract) => {
       const actionIds = [
+        contract.actionId,
         contract.id,
         `agent-${contract.id}`,
         `agent-${contract.role}`,
@@ -316,6 +461,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     && hasCompletedWave
     && allContractsHaveCompletedWave
     && allContractsHaveProviderReceipt
+    && allRuntimeContractsCompleted
     && hasHandoffChain
     && allContractHandoffsPassed
     && allSkillEvidencePassed;
@@ -370,6 +516,18 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
         receipt_type: receipt.receipt_type || "missing"
       }))
     },
+    provider_observations: {
+      present: observations.length > 0,
+      observed_native_agents: observations.flatMap((item) => item.observed_agent_names),
+      observation_count: observations.length,
+      observations,
+      proof_boundary: "diagnostic_only_not_true_harness_proof"
+    },
+    agent_name_map: {
+      present: fs.existsSync(agentNameMapFile),
+      file: fs.existsSync(agentNameMapFile) ? rel(cwd, agentNameMapFile) : null,
+      mappings: Array.isArray(agentNameMap?.mappings) ? agentNameMap.mappings : []
+    },
     skill_evidence_contracts: {
       passed: allSkillEvidencePassed,
       checks: skillEvidenceChecks
@@ -377,6 +535,10 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     task_count: graphTaskIds.length,
     parallel_execution: {
       dispatch_contract_count: Array.isArray(dispatchContracts?.contracts) ? dispatchContracts.contracts.length : 0,
+      agent_dispatch_contract_count: agentContractTargets.length,
+      runtime_dispatch_contract_count: runtimeContractTargets.length,
+      all_runtime_contracts_completed: allRuntimeContractsCompleted,
+      missing_runtime_action_ledger_contracts: runtimeContractsWithoutLedger,
       executed_parallel_groups: Array.isArray(parallelExecution?.executed_parallel_groups) ? parallelExecution.executed_parallel_groups : [],
       blocked_parallel_groups: Array.isArray(parallelExecution?.blocked_parallel_groups) ? parallelExecution.blocked_parallel_groups : [],
       wave_count: waves.length,
@@ -395,7 +557,7 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     },
     handoff_validation: {
       passed: allContractHandoffsPassed,
-      required_agent_count: contractTargets.length,
+      required_agent_count: agentContractTargets.length,
       valid_agent_count: handoffValidations.filter((item) => item.passed).length,
       invalid: handoffValidations
         .filter((item) => !item.passed)
@@ -420,7 +582,8 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
       fix_tasks_present: graphTaskIds.some((taskId) => taskId.startsWith("FIX-")),
       replan_used: fs.existsSync(path.join(orchestrationDir, "task-planner-replan.md")) || typeof run.needs_task_replan_at === "string",
       design_rework_used: fs.existsSync(path.join(evidenceDir, "design-rework.md")) || taskStatusValues.includes("implementation_blocked_by_design")
-    }
+    },
+    source_artifacts: sourceArtifacts(cwd, runDirPath)
   };
 
   const jsonFile = path.join(orchestrationDir, "true-harness-evidence.json");
@@ -502,6 +665,9 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 - valid receipt count: ${payload.provider_execution_receipts.valid_receipt_count}
 - all contracts have provider receipt: ${payload.provider_execution_receipts.all_contracts_have_provider_receipt ? "yes" : "no"}
 - missing provider receipt contracts: ${payload.provider_execution_receipts.missing_provider_receipt_contracts.length > 0 ? payload.provider_execution_receipts.missing_provider_receipt_contracts.join(", ") : "none"}
+- observed native agents: ${payload.provider_observations.observed_native_agents.length > 0 ? payload.provider_observations.observed_native_agents.join(", ") : "none"}
+- verified native agent receipts: ${payload.provider_execution_receipts.valid_receipt_count}
+- provider observations boundary: ${payload.provider_observations.proof_boundary}
 
 ## Skill Evidence Contracts
 
@@ -516,6 +682,10 @@ ${payload.participating_roles.length > 0 ? payload.participating_roles.map((role
 
 - wave count: ${payload.parallel_execution.wave_count}
 - dispatch contracts: ${payload.parallel_execution.dispatch_contract_count}
+- agent dispatch contracts: ${payload.parallel_execution.agent_dispatch_contract_count}
+- runtime dispatch contracts: ${payload.parallel_execution.runtime_dispatch_contract_count}
+- all runtime contracts completed: ${payload.parallel_execution.all_runtime_contracts_completed ? "yes" : "no"}
+- missing runtime action ledger contracts: ${payload.parallel_execution.missing_runtime_action_ledger_contracts.length > 0 ? payload.parallel_execution.missing_runtime_action_ledger_contracts.join(", ") : "none"}
 - executed parallel groups: ${payload.parallel_execution.executed_parallel_groups.length}
 - blocked parallel groups: ${payload.parallel_execution.blocked_parallel_groups.length}
 - all contracts have completed wave: ${payload.parallel_execution.all_contracts_have_completed_wave ? "yes" : "no"}
@@ -558,6 +728,9 @@ export function writePreArchiveHarnessEvidence(cwd: string, runId: string): True
   const parallel = payload.parallel_execution as { missing_completed_wave_contracts?: unknown } | undefined;
   const handoff = payload.handoff_validation as { invalid?: unknown[] } | undefined;
   const provider = payload.provider_execution_receipts as { missing_provider_receipt_contracts?: unknown[] } | undefined;
+  const runtimeMissing = Array.isArray((parallel as { missing_runtime_action_ledger_contracts?: unknown[] } | undefined)?.missing_runtime_action_ledger_contracts)
+    ? (parallel as { missing_runtime_action_ledger_contracts: unknown[] }).missing_runtime_action_ledger_contracts.filter((item) => item !== "runtime-archive-finalize")
+    : [];
   const missingWaves = Array.isArray(parallel?.missing_completed_wave_contracts)
     ? parallel.missing_completed_wave_contracts.filter((item) => item !== "archive")
     : [];
@@ -581,7 +754,7 @@ export function writePreArchiveHarnessEvidence(cwd: string, runId: string): True
   ].filter((file) => !fs.existsSync(file)).map((file) => path.relative(cwd, file));
   const file = path.join(evidenceDir, "pre-archive-harness-evidence.json");
   const markdown = path.join(evidenceDir, "pre-archive-harness-evidence.md");
-  const status = missingWaves.length === 0 && invalidHandoffs.length === 0 && missingReceipts.length === 0 && missingStandardEvidence.length === 0;
+  const status = runtimeMissing.length === 0 && missingWaves.length === 0 && invalidHandoffs.length === 0 && missingReceipts.length === 0 && missingStandardEvidence.length === 0;
   const preArchive = {
     schema_version: 1,
     run_id: runId,
@@ -589,6 +762,7 @@ export function writePreArchiveHarnessEvidence(cwd: string, runId: string): True
     pre_archive_harness_passed: status,
     source_true_harness_evidence: path.relative(cwd, full.json),
     missing_completed_wave_contracts: missingWaves,
+    missing_runtime_action_ledger_contracts: runtimeMissing,
     invalid_handoffs: invalidHandoffs,
     missing_provider_receipt_contracts: missingReceipts,
     missing_standard_evidence: missingStandardEvidence
@@ -600,6 +774,7 @@ export function writePreArchiveHarnessEvidence(cwd: string, runId: string): True
 - passed: ${status ? "yes" : "no"}
 - source: ${path.relative(cwd, full.json)}
 - missing completed wave contracts: ${missingWaves.length > 0 ? missingWaves.join(", ") : "none"}
+- missing runtime action ledger contracts: ${runtimeMissing.length > 0 ? runtimeMissing.join(", ") : "none"}
 - invalid handoffs: ${invalidHandoffs.length}
 - missing provider receipt contracts: ${missingReceipts.length > 0 ? missingReceipts.join(", ") : "none"}
 - missing standard evidence: ${missingStandardEvidence.length > 0 ? missingStandardEvidence.join(", ") : "none"}

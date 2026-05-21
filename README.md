@@ -14,6 +14,8 @@ imfine combines three layers:
 
 The only supported execution mode is `true_harness`. imfine does not silently fall back to a single-agent workflow when native subagents are unavailable.
 
+Runtime/CLI never launches Codex or Claude provider agents. Native subagents are launched only by the current Codex or Claude session Orchestrator, and runtime records the handback with provider-origin receipts, output snapshots, and integrity.
+
 ## Requirements
 
 - Node.js 20 or newer.
@@ -121,6 +123,18 @@ The installed runtime lives at `~/.imfine/runtime`, but runtime commands are bac
 - `/imfine status`
 
 Internal runtime commands exist for deterministic materialization, validation, provider receipts, evidence collection, commit/push, reconcile, finalize, and archive reporting.
+
+They do not include any `launch`, `spawn`, or `start provider agent` entry. If provider metadata is unavailable, runtime keeps `true_harness_passed=false` and reports the missing receipt evidence.
+
+Default commit policy is recorded in each run:
+
+- `auto_commit_allowed=true`
+- `commit_requires_user_approval=false`
+- `push_allowed=true`
+- `push_requires_remote=true`
+- new projects without `HEAD` require an initial baseline commit, or `awaiting_user_approval` if runtime cannot create one.
+
+If a run requires user approval or the user declines commit/push, imfine must not report `completed`; it remains `awaiting_user_approval`, `ready_for_commit`, or `blocked` with evidence.
 
 ## Project Artifacts
 

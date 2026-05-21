@@ -19,6 +19,24 @@
     "execution_mode": { "type": "string", "const": "true_harness" },
     "harness_classification": { "type": "string", "const": "true_harness" },
     "status": { "type": "string", "minLength": 1 },
+    "completion_preconditions": {
+      "type": "object",
+      "required": [
+        "provider_receipts_complete",
+        "handoffs_valid",
+        "final_gates_pass",
+        "true_harness_evidence_pass",
+        "commit_push_archive_policy_satisfied"
+      ],
+      "properties": {
+        "provider_receipts_complete": { "type": "boolean" },
+        "handoffs_valid": { "type": "boolean" },
+        "final_gates_pass": { "type": "boolean" },
+        "true_harness_evidence_pass": { "type": "boolean" },
+        "commit_push_archive_policy_satisfied": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "next_actions": {
       "type": "array",
       "items": { "$ref": "#/$defs/action" }

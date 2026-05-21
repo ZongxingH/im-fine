@@ -75,6 +75,10 @@ function installInvocationAllowed(): boolean {
 }
 
 function isInternalCommand(command: string): boolean {
+  const forbiddenProviderLaunchTerms = /\b(launch|spawn|start|run-provider|provider-agent|codex-agent|claude-agent)\b/i;
+  if (forbiddenProviderLaunchTerms.test(command)) {
+    throw new Error("Runtime/CLI must not provide provider agent launch commands; launch native subagents from the current Codex/Claude session and record receipts with agent complete.");
+  }
   return [
     "orchestrate",
     "task-planner",

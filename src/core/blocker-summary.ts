@@ -66,7 +66,8 @@ export function blockerSummary(cwd: string, runId: string): {
   run_id: string;
   generated_at: string;
   status: "blocked" | "clear";
-  sources: Array<{ id: string; file: string; blockers: Array<{ reason: string; owner: string; required_evidence: string[]; suggested_agent: string }> }>;
+  diagnostic_docs: string[];
+  sources: Array<{ id: string; file: string; blockers: Array<{ reason: string; owner: string; required_evidence: string[]; suggested_agent: string; diagnostic_doc: string }> }>;
 } {
   const root = runDir(cwd, runId);
   const orchestration = path.join(root, "orchestration");
@@ -86,7 +87,12 @@ export function blockerSummary(cwd: string, runId: string): {
         reason: blocker,
         owner: source.id.includes("provider") ? "orchestrator" : source.id.includes("handoff") ? "agent" : "runtime",
         required_evidence: source.id.includes("provider") ? ["orchestration/provider-receipts/"] : [rel(cwd, source.file)],
-        suggested_agent: source.id.includes("handoff") ? "current action agent" : "orchestrator"
+        suggested_agent: source.id.includes("handoff") ? "current action agent" : "orchestrator",
+        diagnostic_doc: source.id.includes("provider")
+          ? "docs/harness-evidence.md#provider-capability"
+          : source.id.includes("handoff")
+            ? "docs/orchestrator-dispatch-protocol.md"
+            : "docs/harness-evidence.md"
       }))
     }));
   ensureDir(orchestration);
@@ -95,6 +101,10 @@ export function blockerSummary(cwd: string, runId: string): {
     run_id: runId,
     generated_at: new Date().toISOString(),
     status: summaries.some((summary) => summary.blockers.length > 0) ? "blocked" : "clear",
+    diagnostic_docs: [
+      "docs/harness-evidence.md",
+      "docs/orchestrator-dispatch-protocol.md"
+    ],
     sources: summaries
   };
 }

@@ -72,6 +72,16 @@ interface MergeAgentHandoff {
   evidence: string[];
 }
 
+interface RunMetadata {
+  project_kind?: string;
+  commit_policy?: {
+    auto_commit_allowed?: boolean;
+    commit_requires_user_approval?: boolean;
+    push_allowed?: boolean;
+    push_requires_remote?: boolean;
+  };
+}
+
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 }
@@ -110,6 +120,10 @@ function optionalGit(cwd: string, args: string[]) {
 
 function readGraph(cwd: string, runId: string): TaskGraph {
   return readJson<TaskGraph>(graphFile(cwd, runId));
+}
+
+function readRun(cwd: string, runId: string): RunMetadata {
+  return readJson<RunMetadata>(path.join(runDir(cwd, runId), "run.json"));
 }
 
 function readIndex(cwd: string, runId: string): WorktreeIndex {
@@ -227,6 +241,54 @@ function requireCommitterHandoff(cwd: string, runId: string): void {
   const validation = validateHandoff("committer", parsed, runId);
   if (!validation.passed) throw new Error(`Invalid committer handoff for run commit: ${validation.errors.join("; ")}`);
   if ((parsed as { status?: unknown }).status !== "ready") throw new Error("Committer handoff is not ready");
+}
+
+function commitPolicyAllowsRuntimeCommit(cwd: string, runId: string): boolean {
+  const policy = readRun(cwd, runId).commit_policy || {};
+  return policy.auto_commit_allowed !== false && policy.commit_requires_user_approval !== true;
+}
+
+function blockForCommitApproval(cwd: string, runId: string, reason: string): never {
+  const evidence = evidenceFile(cwd, runId, "commits.md");
+  appendEvidence(evidence, "Commit Evidence", `## Commit Approval Required\n\n- status: awaiting_user_approval\n- reason: ${reason}\n- user action: approve runtime commit or update commit policy before resuming\n`);
+  updateRun(cwd, runId, "awaiting_user_approval", {
+    commit_blocked_at: new Date().toISOString(),
+    commit_blocked_reason: reason,
+    commit_evidence: evidence
+  });
+  refreshOrchestrationSnapshot(cwd, runId);
+  throw new Error(reason);
+}
+
+function gitHasHead(cwd: string): boolean {
+  return optionalGit(cwd, ["rev-parse", "--verify", "HEAD"]).code === 0;
+}
+
+function ensureInitialBaselineCommit(cwd: string, runId: string): void {
+  const run = readRun(cwd, runId);
+  if (run.project_kind !== "new_project" || gitHasHead(cwd)) return;
+  if (!commitPolicyAllowsRuntimeCommit(cwd, runId)) {
+    blockForCommitApproval(cwd, runId, "initial baseline commit requires user approval");
+  }
+  if (optionalGit(cwd, ["rev-parse", "--git-dir"]).code !== 0) {
+    const init = optionalGit(cwd, ["init"]);
+    if (init.code !== 0) {
+      blockForCommitApproval(cwd, runId, `new project git init failed: ${init.stderr || init.error || "unknown"}`);
+    }
+  }
+  const sourceStatus = statusLines(cwd).filter((line) => !isRuntimeOwnedStatusFile(line.file));
+  if (sourceStatus.length === 0) {
+    blockForCommitApproval(cwd, runId, "new project has no source files for initial baseline commit");
+  }
+  runGit(cwd, ["add", "--", ...sourceStatus.map((line) => line.file)]);
+  runGit(cwd, ["commit", "-m", `chore(imfine): initial baseline for ${runId}`]);
+  const hash = runGit(cwd, ["rev-parse", "HEAD"]).trim();
+  const evidence = evidenceFile(cwd, runId, "commits.md");
+  appendEvidence(evidence, "Commit Evidence", `## Initial Baseline\n\n- status: baseline_committed\n- hash: ${hash}\n- files: ${sourceStatus.map((line) => line.file).join(", ")}\n`);
+  updateRun(cwd, runId, "committing", {
+    initial_baseline_commit: hash,
+    commit_evidence: evidence
+  });
 }
 
 function requireValidatedHandoff(cwd: string, runId: string, role: HandoffRole, taskId: string): void {
@@ -443,6 +505,10 @@ export function commitTask(cwd: string, runId: string, taskId: string): CommitRe
 
 export function commitRun(cwd: string, runId: string, mode: CommitMode, taskIds?: string[]): CommitResult {
   requireCommitterHandoff(cwd, runId);
+  if (!commitPolicyAllowsRuntimeCommit(cwd, runId)) {
+    blockForCommitApproval(cwd, runId, "run commit requires user approval");
+  }
+  ensureInitialBaselineCommit(cwd, runId);
   const graph = readGraph(cwd, runId);
   const selectedTaskIds = taskIds && taskIds.length > 0 ? taskIds : graph.tasks.map((task) => task.id);
   const tasks = orderedTasks(graph, selectedTaskIds);

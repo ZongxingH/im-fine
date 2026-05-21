@@ -124,7 +124,7 @@ assert.equal(resumed.status, "planned");
 assert.equal(resumed.executionMode, "true_harness");
 assert.ok(resumed.nextActions.some((action) => action.id === "runtime-worktree-prepare"));
 assert.ok(resumed.nextActions.some((action) => action.id === "agent-dev-T1"));
-assert.equal(resumed.dispatchContracts.length, 1);
+assert.equal(resumed.dispatchContracts.length, resumed.nextActions.length);
 assert.ok(!fs.existsSync(path.join(created.runDir, "orchestration", "parallel-plan.json")));
 
 assert.throws(() => run(["orchestrate", created.runId, "--json"], project), /internal runtime action/);
@@ -137,8 +137,13 @@ assert.ok(fs.existsSync(path.join(created.runDir, "orchestration", "parallel-pla
 assert.ok(fs.existsSync(path.join(created.runDir, "orchestration", "parallel-execution.json")));
 
 const dispatch = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
-assert.equal(dispatch.contracts.length, 1);
-assert.equal(dispatch.contracts[0].role, "dev");
+assert.equal(dispatch.contracts.length, 2);
+assert.ok(dispatch.contracts.some((contract) => contract.kind === "runtime" && contract.action_id === "runtime-worktree-prepare"));
+const nameMap = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "agent-name-map.json"), "utf8"));
+assert.equal(nameMap.mappings[0].action_id, "agent-dev-T1");
+assert.equal(nameMap.mappings[0].role, "dev");
+assert.equal(nameMap.mappings[0].parallel_group, "delivery");
+assert.equal(dispatch.contracts.find((contract) => contract.kind === "agent").role, "dev");
 
 const planArtifact = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "parallel-plan.json"), "utf8"));
 assert.equal(planArtifact.artifact_type, "planning");

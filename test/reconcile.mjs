@@ -79,6 +79,39 @@ function writeAgentAcceptanceMatrix(runDir, items) {
   }, null, 2) + "\n");
 }
 
+const requiredAcceptanceIds = [
+  "user_auth.register_login",
+  "seat.floor_management",
+  "seat.seat_management",
+  "reservation.timeslot_booking",
+  "reservation.timeout_auto_release",
+  "report.occupancy_report",
+  "admin.review_workflow",
+  "analytics.seat_usage_statistics",
+  "architecture.frontend_backend_separation",
+  "api.rest_api",
+  "frontend.user_mini_program",
+  "frontend.admin_pages",
+  "database.entities_and_relations",
+  "tests.interface_unit_tests",
+  "frontend.form_validation_and_pagination"
+];
+
+function fullAcceptanceItems(evidence = "backend/run-tests.sh") {
+  return requiredAcceptanceIds.map((id) => ({
+    id,
+    category: "required_acceptance_coverage",
+    requirement_level: "required",
+    classification: "required",
+    status: "pass",
+    detail: `agent accepted ${id}`,
+    expected: id,
+    observed: evidence,
+    accepted_by_review: true,
+    evidence: [evidence]
+  }));
+}
+
 function writeSession(runDir, runId) {
   fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
     schema_version: 1,
@@ -213,7 +246,9 @@ function writeHappyHarness(cwd, runDir, runId) {
     strategy: "parallel",
     tasks: []
   }, null, 2) + "\n");
-  writeAgentAcceptanceMatrix(runDir, [{
+  writeAgentAcceptanceMatrix(runDir, fullAcceptanceItems());
+  const existing = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), "utf8"));
+  existing.items.push({
     id: "backend_api.surface",
     category: "backend_api",
     requirement_level: "required",
@@ -224,7 +259,8 @@ function writeHappyHarness(cwd, runDir, runId) {
     observed: "backend/run-tests.sh",
     accepted_by_review: true,
     evidence: ["backend/run-tests.sh"]
-  }]);
+  });
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify(existing, null, 2) + "\n");
 }
 
 {
@@ -296,7 +332,16 @@ function writeHappyHarness(cwd, runDir, runId) {
       expected: "frontend/miniprogram app files",
       observed: "static frontend substitute",
       accepted_by_review: false,
-      evidence: ["frontend/index.html"]
+      evidence: ["frontend/index.html"],
+      deviation: {
+        requested: "frontend/miniprogram app files",
+        delivered: "static frontend substitute",
+        reason: "demo fixture intentionally omits mini-program runtime",
+        risk: "cannot prove real mini-program behavior",
+        accepted_by: [],
+        evidence: ["frontend/index.html"],
+        required_follow_up: ["build real mini-program pages"]
+      }
     },
     {
       id: "tests.frontend-contract",
@@ -340,9 +385,70 @@ function writeHappyHarness(cwd, runDir, runId) {
   const blockerTasks = fs.readdirSync(path.join(runDir, "tasks")).filter((name) => name.startsWith("FIX-reviewer") || name.startsWith("FIX-risk-reviewer"));
   assert.ok(blockerTasks.length >= 3);
   const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
+  assert.match(finalReport, /^# Blocked Archive Report/);
   assert.match(finalReport, /## Required/);
   assert.match(finalReport, /## Demo Substitute/);
   assert.match(finalReport, /QA\/Review accepted=no/);
+}
+
+{
+  const cwd = makeProject("imfine-deviation-template-accepted-", true);
+  const runId = "deviation";
+  const runDir = makeRun(cwd, runId, "planned", "Build a backend system with tests.");
+  writeHappyHarness(cwd, runDir, runId);
+  writeAgentAcceptanceMatrix(runDir, fullAcceptanceItems());
+  const existing = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), "utf8"));
+  existing.items.push({
+    id: "database.demo-substitute",
+    category: "storage",
+    requirement_level: "required",
+    classification: "deviation",
+    status: "pass",
+    detail: "Reviewer accepted in-memory demo substitute with follow-up",
+    expected: "database tables",
+    observed: "in-memory store",
+    accepted_by_review: true,
+    evidence: ["backend/run-tests.sh"],
+    deviation: {
+      requested: "database tables",
+      delivered: "in-memory store",
+      reason: "demo scope",
+      risk: "data is not durable",
+      accepted_by: ["qa", "reviewer"],
+      evidence: ["backend/run-tests.sh"],
+      required_follow_up: ["replace with persistent database before production"]
+    }
+  });
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify(existing, null, 2) + "\n");
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "pass");
+  const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "acceptance-matrix.json"), "utf8"));
+  assert.equal(matrix.items.find((item) => item.id === "database.demo-substitute").deviation.required_follow_up[0], "replace with persistent database before production");
+}
+
+{
+  const cwd = makeProject("imfine-handoff-evidence-collector-", true);
+  const runId = "collector";
+  const runDir = makeRun(cwd, runId, "planned", "Collect standard evidence from handoff references.");
+  fs.mkdirSync(path.join(cwd, "evidence"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "evidence", "qa-output.md"), "# QA\n\npass\n");
+  fs.mkdirSync(path.join(runDir, "agents", "qa-T1"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "agents", "qa-T1", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "qa pass",
+    commands: [],
+    evidence: ["evidence/qa-output.md"],
+    next_state: "reviewing"
+  }, null, 2) + "\n");
+  reconcileRun(cwd, runId);
+  const testEvidence = path.join(runDir, "evidence", "test-results.md");
+  assert.ok(fs.existsSync(testEvidence));
+  assert.match(fs.readFileSync(testEvidence, "utf8"), /Indexed from standard handoff evidence references/);
 }
 
 {
@@ -357,6 +463,9 @@ function writeHappyHarness(cwd, runDir, runId) {
   for (const gate of ["planning", "dispatch", "qa", "review", "recheck_fix_loop", "committer", "push", "archive", "true_harness", "project_knowledge"]) {
     assert.equal(gates[gate], "pass", `${gate} should pass`);
   }
+  assert.equal(gates.orchestrator_runtime_consistency, "pass");
+  const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
+  assert.match(finalReport, /^# Final Archive Report/);
   const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
   assert.equal(freshness.status, "fresh");
 }

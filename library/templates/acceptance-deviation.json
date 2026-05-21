@@ -1,0 +1,9 @@
+{
+  "requested": "Original required behavior or artifact.",
+  "delivered": "Delivered substitute or deviating behavior.",
+  "reason": "Why the deviation exists.",
+  "risk": "Delivery, product, security, or maintenance risk.",
+  "accepted_by": ["qa", "reviewer"],
+  "evidence": [".imfine/runs/<run-id>/evidence/review.md"],
+  "required_follow_up": ["Follow-up needed before final production acceptance."]
+}

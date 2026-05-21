@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
-import { validateTrueHarnessEvidenceFiles, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
+import { staleTrueHarnessEvidence, validateTrueHarnessEvidenceFiles, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { runCommand } from "./shell.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 
@@ -76,13 +76,38 @@ function copyReportIfExists(source: string, target: string, title: string): stri
   return target;
 }
 
+function collectReferencedEvidence(cwd: string, dir: string, target: string, title: string, matcher: (file: string) => boolean): string | null {
+  if (fs.existsSync(target)) return target;
+  const agentsDir = path.join(dir, "agents");
+  if (!fs.existsSync(agentsDir)) return null;
+  const references: string[] = [];
+  for (const agent of fs.readdirSync(agentsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)) {
+    const handoffFile = path.join(agentsDir, agent, "handoff.json");
+    if (!fs.existsSync(handoffFile)) continue;
+    const handoff = readJson<{ evidence?: unknown[] }>(handoffFile);
+    const evidence = Array.isArray(handoff.evidence) ? handoff.evidence.filter((item): item is string => typeof item === "string") : [];
+    for (const item of evidence) {
+      const absolute = path.isAbsolute(item) ? item : path.resolve(cwd, item);
+      if (fs.existsSync(absolute) && matcher(absolute)) references.push(absolute);
+    }
+  }
+  if (references.length === 0) return null;
+  writeText(target, `# ${title}\n\nIndexed from standard handoff evidence references.\n\n${references.map((file) => `## ${path.relative(cwd, file)}\n\n${readText(file).trim()}`).join("\n\n")}\n`);
+  return target;
+}
+
 export function collectStandardEvidence(cwd: string, runId: string): string[] {
   const dir = runDir(cwd, runId);
   const evidence = ensureEvidenceDir(dir);
   const files = [
     copyReportIfExists(path.join(dir, "review", "qa-report.md"), path.join(evidence, "test-results.md"), "Test Results"),
     copyReportIfExists(path.join(dir, "review", "code-review.md"), path.join(evidence, "review.md"), "Review Evidence"),
-    copyReportIfExists(path.join(dir, "review", "risk-review.md"), path.join(evidence, "risk-review.md"), "Risk Review Evidence")
+    copyReportIfExists(path.join(dir, "review", "risk-review.md"), path.join(evidence, "risk-review.md"), "Risk Review Evidence"),
+    collectReferencedEvidence(cwd, dir, path.join(evidence, "test-results.md"), "Test Results", (file) => /qa|test|result/i.test(file)),
+    collectReferencedEvidence(cwd, dir, path.join(evidence, "review.md"), "Review Evidence", (file) => /review/i.test(file) && !/risk/i.test(file)),
+    collectReferencedEvidence(cwd, dir, path.join(evidence, "risk-review.md"), "Risk Review Evidence", (file) => /risk/i.test(file)),
+    collectReferencedEvidence(cwd, dir, path.join(evidence, "commits.md"), "Commit Evidence", (file) => /commit/i.test(file)),
+    collectReferencedEvidence(cwd, dir, path.join(evidence, "push.md"), "Push Evidence", (file) => /push/i.test(file))
   ].filter((file): file is string => Boolean(file));
   return files;
 }
@@ -213,7 +238,34 @@ interface AcceptanceItem {
   observed: string;
   accepted_by_review: boolean;
   evidence: string[];
+  deviation?: {
+    requested: string;
+    delivered: string;
+    reason: string;
+    risk: string;
+    accepted_by: string[];
+    evidence: string[];
+    required_follow_up: string[];
+  };
 }
+
+const REQUIRED_ACCEPTANCE_CATEGORIES = [
+  "user_auth.register_login",
+  "seat.floor_management",
+  "seat.seat_management",
+  "reservation.timeslot_booking",
+  "reservation.timeout_auto_release",
+  "report.occupancy_report",
+  "admin.review_workflow",
+  "analytics.seat_usage_statistics",
+  "architecture.frontend_backend_separation",
+  "api.rest_api",
+  "frontend.user_mini_program",
+  "frontend.admin_pages",
+  "database.entities_and_relations",
+  "tests.interface_unit_tests",
+  "frontend.form_validation_and_pagination"
+];
 
 function readAgentAcceptanceItems(dir: string): AcceptanceItem[] {
   const sources = [
@@ -245,11 +297,34 @@ function readAgentAcceptanceItems(dir: string): AcceptanceItem[] {
         expected: typeof item.expected === "string" ? item.expected : "",
         observed: typeof item.observed === "string" ? item.observed : "",
         accepted_by_review: item.accepted_by_review === true,
-        evidence: Array.isArray(item.evidence) ? item.evidence.filter((entry): entry is string => typeof entry === "string") : []
+        evidence: Array.isArray(item.evidence) ? item.evidence.filter((entry): entry is string => typeof entry === "string") : [],
+        deviation: isObject((item as Record<string, unknown>).deviation)
+          ? normalizeDeviation((item as Record<string, unknown>).deviation as Record<string, unknown>)
+          : undefined
       });
     }
   }
   return items;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function normalizeDeviation(value: Record<string, unknown>): AcceptanceItem["deviation"] {
+  return {
+    requested: typeof value.requested === "string" ? value.requested : "",
+    delivered: typeof value.delivered === "string" ? value.delivered : "",
+    reason: typeof value.reason === "string" ? value.reason : "",
+    risk: typeof value.risk === "string" ? value.risk : "",
+    accepted_by: stringArray(value.accepted_by),
+    evidence: stringArray(value.evidence),
+    required_follow_up: stringArray(value.required_follow_up)
+  };
 }
 
 export function writeAcceptanceMatrix(cwd: string, runId: string): string {
@@ -269,8 +344,42 @@ export function writeAcceptanceMatrix(cwd: string, runId: string): string {
       evidence: []
     });
   }
+  const covered = new Set(items.map((item) => item.id));
+  for (const id of REQUIRED_ACCEPTANCE_CATEGORIES) {
+    if (covered.has(id)) continue;
+    items.push({
+      id,
+      category: "required_acceptance_coverage",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "Agent-authored acceptance matrix is missing this required coverage item.",
+      expected: id,
+      observed: "missing from agent-authored matrix",
+      accepted_by_review: false,
+      evidence: []
+    });
+  }
   const evidenceMissing = items.flatMap((item) => item.evidence.filter((file) => !fs.existsSync(path.isAbsolute(file) ? file : path.join(cwd, file))));
   for (const item of items) {
+    if ((item.classification === "deviation" || item.classification === "demo-substitute") && item.requirement_level === "required") {
+      const deviation = item.deviation;
+      const missingDeviationFields = !deviation
+        ? ["deviation"]
+        : [
+          deviation.requested ? "" : "requested",
+          deviation.delivered ? "" : "delivered",
+          deviation.reason ? "" : "reason",
+          deviation.risk ? "" : "risk",
+          deviation.accepted_by.length > 0 ? "" : "accepted_by",
+          deviation.evidence.length > 0 ? "" : "evidence",
+          deviation.required_follow_up.length > 0 ? "" : "required_follow_up"
+        ].filter(Boolean);
+      if (missingDeviationFields.length > 0 || !item.accepted_by_review) {
+        item.status = "blocked";
+        item.detail = `${item.detail}; deviation template incomplete or not accepted: ${missingDeviationFields.join(", ") || "not accepted"}`;
+      }
+    }
     if (item.requirement_level === "required" && item.status === "pass" && item.evidence.length === 0) {
       item.status = item.accepted_by_review ? "pass" : "blocked";
       item.detail = `${item.detail}; required item lacks evidence`;
@@ -532,7 +641,8 @@ function writeFinalReport(cwd: string, runId: string, status: ReconcileResult["s
   const renderItems = (values: AcceptanceItem[]) => values.length > 0
     ? values.map((item) => `- ${item.id}: ${item.status}; classification=${item.classification}; expected=${item.expected}; observed=${item.observed}; QA/Review accepted=${item.accepted_by_review ? "yes" : "no"}`).join("\n")
     : "- none";
-  writeText(report, `# Final Report\n\n- run: ${runId}\n- status: ${status}\n- blocker matrix: ${blockerMatrix}\n\n## Gates\n\n${gates.map((item) => `- ${item.id}: ${item.status} (${item.detail})`).join("\n")}\n\n## Required\n\n${renderItems(required)}\n\n## Negotiable\n\n${renderItems(negotiable)}\n\n## Demo Substitute\n\n${renderItems(substitutions)}\n\n## Deviation\n\n${renderItems(deviations)}\n\n## QA Review Acceptance\n\n${items.length > 0 ? items.map((item) => `- ${item.id}: ${item.accepted_by_review ? "accepted" : "not accepted"}`).join("\n") : "- none"}\n\n## Structured Blockers\n\n${structuredBlockers.length > 0 ? structuredBlockers.map((blocker) => `- ${blocker.id}: owner=${blocker.owner}; evidence=${blocker.required_evidence.join(", ")}; close=${blocker.review_close_action}; summary=${blocker.summary}`).join("\n") : "- none"}\n`);
+  const title = status === "completed" ? "Final Archive Report" : "Blocked Archive Report";
+  writeText(report, `# ${title}\n\n- run: ${runId}\n- status: ${status}\n- blocker matrix: ${blockerMatrix}\n\n## Gates\n\n${gates.map((item) => `- ${item.id}: ${item.status} (${item.detail})`).join("\n")}\n\n## Required\n\n${renderItems(required)}\n\n## Negotiable\n\n${renderItems(negotiable)}\n\n## Demo Substitute\n\n${renderItems(substitutions)}\n\n## Deviation\n\n${renderItems(deviations)}\n\n## QA Review Acceptance\n\n${items.length > 0 ? items.map((item) => `- ${item.id}: ${item.accepted_by_review ? "accepted" : "not accepted"}`).join("\n") : "- none"}\n\n## Structured Blockers\n\n${structuredBlockers.length > 0 ? structuredBlockers.map((blocker) => `- ${blocker.id}: owner=${blocker.owner}; evidence=${blocker.required_evidence.join(", ")}; close=${blocker.review_close_action}; summary=${blocker.summary}`).join("\n") : "- none"}\n`);
   return report;
 }
 
@@ -580,6 +690,38 @@ function projectKnowledgeGate(cwd: string): ReconcileGate {
   return gate("project_knowledge", stale.length === 0, stale.length > 0 ? stale.map((item) => `${item.file}:${item.marker}`).join(", ") : freshness);
 }
 
+function orchestratorRuntimeConsistencyGate(dir: string, runStatus: string | undefined, harnessFile: string): ReconcileGate {
+  const orchestration = path.join(dir, "orchestration");
+  const sessionFile = path.join(orchestration, "orchestrator-session.json");
+  const finalGates = path.join(orchestration, "final-gates.json");
+  const agentRunsFile = path.join(orchestration, "agent-runs.json");
+  const dispatchFile = path.join(orchestration, "dispatch-contracts.json");
+  const parallelFile = path.join(orchestration, "parallel-execution.json");
+  const blockers: string[] = [];
+  if (fs.existsSync(sessionFile)) {
+    const session = readJson<{ status?: string }>(sessionFile);
+    if (session.status === "completed" && runStatus !== "completed") blockers.push("orchestrator_session_unadopted");
+    if (session.status === "completed" && !fs.existsSync(finalGates)) blockers.push("session_completed_without_final_gates");
+  }
+  if (fs.existsSync(harnessFile)) {
+    const stale = staleTrueHarnessEvidence(harnessFile);
+    if (stale.length > 0) blockers.push(`true_harness_evidence_stale: ${stale.join("; ")}`);
+  }
+  if (fs.existsSync(dispatchFile)) {
+    const dispatch = readJson<{ contracts?: unknown[] }>(dispatchFile);
+    const contracts = Array.isArray(dispatch.contracts) ? dispatch.contracts : [];
+    if (contracts.length > 0 && fs.existsSync(agentRunsFile)) {
+      const agentRuns = readJson<{ agents?: unknown[] }>(agentRunsFile);
+      if (!Array.isArray(agentRuns.agents) || agentRuns.agents.length === 0) blockers.push("dispatch_contracts_without_agent_runs");
+    }
+    if (contracts.length > 0 && fs.existsSync(parallelFile)) {
+      const parallel = readJson<{ wave_history?: unknown[] }>(parallelFile);
+      if (!Array.isArray(parallel.wave_history) || parallel.wave_history.length === 0) blockers.push("dispatch_contracts_without_wave_history");
+    }
+  }
+  return gate("orchestrator_runtime_consistency", blockers.length === 0, blockers.length > 0 ? blockers.join(", ") : "runtime/session states consistent");
+}
+
 export function finalizeRun(cwd: string, runId: string): ReconcileResult {
   const dir = runDir(cwd, runId);
   collectStandardEvidence(cwd, runId);
@@ -591,6 +733,7 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
   const harness = harnessFiles.json;
   const harnessPayload = readJson<{ true_harness_passed?: boolean }>(harness);
   const harnessConsistency = validateTrueHarnessEvidenceFiles(harnessFiles.json, harnessFiles.markdown);
+  const runMetadata = readJson<RunMetadata>(runFile(cwd, runId));
   const planningPassed = fs.existsSync(path.join(dir, "analysis", "project-context.md"))
     && fs.existsSync(path.join(dir, "orchestration", "context.json"))
     && fs.existsSync(path.join(dir, "planning", "task-graph.json"));
@@ -611,6 +754,7 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     archiveGate(dir),
     acceptanceGate(acceptance),
     gate("true_harness", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
+    orchestratorRuntimeConsistencyGate(dir, runMetadata.status, harness),
     projectKnowledgeGate(cwd)
   ];
   const finalGates = path.join(dir, "orchestration", "final-gates.json");
@@ -626,6 +770,7 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     gates: Object.fromEntries(gates.map((item) => [item.id, item.status])),
     checks: gates
   }, null, 2)}\n`);
+  writeTrueHarnessEvidence(cwd, runId);
   if (status === "completed") {
     assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString(), final_gates: finalGates }), `finalize archive ${runId}`);
     assertTransitionAccepted(transitionRunState(cwd, runId, "completed", { completed_at: new Date().toISOString(), final_gates: finalGates }), `finalize run ${runId}`);

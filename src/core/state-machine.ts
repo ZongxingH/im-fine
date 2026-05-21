@@ -19,6 +19,8 @@ export type RunState =
   | "verifying"
   | "reviewing"
   | "committing"
+  | "ready_for_commit"
+  | "awaiting_user_approval"
   | "pushing"
   | "archiving"
   | "completed"
@@ -45,6 +47,8 @@ const RUN_STATES = new Set<RunState>([
   "verifying",
   "reviewing",
   "committing",
+  "ready_for_commit",
+  "awaiting_user_approval",
   "pushing",
   "archiving",
   "completed",
@@ -296,15 +300,17 @@ function isLegalRunTransition(from: RunState, to: RunState): boolean {
     requirement_analyzed: ["designed", "orchestrating"],
     designed: ["orchestrating", "planned", "waiting_for_agent_output"],
     orchestrating: ["planned", "waiting_for_agent_output", "branch_prepared", "executing", "implementing"],
-    planned: ["waiting_for_agent_output", "branch_prepared", "executing", "implementing"],
-    waiting_for_agent_output: ["planned", "branch_prepared", "executing", "implementing"],
+    planned: ["waiting_for_agent_output", "branch_prepared", "executing", "implementing", "ready_for_commit", "awaiting_user_approval"],
+    waiting_for_agent_output: ["planned", "branch_prepared", "executing", "implementing", "ready_for_commit", "awaiting_user_approval"],
     branch_prepared: ["executing", "implementing"],
     executing: ["integrating", "verifying", "reviewing", "committing"],
     implementing: ["integrating", "verifying", "reviewing", "committing"],
     integrating: ["verifying", "reviewing", "committing"],
     verifying: ["reviewing"],
-    reviewing: ["committing"],
-    committing: ["pushing"],
+    reviewing: ["committing", "ready_for_commit", "awaiting_user_approval"],
+    ready_for_commit: ["committing", "awaiting_user_approval"],
+    awaiting_user_approval: ["committing", "blocked", "completed"],
+    committing: ["pushing", "ready_for_commit", "awaiting_user_approval"],
     pushing: ["archiving"],
     archiving: ["completed"],
     completed: ["completed"],

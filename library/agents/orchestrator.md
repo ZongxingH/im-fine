@@ -25,6 +25,8 @@ Owns the delivery run. Coordinates agents, runtime state, task graph, handoffs, 
 
 The Orchestrator dispatches native subagents from the current provider session. The deterministic runtime never calls provider subagent APIs.
 
+Runtime and CLI do not provide `launch codex agent`, `launch claude agent`, `spawn provider agent`, or equivalent provider-agent startup commands. They only record current-session handback evidence, validate schemas, update deterministic state, run git/archive actions, and report blockers.
+
 For each ready dispatch contract:
 
 1. Launch exactly one independent native subagent for the contract role and boundary.
@@ -43,6 +45,20 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <actio
 ```
 
 The provider agent id, session id, and task handle must come from the native provider run. Do not invent placeholder ids.
+
+Runtime dispatch contracts use `runtime-action-ledger` evidence rather than provider receipts or agent handoff files.
+
+## Completion Preconditions
+
+An `orchestrator-session.json` may only declare `status=completed` when all completion preconditions are true:
+
+- provider receipts complete for every agent dispatch contract;
+- handoffs valid for every required agent;
+- final gates pass;
+- true harness evidence passes and is fresh;
+- commit, push, and archive policy is satisfied.
+
+If any item is missing, keep the session waiting or blocked. A completed session without these facts is not adopted as a completed run.
 
 ## Handoff Schema
 
@@ -67,3 +83,4 @@ The provider agent id, session id, and task handle must come from the native pro
 - Do not pretend unclear write boundaries are safe for parallel execution.
 - Do not lower acceptance or verification standards silently.
 - Do not mark an agent completed with runtime-only or synthetic provider receipts.
+- Do not mark runtime actions completed with provider receipts; use the runtime action ledger.

@@ -427,7 +427,21 @@ assert.ok(Array.isArray(parallelExecution.wave_history));
 assert.ok(parallelExecution.wave_history.length > 0);
 
 const dispatchContracts = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
-assert.ok(dispatchContracts.contracts.length >= 7);
+const sessionActions = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8")).next_actions;
+assert.equal(dispatchContracts.contracts.length, sessionActions.length);
+for (const contract of dispatchContracts.contracts) {
+  if (contract.kind === "agent") {
+    assert.ok(contract.expected_handoff_path.endsWith(path.join("agents", contract.id, "handoff.json")));
+    assert.ok(contract.expected_provider_receipt_path.endsWith(`${contract.action_id}.json`));
+    assert.ok(contract.expected_output_paths.includes(contract.expected_handoff_path));
+  } else {
+    assert.equal(contract.expected_provider_receipt_path, "");
+    assert.equal(contract.handoff_schema, "runtime-action-ledger");
+  }
+}
+const agentNameMap = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-name-map.json"), "utf8"));
+assert.ok(agentNameMap.mappings.some((mapping) => mapping.action_id === "agent-dev-T1" && mapping.role === "dev"));
+assert.ok(agentNameMap.mappings.some((mapping) => mapping.action_id === "agent-archive" && mapping.role === "archive"));
 const agentRegistry = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-runs.json"), "utf8"));
 assert.ok(agentRegistry.agents.every((agent) => agent.executionType === "native_agent_run"));
 assert.ok(Array.isArray(agentRegistry.runtime_gates));
@@ -441,6 +455,7 @@ assert.equal(session.harness_classification, "true_harness");
 
 const evidence = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
 const agentContracts = dispatchContracts.contracts.filter((contract) => contract.kind !== "runtime");
+const runtimeContracts = dispatchContracts.contracts.filter((contract) => contract.kind === "runtime");
 assert.equal(evidence.harness_classification, "true_harness");
 assert.equal(evidence.orchestrator_declaration.passed, true);
 assert.equal(evidence.true_harness_passed, true);
@@ -453,6 +468,9 @@ assert.deepEqual(evidence.provider_execution_receipts.missing_provider_receipt_c
 assert.ok(evidence.provider_execution_receipts.receipts.every((receipt) => receipt.provider_agent_id.startsWith(`${provider}-agent-real-`)));
 assert.ok(evidence.parallel_execution.wave_count > 0);
 assert.equal(evidence.parallel_execution.all_contracts_have_completed_wave, true);
+assert.equal(evidence.parallel_execution.runtime_dispatch_contract_count, runtimeContracts.length);
+assert.equal(evidence.parallel_execution.all_runtime_contracts_completed, true);
+assert.deepEqual(evidence.parallel_execution.missing_runtime_action_ledger_contracts, []);
 assert.deepEqual(evidence.parallel_execution.missing_completed_wave_contracts, []);
 assert.equal(evidence.handoff_validation.required_agent_count, agentContracts.length);
 assert.equal(evidence.handoff_validation.valid_agent_count, agentContracts.length);
@@ -469,7 +487,7 @@ assert.equal(archive.status, "completed");
 assert.ok(fs.existsSync(path.join(runDir, "archive", "archive-report.md")));
 assert.ok(fs.existsSync(path.join(project, ".imfine", "reports", `${created.runId}.md`)));
 
-for (const contract of dispatchContracts.contracts) {
+for (const contract of agentContracts) {
   const candidates = [
     path.join(runDir, "agents", contract.id, "handoff.json"),
     contract.task_id ? path.join(runDir, "agents", contract.task_id, "handoff.json") : undefined,
@@ -499,6 +517,8 @@ for (const id of ["run-level.qa-evidence", "run-level.review-evidence", "run-lev
 }
 assert.ok(fs.existsSync(path.join(project, ".imfine", "project", "project-knowledge-freshness.json")));
 assert.equal(actionLedger.actions["runtime-archive-finalize"].status, "completed");
+const archiveReport = fs.readFileSync(path.join(runDir, "archive", "archive-report.md"), "utf8");
+assert.match(archiveReport, /^# Final Archive Report/);
 }
 
 for (const provider of ["codex", "claude"]) {

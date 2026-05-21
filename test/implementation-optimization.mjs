@@ -2,16 +2,22 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { validateTaskGraph } from "../dist/core/plan.js";
 import { RUNTIME_ROLES, allowedTransitionsForRole, evidenceRequirementsForRole, handoffSchemaForRole, runtimeRoleContracts } from "../dist/core/role-registry.js";
 import { buildDispatchContracts } from "../dist/core/dispatch.js";
 import { isHandoffRole } from "../dist/core/handoff-evidence.js";
 import { validateAgentSkills } from "../dist/core/skill-registry.js";
 import { writeProviderCapabilitySnapshot, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
-import { writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
+import { staleTrueHarnessEvidence, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
 import { status } from "../dist/core/status.js";
 import { doctor } from "../dist/core/doctor.js";
 import { initProject } from "../dist/core/init.js";
+import { transitionRunState } from "../dist/core/state-machine.js";
+import { codexSkillTemplate, claudeCommandTemplate } from "../dist/core/templates.js";
+
+const root = path.resolve(import.meta.dirname, "..");
+const cli = path.join(root, "dist", "cli", "imfine.js");
 
 function makeRun(prefix = "imfine-implementation-optimization-") {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -277,6 +283,26 @@ try {
   assert.match(architecture, /src\/index\.js/);
 }
 
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-forbid-provider-launch-"));
+  assert.throws(
+    () => execFileSync(process.execPath, [cli, "launch-codex-agent"], { cwd, encoding: "utf8", stdio: "pipe" }),
+    /provider agent launch commands/
+  );
+}
+
+{
+  for (const content of [codexSkillTemplate("en"), claudeCommandTemplate("zh")]) {
+    assert.match(content, /Completion Preconditions|完成前置条件/);
+    assert.match(content, /acceptance-deviation\.json/);
+    assert.match(content, /awaiting_user_approval/);
+    assert.match(content, /true_harness_passed=true/);
+  }
+  const schema = JSON.parse(fs.readFileSync(path.join(root, "library", "templates", "orchestrator-session.schema.json"), "utf8"));
+  assert.ok(schema.properties.completion_preconditions.required.includes("final_gates_pass"));
+  assert.ok(schema.properties.completion_preconditions.required.includes("commit_push_archive_policy_satisfied"));
+}
+
 try {
   const { cwd, runId } = makeRun("imfine-provider-blocker-summary-");
   process.env.IMFINE_PROVIDER = "codex";
@@ -285,6 +311,7 @@ try {
   const value = status(cwd);
   assert.equal(value.currentRunBlockers.status, "blocked");
   assert.equal(value.currentRunBlockers.items, 1);
+  assert.equal(value.currentRunBlockers.diagnosticDoc, "docs/harness-evidence.md#provider-capability");
 } finally {
   if (previousProvider === undefined) delete process.env.IMFINE_PROVIDER;
   else process.env.IMFINE_PROVIDER = previousProvider;
@@ -371,6 +398,44 @@ for (const provider of ["codex", "claude"]) {
   const value = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(value.true_harness_passed, false);
   assert.deepEqual(value.parallel_execution.missing_completed_wave_contracts, ["T1"]);
+}
+
+{
+  const fixture = makeRun("imfine-true-harness-freshness-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture);
+  const files = writeTrueHarnessEvidence(cwd, runId);
+  assert.deepEqual(staleTrueHarnessEvidence(files.json), []);
+  const sessionFile = path.join(runDir, "orchestration", "orchestrator-session.json");
+  const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+  session.updated_at = "2026-05-20T07:00:34.000Z";
+  fs.writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n");
+  assert.ok(staleTrueHarnessEvidence(files.json).some((item) => item.includes("orchestrator_session")));
+  const value = status(cwd);
+  assert.equal(value.currentRunGates.true_harness, "stale");
+  assert.equal(value.currentRunConsistency, "inconsistent");
+}
+
+{
+  const fixture = makeRun("imfine-provider-observations-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture);
+  const obsDir = path.join(runDir, "orchestration", "provider-observations");
+  fs.mkdirSync(obsDir, { recursive: true });
+  fs.writeFileSync(path.join(obsDir, "ui-screenshot.json"), JSON.stringify({
+    timestamp: "2026-05-20T08:00:00.000Z",
+    observed_agent_names: ["Tesla", "Rawls"],
+    observed_closed_count: 2,
+    screenshot_path: "screenshots/demo.png"
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-name-map.json"), JSON.stringify({
+    mappings: [{ provider_display_name: "Tesla", action_id: "agent-dev-T1", role: "dev", parallel_group: "delivery", started_at: "2026-05-20T08:00:00.000Z", expected_output: "agents/T1/handoff.json" }]
+  }, null, 2) + "\n");
+  const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.equal(evidence.provider_observations.present, true);
+  assert.deepEqual(evidence.provider_observations.observed_native_agents, ["Tesla", "Rawls"]);
+  assert.equal(evidence.provider_observations.proof_boundary, "diagnostic_only_not_true_harness_proof");
+  assert.equal(evidence.agent_name_map.present, true);
 }
 
 {
@@ -475,6 +540,30 @@ for (const runStatus of ["completed", "blocked", "waiting_for_agent_output", "ne
 }
 
 {
+  const { cwd, runId, runDir } = makeRun("imfine-commit-approval-state-");
+  fs.mkdirSync(path.join(runDir, "agents", "committer"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "agents", "committer", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "run",
+    role: "committer",
+    from: "committer",
+    to: "orchestrator",
+    status: "ready",
+    summary: "commit ready but approval required",
+    commands: [],
+    evidence: [path.join(runDir, "agents", "committer", "handoff.json")],
+    next_state: "awaiting_user_approval"
+  }, null, 2) + "\n");
+  const moved = transitionRunState(cwd, runId, "awaiting_user_approval", {
+    commit_blocked_reason: "run commit requires user approval"
+  });
+  assert.equal(moved.accepted, true);
+  const blocked = transitionRunState(cwd, runId, "completed");
+  assert.equal(blocked.accepted, false);
+  assert.match(blocked.reason, /true harness evidence/);
+}
+
+{
   const { cwd, runDir } = makeRun("imfine-status-incomplete-final-gates-");
   fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
     schema_version: 1,
@@ -491,6 +580,23 @@ for (const runStatus of ["completed", "blocked", "waiting_for_agent_output", "ne
   assert.equal(value.currentRunConsistency, "inconsistent");
   const report = doctor(cwd);
   assert.ok(report.checks.some((item) => item.id === "run.review.blocker_matrix" && item.status === "fail"));
+}
+
+{
+  const { cwd, runDir } = makeRun("imfine-status-session-runtime-split-");
+  fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: "run-1",
+    decision_source: "orchestrator_agent",
+    execution_mode: "true_harness",
+    harness_classification: "true_harness",
+    status: "completed",
+    next_actions: [],
+    agent_runs: []
+  }, null, 2) + "\n");
+  const value = status(cwd);
+  assert.equal(value.currentRunConsistency, "inconsistent");
+  assert.equal(value.currentRunGates.status_consistency, "orchestrator_session_unadopted");
 }
 
 console.log("implementation optimization ok");

@@ -78,7 +78,7 @@ export function formatStatus(result: StatusResult): string {
     ? `ready=${result.currentRunActions.ready}, waiting=${result.currentRunActions.waiting}, blocked=${result.currentRunActions.blocked}, groups=${result.currentRunActions.currentParallelGroups.join(",") || "none"}`
     : "none";
   const blockers = result.currentRunBlockers
-    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}, next=${result.currentRunBlockers.nextAction || "none"}`
+    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}, next=${result.currentRunBlockers.nextAction || "none"}, doc=${result.currentRunBlockers.diagnosticDoc || "none"}`
     : "none";
   const checkpoint = result.currentRunLatestCheckpoint
     ? `${result.currentRunLatestCheckpoint.actionId}:${result.currentRunLatestCheckpoint.status} (${result.currentRunLatestCheckpoint.detail})`

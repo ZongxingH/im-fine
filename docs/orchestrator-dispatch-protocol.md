@@ -7,7 +7,8 @@ For each ready dispatch contract:
 1. Read the contract inputs, required outputs, dependencies, scopes, role, and parallel group.
 2. Launch one native provider subagent for that contract.
 3. Require the subagent to write the declared handoff or output path.
-4. Record provider-origin completion:
+4. Record `orchestration/agent-name-map.json` when the provider exposes display names, so UI names can be traced to action ids, roles, parallel groups, and expected outputs.
+5. Record provider-origin completion:
 
 ```bash
 node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <action-id> \
@@ -30,3 +31,5 @@ Codex and Claude share the same contracts:
 - `action-ledger.json`
 
 Provider capability is explicit. If a provider cannot launch native subagents, wait for them, write file outputs, or run a parallel batch, the run must be blocked or explicitly degraded with `true_harness_passed=false`.
+
+Runtime and CLI must not launch Codex or Claude agents. There is no supported `launch codex agent`, `launch claude agent`, `spawn provider agent`, or equivalent runtime entry. The launch action happens only inside the current Codex or Claude session; runtime records and validates the handback.

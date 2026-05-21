@@ -109,6 +109,13 @@ interface AgentAuthoredSession {
   next_actions?: OrchestrationAction[];
   next_action?: unknown[];
   agent_runs?: AgentRun[];
+  completion_preconditions?: {
+    provider_receipts_complete?: boolean;
+    handoffs_valid?: boolean;
+    final_gates_pass?: boolean;
+    true_harness_evidence_pass?: boolean;
+    commit_push_archive_policy_satisfied?: boolean;
+  };
 }
 
 type JsonObject = Record<string, unknown>;
@@ -411,6 +418,23 @@ function validateSession(session: AgentAuthoredSession, runId: string): string[]
   if (!Array.isArray(session.agent_runs)) {
     errors.push("agent_runs is required");
   }
+  if (session.status === "completed") {
+    const preconditions = session.completion_preconditions;
+    const required = [
+      "provider_receipts_complete",
+      "handoffs_valid",
+      "final_gates_pass",
+      "true_harness_evidence_pass",
+      "commit_push_archive_policy_satisfied"
+    ] as const;
+    if (!preconditions) {
+      errors.push("completion_preconditions is required when status is completed");
+    } else {
+      for (const field of required) {
+        if (preconditions[field] !== true) errors.push(`completion_preconditions.${field} must be true when status is completed`);
+      }
+    }
+  }
 
   const actionIds = new Set<string>();
   const actions = Array.isArray(session.next_actions)
@@ -489,6 +513,31 @@ function writeTimeline(file: string, result: Omit<OrchestratorResult, "files">):
   ].join("\n"));
 }
 
+function writeAgentNameMap(cwd: string, runId: string, runDirPath: string, agents: AgentRun[], actions: OrchestrationAction[]): string {
+  const file = path.join(runDirPath, "orchestration", "agent-name-map.json");
+  const mappings = agents.map((agent) => {
+    const action = actions.find((item) => item.kind === "agent" && actionMatchesAgent(item, agent));
+    const expectedOutput = agent.handoffFile || path.join(runDirPath, "agents", agent.id, "handoff.json");
+    return {
+      provider_display_name: agent.instanceId || agent.id,
+      action_id: action?.id || `agent-${agent.id}`,
+      agent_id: agent.id,
+      role: agent.role,
+      task_id: agent.taskId || null,
+      parallel_group: agent.parallelGroup,
+      started_at: agent.startedAt || null,
+      expected_output: path.isAbsolute(expectedOutput) ? path.relative(cwd, expectedOutput) : expectedOutput
+    };
+  });
+  writeText(file, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    mappings
+  }, null, 2)}\n`);
+  return file;
+}
+
 function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "files">): OrchestratorResult {
   const runDirPath = runDir(cwd, runId);
   const orchestrationDir = path.join(runDirPath, "orchestration");
@@ -506,7 +555,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
   const dispatchContracts = exists(files.session) && result.nextActions.length > 0 && result.agentRuns.length > 0
     ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
     : [];
-  for (const contract of dispatchContracts.filter((item) => item.status === "ready" || item.status === "waiting")) {
+  for (const contract of dispatchContracts.filter((item) => item.kind === "agent" && (item.status === "ready" || item.status === "waiting"))) {
     writeProviderDispatchReceipt(cwd, runId, {
       actionId: contract.action_id,
       agentId: contract.id,
@@ -559,6 +608,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     wave_history: Array.isArray(existingExecution?.wave_history) ? existingExecution.wave_history : []
   }, null, 2)}\n`);
   writeTimeline(files.timeline, result);
+  writeAgentNameMap(cwd, runId, runDirPath, result.agentRuns, result.nextActions);
   const nativeAgents = result.agentRuns.map((agent) => ({
     ...agent,
     executionType: "native_agent_run" as const

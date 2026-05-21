@@ -172,6 +172,18 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <actio
 
 The provider agent id, session id, and task handle must come from the native provider run. Do not invent placeholder ids. Runtime-only receipts do not prove true harness execution.
 
+## Completion Preconditions
+
+Before marking \`orchestration/orchestrator-session.json.status\` as \`completed\`, verify runtime evidence is closed:
+
+- every required dispatch contract has a provider-origin completed receipt
+- every required Agent wrote \`agents/<agent-id>/handoff.json\`
+- \`parallel-execution.json\` has completed waves for required contracts
+- \`acceptance-matrix.json\` has no blocked required items; deviations use \`library/templates/acceptance-deviation.json\`
+- \`final-gates.json\` exists and all required gates pass
+- \`true-harness-evidence.json\` is fresh and \`true_harness_passed=true\`
+- commit/push/archive policy is satisfied; otherwise use \`ready_for_commit\`, \`awaiting_user_approval\`, \`waiting_for_agent_output\`, or \`blocked\`
+
 ## Hard Rules
 
 - Do not expose runtime internals as user workflow.
@@ -354,6 +366,18 @@ node ~/.imfine/runtime/dist/cli/imfine-runtime.js agent complete <run-id> <actio
 \`\`\`
 
 provider agent id、session id 和 task handle 必须来自原生 provider run。不要编造占位 id。runtime-only receipt 不能证明 true harness 执行。
+
+## 完成前置条件
+
+把 \`orchestration/orchestrator-session.json.status\` 标成 \`completed\` 前，必须确认 runtime 证据已经闭合：
+
+- 每个 required dispatch contract 都有 provider-origin completed receipt
+- 每个 required Agent 都写出 \`agents/<agent-id>/handoff.json\`
+- \`parallel-execution.json\` 对 required contracts 有 completed wave
+- \`acceptance-matrix.json\` 没有 blocked required item；deviation 使用 \`library/templates/acceptance-deviation.json\`
+- \`final-gates.json\` 存在且 required gates 全部 pass
+- \`true-harness-evidence.json\` fresh 且 \`true_harness_passed=true\`
+- commit/push/archive policy 已满足；否则只能使用 \`ready_for_commit\`、\`awaiting_user_approval\`、\`waiting_for_agent_output\` 或 \`blocked\`
 
 ## 硬性规则
 
