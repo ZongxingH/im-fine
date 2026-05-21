@@ -115,6 +115,12 @@ function listMeaningfulFiles(cwd: string, ignoredFiles: Set<string>): string[] {
   return result.sort();
 }
 
+const WEAK_PROJECT_ROOT_FILES = new Set([".gitignore", ".env.example"]);
+
+function hasStrongProjectEvidence(files: string[]): boolean {
+  return files.some((file) => !WEAK_PROJECT_ROOT_FILES.has(file));
+}
+
 function projectAnalysis(cwd: string, ignoredFiles = new Set<string>()): ProjectAnalysis {
   const files = listMeaningfulFiles(cwd, ignoredFiles);
   const evidence: Evidence[] = [];
@@ -154,7 +160,7 @@ function projectAnalysis(cwd: string, ignoredFiles = new Set<string>()): Project
   if (testCommands.length === 0) unknowns.push("test command");
 
   return {
-    kind: files.length === 0 ? "new_project" : "existing_project",
+    kind: hasStrongProjectEvidence(files) ? "existing_project" : "new_project",
     evidence,
     unknowns,
     packageManager,

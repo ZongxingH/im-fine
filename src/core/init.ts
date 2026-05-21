@@ -42,6 +42,16 @@ function listProjectEntries(cwd: string): string[] {
     .sort();
 }
 
+const WEAK_PROJECT_ROOT_FILES = new Set([".gitignore", ".env.example"]);
+
+function isWeakProjectRootFile(file: string): boolean {
+  return WEAK_PROJECT_ROOT_FILES.has(file);
+}
+
+function hasStrongProjectEvidence(entries: string[]): boolean {
+  return entries.some((entry) => !isWeakProjectRootFile(entry));
+}
+
 function walkFiles(cwd: string, limit = 80): string[] {
   const ignored = new Set([...IGNORED_PROJECT_ENTRIES, ".imfine"]);
   const files: string[] = [];
@@ -122,7 +132,7 @@ ${notes.length > 0 ? notes.map((item) => `- ${item}`).join("\n") : "- 仅在有�
 
 function writeArchitectureDocs(cwd: string, workspace: string, created: string[], preserved: string[]): InitResult["architecture"] {
   const projectEntries = listProjectEntries(cwd);
-  const mode: "empty" | "existing" = projectEntries.length === 0 ? "empty" : "existing";
+  const mode: "empty" | "existing" = hasStrongProjectEvidence(projectEntries) ? "existing" : "empty";
   const architectureDir = path.join(workspace, "project", "architecture");
   ensureDir(architectureDir);
 

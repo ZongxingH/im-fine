@@ -13,6 +13,7 @@ import { staleTrueHarnessEvidence, writePreArchiveHarnessEvidence, writeTrueHarn
 import { status } from "../dist/core/status.js";
 import { doctor } from "../dist/core/doctor.js";
 import { initProject } from "../dist/core/init.js";
+import { createDeliveryRun } from "../dist/core/run.js";
 import { transitionRunState } from "../dist/core/state-machine.js";
 import { codexSkillTemplate, claudeCommandTemplate } from "../dist/core/templates.js";
 
@@ -281,6 +282,21 @@ try {
   assert.equal(freshness.status, "confirmed");
   const architecture = fs.readFileSync(path.join(cwd, ".imfine", "project", "architecture.md"), "utf8");
   assert.match(architecture, /src\/index\.js/);
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-init-gitignore-only-"));
+  fs.writeFileSync(path.join(cwd, ".gitignore"), "__pycache__/\nbackend/db/*.sqlite3\n");
+  const result = initProject(cwd);
+  assert.equal(result.projectMode, "empty");
+  assert.equal(result.architecture.mode, "empty");
+  assert.equal(result.architecture.architectInput, undefined);
+  assert.equal(result.architecture.architectHandoff, undefined);
+  assert.equal(fs.existsSync(path.join(cwd, ".imfine", "runs", "init", "agents", "architect", "handoff.json")), false);
+  const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
+  assert.equal(freshness.status, "empty");
+  const run = createDeliveryRun(cwd, ["Build demo"], { allowNew: false });
+  assert.equal(run.projectKind, "new_project");
 }
 
 {

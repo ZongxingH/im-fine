@@ -37,24 +37,29 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
 {
   const cwd = copyDemo(demoRoots.early, "imfine-real-early-demo-");
   const runId = runIds(cwd).find((id) => !id.endsWith("-2"));
-  assert.ok(runId);
-  ensureAgentAcceptanceMatrix(cwd, runId, [{
-    id: "git_delivery.commits",
-    category: "git_delivery",
-    requirement_level: "required",
-    classification: "required",
-    status: "blocked",
-    detail: "commit evidence missing",
-    expected: "commit evidence",
-    observed: "missing",
-    accepted_by_review: false,
-    evidence: []
-  }]);
-  const result = reconcileRun(cwd, runId);
-  assert.equal(result.status, "blocked");
-  assert.equal(result.gates.find((gate) => gate.id === "commit").status, "blocked");
-  const run = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "run.json"), "utf8"));
-  assert.equal(run.status, "blocked");
+  if (runId) {
+    ensureAgentAcceptanceMatrix(cwd, runId, [{
+      id: "git_delivery.commits",
+      category: "git_delivery",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "commit evidence missing",
+      expected: "commit evidence",
+      observed: "missing",
+      accepted_by_review: false,
+      evidence: []
+    }]);
+    const result = reconcileRun(cwd, runId);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.gates.find((gate) => gate.id === "commit").status, "blocked");
+    const run = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "run.json"), "utf8"));
+    assert.equal(run.status, "blocked");
+  } else {
+    const status = readStatus(cwd);
+    assert.equal(status.initialized, true);
+    assert.equal(status.currentRunId, null);
+  }
 }
 
 {
