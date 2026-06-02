@@ -8,7 +8,9 @@ import { RUNTIME_ROLES, allowedTransitionsForRole, evidenceRequirementsForRole, 
 import { buildDispatchContracts } from "../dist/core/dispatch.js";
 import { isHandoffRole } from "../dist/core/handoff-evidence.js";
 import { validateAgentSkills } from "../dist/core/skill-registry.js";
-import { writeProviderCapabilitySnapshot, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
+import { writeProviderObservation } from "../dist/core/provider-observation.js";
+import { validateProviderReceipt, writeProviderCapabilitySnapshot, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
+import { writeRuntimeRequirements } from "../dist/core/runtime-requirements.js";
 import { staleTrueHarnessEvidence, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
 import { status } from "../dist/core/status.js";
 import { doctor } from "../dist/core/doctor.js";
@@ -147,6 +149,7 @@ function writeHarnessFixture(fixture, options = {}) {
 function writeAgentAcceptanceMatrix(runDir, items) {
   fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify({
     schema_version: 1,
+    required_coverage_declared_complete: true,
     items
   }, null, 2) + "\n");
 }
@@ -354,6 +357,8 @@ for (const provider of ["codex", "claude"]) {
   assert.equal(runtimeOnly.true_harness_passed, false);
   assert.deepEqual(runtimeOnly.provider_execution_receipts.missing_provider_receipt_contracts, ["T1"]);
   assert.equal(runtimeOnly.provider_execution_receipts.receipts[0].valid_native_subagent_proof, false);
+  assert.ok(runtimeOnly.provider_execution_receipts.receipts[0].invalid_reasons.includes("origin_not_provider_native_subagent"));
+  assert.ok(runtimeOnly.provider_execution_receipts.receipts[0].invalid_reasons.includes("output_snapshot_not_recorded_under_provider_outputs"));
   writeProviderOriginReceipt(cwd, runId, {
     actionId: "agent-dev-T1",
     agentId: "T1",
@@ -369,6 +374,8 @@ for (const provider of ["codex", "claude"]) {
   const positive = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(positive.true_harness_passed, true);
   assert.equal(positive.provider_execution_receipts.receipts[0].provider_agent_id, `${provider}-agent-real-T1`);
+  assert.match(positive.provider_execution_receipts.receipts[0].output_path, /orchestration\/provider-outputs\/agent-dev-T1\.json$/);
+  assert.deepEqual(positive.provider_execution_receipts.receipts[0].invalid_reasons, []);
   assert.ok(fs.existsSync(path.join(fixture.runDir, "orchestration", "method-provenance.json")));
   const provenance = JSON.parse(fs.readFileSync(path.join(fixture.runDir, "orchestration", "method-provenance.json"), "utf8"));
   assert.ok(provenance.sources.openspec_inspired.some((item) => item.artifact === "archive"));
@@ -384,6 +391,112 @@ for (const provider of ["codex", "claude"]) {
   assert.equal(value.provider_execution_receipts.valid_receipt_count, 1);
   assert.equal(value.provider_execution_receipts.receipts[0].valid_native_subagent_proof, true);
   assert.equal(value.provider_execution_receipts.receipts[0].provider_agent_id, `${provider}-agent-real-T1`);
+  assert.match(value.provider_execution_receipts.receipts[0].output_path, /orchestration\/provider-outputs\/agent-dev-T1\.json$/);
+}
+
+{
+  const fixture = makeRun("imfine-provider-invalid-receipt-diagnostics-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture, { receipt: false });
+  const sessionFile = path.join(runDir, "orchestration", "orchestrator-session.json");
+  const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+  fs.writeFileSync(sessionFile, JSON.stringify({
+    ...session,
+    schema_version: 1,
+    run_id: runId,
+    status: "waiting_for_agent_output",
+    next_actions: [{
+      id: "agent-dev-T1",
+      kind: "agent",
+      status: "done",
+      role: "dev",
+      taskId: "T1",
+      reason: "completed",
+      inputs: [],
+      outputs: [path.join(runDir, "agents", "T1", "handoff.json")],
+      dependsOn: [],
+      parallelGroup: "delivery"
+    }],
+    agent_runs: [{
+      id: "T1",
+      role: "dev",
+      taskId: "T1",
+      status: "completed",
+      skills: ["implementation"],
+      inputs: [],
+      outputs: [path.join(runDir, "agents", "T1", "handoff.json")],
+      readScope: [],
+      writeScope: [path.join(runDir, "agents", "T1", "**")],
+      dependsOn: [],
+      parallelGroup: "delivery"
+    }]
+  }, null, 2) + "\n");
+  writeProviderExecutionReceipt(cwd, runId, {
+    actionId: "agent-dev-T1",
+    agentId: "T1",
+    role: "dev",
+    taskId: "T1",
+    parallelGroup: "delivery",
+    status: "completed",
+    origin: "provider_native_subagent",
+    receiptType: "provider_completed",
+    providerAgentId: "codex-agent-real-T1",
+    providerSessionId: "codex-session-real-run-1",
+    providerTaskHandle: "codex-task-handle-T1",
+    outputPath: path.join(runDir, "agents", "T1", "handoff.json")
+  });
+  const receipt = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), "utf8"));
+  const validation = validateProviderReceipt(cwd, receipt);
+  assert.equal(validation.valid, false);
+  assert.ok(validation.reasons.includes("output_snapshot_not_recorded_under_provider_outputs"));
+  assert.ok(validation.reasons.includes("integrity_nonce_missing"));
+  assert.ok(validation.reasons.includes("integrity_output_sha256_missing"));
+  assert.ok(validation.reasons.includes("metadata_origin_missing"));
+  const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.equal(evidence.true_harness_passed, false);
+  assert.deepEqual(evidence.provider_execution_receipts.missing_provider_receipt_contracts, ["T1"]);
+  assert.ok(evidence.provider_execution_receipts.receipts[0].invalid_reasons.includes("integrity_output_sha256_missing"));
+  const value = status(cwd);
+  assert.deepEqual(value.currentRunProviderReceipts.missingProviderReceiptActionIds, ["agent-dev-T1"]);
+  assert.deepEqual(value.currentRunProviderReceipts.invalidProviderReceiptActionIds, ["agent-dev-T1"]);
+}
+
+{
+  const fixture = makeRun("imfine-provider-receipt-metadata-mismatch-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture, { receipt: false });
+  const snapshot = path.join(runDir, "orchestration", "provider-outputs", "agent-dev-T1.json");
+  const otherSnapshot = path.join(runDir, "orchestration", "provider-outputs", "other.json");
+  fs.mkdirSync(path.dirname(snapshot), { recursive: true });
+  fs.copyFileSync(path.join(runDir, "agents", "T1", "handoff.json"), snapshot);
+  fs.writeFileSync(otherSnapshot, "{}\n");
+  writeProviderExecutionReceipt(cwd, runId, {
+    actionId: "agent-dev-T1",
+    agentId: "T1",
+    role: "dev",
+    taskId: "T1",
+    parallelGroup: "delivery",
+    status: "completed",
+    origin: "provider_native_subagent",
+    receiptType: "provider_completed",
+    providerAgentId: "codex-agent-real-T1",
+    providerSessionId: "codex-session-real-run-1",
+    providerTaskHandle: "codex-task-handle-T1",
+    outputPath: snapshot,
+    integrity: {
+      nonce: "nonce",
+      output_sha256: "not-a-real-hash"
+    },
+    metadata: {
+      origin: "provider_native_subagent",
+      provider_output_snapshot: otherSnapshot
+    }
+  });
+  const receipt = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), "utf8"));
+  const validation = validateProviderReceipt(cwd, receipt);
+  assert.equal(validation.valid, false);
+  assert.ok(validation.reasons.includes("metadata_provider_output_snapshot_mismatch"));
+  assert.ok(validation.reasons.includes("integrity_hash_mismatch"));
 }
 
 {
@@ -430,28 +543,85 @@ for (const provider of ["codex", "claude"]) {
   const value = status(cwd);
   assert.equal(value.currentRunGates.true_harness, "stale");
   assert.equal(value.currentRunConsistency, "inconsistent");
+  assert.equal(value.currentRunTrueHarnessFreshness.status, "stale");
+  assert.ok(value.currentRunTrueHarnessFreshness.staleSources.some((item) => item.includes("orchestrator_session")));
+}
+
+{
+  const fixture = makeRun("imfine-true-harness-provider-output-stale-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture);
+  const files = writeTrueHarnessEvidence(cwd, runId);
+  const evidence = JSON.parse(fs.readFileSync(files.json, "utf8"));
+  assert.ok(evidence.source_artifacts.some((item) => item.id === "provider_output:agent-dev-T1.json"));
+  const providerOutput = path.join(runDir, "orchestration", "provider-outputs", "agent-dev-T1.json");
+  fs.appendFileSync(providerOutput, "\nchanged after evidence\n");
+  const stale = staleTrueHarnessEvidence(files.json);
+  assert.ok(stale.some((item) => item.includes("provider_output:agent-dev-T1.json")));
+  const value = status(cwd);
+  assert.equal(value.currentRunTrueHarnessFreshness.status, "stale");
+  assert.ok(value.currentRunTrueHarnessFreshness.staleSources.some((item) => item.includes("provider_output:agent-dev-T1.json")));
+}
+
+{
+  const fixture = makeRun("imfine-true-harness-standard-evidence-stale-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture);
+  fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Tests\n\npass\n");
+  const files = writeTrueHarnessEvidence(cwd, runId);
+  const evidence = JSON.parse(fs.readFileSync(files.json, "utf8"));
+  assert.ok(evidence.source_artifacts.some((item) => item.id === "qa_evidence"));
+  fs.appendFileSync(path.join(runDir, "evidence", "test-results.md"), "\nchanged after evidence\n");
+  assert.ok(staleTrueHarnessEvidence(files.json).some((item) => item.includes("qa_evidence")));
+}
+
+{
+  const fixture = makeRun("imfine-true-harness-new-source-stale-");
+  const { cwd, runId, runDir } = fixture;
+  writeHarnessFixture(fixture);
+  fs.rmSync(path.join(runDir, "orchestration", "provider-receipts"), { recursive: true, force: true });
+  fs.rmSync(path.join(runDir, "orchestration", "provider-outputs"), { recursive: true, force: true });
+  const files = writeTrueHarnessEvidence(cwd, runId);
+  assert.deepEqual(staleTrueHarnessEvidence(files.json), []);
+  fs.writeFileSync(path.join(runDir, "orchestration", "final-gates.json"), JSON.stringify({ gates: { true_harness: "pass" } }, null, 2) + "\n");
+  const finalGateStale = staleTrueHarnessEvidence(files.json);
+  assert.ok(finalGateStale.some((item) => item.includes("final_gates: created after evidence generation")));
+  fs.mkdirSync(path.join(runDir, "orchestration", "provider-receipts"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "orchestration", "provider-receipts", "agent-dev-T1.json"), JSON.stringify({ action_id: "agent-dev-T1" }, null, 2) + "\n");
+  const receiptStale = staleTrueHarnessEvidence(files.json);
+  assert.ok(receiptStale.some((item) => item.includes("provider_receipt:agent-dev-T1.json: created after evidence generation")));
+  const value = status(cwd);
+  assert.equal(value.currentRunTrueHarnessFreshness.status, "stale");
+  assert.ok(value.currentRunTrueHarnessFreshness.staleSources.some((item) => item.includes("provider_receipt:agent-dev-T1.json")));
 }
 
 {
   const fixture = makeRun("imfine-provider-observations-");
   const { cwd, runId, runDir } = fixture;
-  writeHarnessFixture(fixture);
-  const obsDir = path.join(runDir, "orchestration", "provider-observations");
-  fs.mkdirSync(obsDir, { recursive: true });
-  fs.writeFileSync(path.join(obsDir, "ui-screenshot.json"), JSON.stringify({
+  writeHarnessFixture(fixture, { receipt: false });
+  writeProviderObservation(cwd, runId, "ui-screenshot", {
     timestamp: "2026-05-20T08:00:00.000Z",
-    observed_agent_names: ["Tesla", "Rawls"],
-    observed_closed_count: 2,
-    screenshot_path: "screenshots/demo.png"
-  }, null, 2) + "\n");
+    observedAgentNames: ["Tesla", "Rawls"],
+    observedClosedCount: 2,
+    screenshotPath: "screenshots/demo.png",
+    userNote: "provider UI showed two closed native agents"
+  });
   fs.writeFileSync(path.join(runDir, "orchestration", "agent-name-map.json"), JSON.stringify({
     mappings: [{ provider_display_name: "Tesla", action_id: "agent-dev-T1", role: "dev", parallel_group: "delivery", started_at: "2026-05-20T08:00:00.000Z", expected_output: "agents/T1/handoff.json" }]
   }, null, 2) + "\n");
   const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.equal(evidence.true_harness_passed, false);
+  assert.deepEqual(evidence.provider_execution_receipts.missing_provider_receipt_contracts, ["T1"]);
   assert.equal(evidence.provider_observations.present, true);
   assert.deepEqual(evidence.provider_observations.observed_native_agents, ["Tesla", "Rawls"]);
+  assert.equal(evidence.provider_observations.observations[0].screenshot_path, "screenshots/demo.png");
+  assert.equal(evidence.provider_observations.observations[0].user_note, "provider UI showed two closed native agents");
   assert.equal(evidence.provider_observations.proof_boundary, "diagnostic_only_not_true_harness_proof");
   assert.equal(evidence.agent_name_map.present, true);
+  const value = status(cwd);
+  assert.equal(value.currentRunProviderObservations.present, true);
+  assert.equal(value.currentRunProviderObservations.observedClosedCount, 2);
+  assert.deepEqual(value.currentRunProviderObservations.screenshots, ["screenshots/demo.png"]);
 }
 
 {
@@ -536,6 +706,94 @@ for (const provider of ["codex", "claude"]) {
   assert.equal(value.currentRunLatestCheckpoint.actionId, "agent-review-T1");
 }
 
+{
+  const { cwd, runDir, runId } = makeRun("imfine-status-quality-lineage-next-owner-");
+  fs.writeFileSync(path.join(cwd, "README.md"), "# Demo\n\nNode 22.\n");
+  fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ engines: { node: ">=22" }, scripts: { test: "node --test" } }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Test Results\n\n- runtime version: node v22.17.0\n- command: npm run test\n\n```text\nPASS 1 test\n```\n");
+  const firstEvidence = path.join(runDir, "evidence", "qa-first.md");
+  const recheckEvidence = path.join(runDir, "evidence", "qa-recheck.md");
+  fs.writeFileSync(firstEvidence, "# QA first\n\nfail\n");
+  fs.writeFileSync(recheckEvidence, "# QA recheck\n\npass\n");
+  fs.mkdirSync(path.join(runDir, "agents", "qa-T1"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "agents", "qa-T1", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "dev",
+    status: "fail",
+    summary: "qa blocked",
+    commands: [],
+    failures: ["qa-blocker"],
+    finding_ids: ["qa-blocker"],
+    evidence: [firstEvidence],
+    next_state: "needs_dev_fix"
+  }, null, 2) + "\n");
+  fs.mkdirSync(path.join(runDir, "agents", "qa-T1-recheck"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "agents", "qa-T1-recheck", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "qa recheck pass",
+    commands: [],
+    failures: [],
+    evidence: [recheckEvidence],
+    resolves: ["qa-blocker"],
+    supersedes: ["qa-blocker"],
+    next_state: "reviewing"
+  }, null, 2) + "\n");
+  const value = status(cwd);
+  assert.equal(value.currentRunQualityLineage.qa, "pass");
+  assert.equal(value.currentRunGates.qa, "pass");
+  assert.equal(value.currentRunGates.recheck_fix_loop, "pass");
+  assert.equal(value.currentRunNextOwner.owner, "agent");
+  assert.equal(value.currentRunNextOwner.reason, "Review lineage is blocked");
+}
+
+{
+  const { cwd, runDir } = makeRun("imfine-status-standard-evidence-");
+  fs.writeFileSync(path.join(runDir, "orchestration", "standard-evidence.json"), JSON.stringify({
+    schema_version: 1,
+    records: [
+      { id: "qa", standard_path: path.join(".imfine", "runs", "run-1", "evidence", "test-results.md"), exists: false, sources: [] },
+      { id: "review", standard_path: path.join(".imfine", "runs", "run-1", "evidence", "review.md"), exists: true, sources: ["review/code-review.md"] }
+    ]
+  }, null, 2) + "\n");
+  const value = status(cwd);
+  assert.ok(value.currentRunStandardEvidence.missing.some((item) => item.endsWith(path.join("evidence", "test-results.md"))));
+  assert.equal(value.currentRunStandardEvidence.records.find((item) => item.id === "review").sources[0], "review/code-review.md");
+}
+
+{
+  const { cwd } = makeRun("imfine-runtime-requirements-status-blocked-");
+  const value = status(cwd);
+  assert.equal(value.currentRunRuntimeRequirements.status, "blocked");
+  assert.ok(value.currentRunRuntimeRequirements.blockedChecks.includes("runtime_version_declaration"));
+  assert.ok(value.currentRunRuntimeRequirements.blockedChecks.includes("qa_records_runtime_version"));
+  assert.equal(value.currentRunGates.runtime_requirements, "blocked");
+  assert.equal(value.currentRunNextOwner.owner, "project_code");
+}
+
+{
+  const { cwd, runId, runDir } = makeRun("imfine-runtime-requirements-pass-");
+  fs.writeFileSync(path.join(cwd, "README.md"), "# Demo\n\nRun with Node 22.\n");
+  fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({
+    engines: { node: ">=22" },
+    scripts: { test: "node --test" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Test Results\n\n- runtime version: node v22.17.0\n- command: npm run test\n\n```text\nPASS 4 tests\n```\n");
+  const written = writeRuntimeRequirements(cwd, runId);
+  assert.equal(written.result.status, "pass");
+  assert.deepEqual(written.result.declared_runtime.languages, ["node"]);
+  const value = status(cwd);
+  assert.equal(value.currentRunRuntimeRequirements.status, "pass");
+  assert.equal(value.currentRunGates.runtime_requirements, "pass");
+}
+
 for (const runStatus of ["completed", "blocked", "waiting_for_agent_output", "needs_dev_fix", "needs_task_replan"]) {
   const { cwd, runDir } = makeRun(`imfine-status-${runStatus}-`);
   fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
@@ -596,6 +854,30 @@ for (const runStatus of ["completed", "blocked", "waiting_for_agent_output", "ne
   assert.equal(value.currentRunConsistency, "inconsistent");
   const report = doctor(cwd);
   assert.ok(report.checks.some((item) => item.id === "run.review.blocker_matrix" && item.status === "fail"));
+}
+
+{
+  const { cwd, runDir } = makeRun("imfine-status-forged-final-gates-");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: "run-1",
+    status: "completed",
+    execution_mode: "true_harness",
+    project_kind: "existing_project",
+    source: { type: "text", value: "test" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "final-gates.json"), JSON.stringify({
+    generated_by: "archive-agent",
+    gates: {
+      qa: "pass",
+      review: "pass",
+      archive: "pass"
+    }
+  }, null, 2) + "\n");
+  const value = status(cwd);
+  assert.equal(value.currentRunConsistency, "inconsistent");
+  assert.match(value.currentRunGates.status_consistency, /^invalid_final_gates:/);
+  assert.match(value.currentRunGates.status_consistency, /generated_by imfine-runtime/);
 }
 
 {

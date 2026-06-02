@@ -3,7 +3,9 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
-import { providerReceipts, receiptProvesNativeSubagent, resolveProviderCapabilityFromReceipts } from "./provider-evidence.js";
+import { readQualityLineage, writeQualityLineage } from "./quality-lineage.js";
+import { providerObservationFiles, providerObservations, type ProviderObservationRecord } from "./provider-observation.js";
+import { providerReceipts, receiptProvesNativeSubagent, resolveProviderCapabilityFromReceipts, validateProviderReceipt } from "./provider-evidence.js";
 import { skillEvidenceRequirements } from "./skill-registry.js";
 
 interface RunMetadata {
@@ -78,13 +80,6 @@ interface SourceArtifactRecord {
   sha256: string | null;
 }
 
-interface ProviderObservationRecord {
-  file: string;
-  observed_agent_names: string[];
-  observed_closed_count: number | null;
-  timestamp: string | null;
-}
-
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 }
@@ -132,13 +127,34 @@ function sourceArtifacts(cwd: string, runDirPath: string): SourceArtifactRecord[
     ["parallel_execution", path.join(orchestration, "parallel-execution.json")],
     ["provider_capability", path.join(orchestration, "provider-capability.json")],
     ["provider_capability_resolution", path.join(orchestration, "provider-capability-resolution.json")],
+    ["quality_lineage", path.join(orchestration, "quality-lineage.json")],
+    ["method_provenance", path.join(orchestration, "method-provenance.json")],
+    ["agent_acceptance_matrix", path.join(orchestration, "agent-acceptance-matrix.json")],
     ["acceptance_matrix", path.join(orchestration, "acceptance-matrix.json")],
-    ["final_gates", path.join(orchestration, "final-gates.json")]
+    ["runtime_requirements", path.join(orchestration, "runtime-requirements.json")],
+    ["final_gates", path.join(orchestration, "final-gates.json")],
+    ["qa_evidence", path.join(runDirPath, "evidence", "test-results.md")],
+    ["review_evidence", path.join(runDirPath, "evidence", "review.md")],
+    ["risk_review_evidence", path.join(runDirPath, "evidence", "risk-review.md")],
+    ["commits_evidence", path.join(runDirPath, "evidence", "commits.md")],
+    ["push_evidence", path.join(runDirPath, "evidence", "push.md")]
   ];
   const providerReceiptDir = path.join(orchestration, "provider-receipts");
   if (fs.existsSync(providerReceiptDir)) {
     for (const file of fs.readdirSync(providerReceiptDir).filter((item) => item.endsWith(".json")).sort()) {
       files.push([`provider_receipt:${file}`, path.join(providerReceiptDir, file)]);
+    }
+  }
+  const providerOutputDir = path.join(orchestration, "provider-outputs");
+  if (fs.existsSync(providerOutputDir)) {
+    for (const file of fs.readdirSync(providerOutputDir).filter((item) => item.endsWith(".json")).sort()) {
+      files.push([`provider_output:${file}`, path.join(providerOutputDir, file)]);
+    }
+  }
+  const providerObservationDir = path.join(orchestration, "provider-observations");
+  if (fs.existsSync(providerObservationDir)) {
+    for (const file of fs.readdirSync(providerObservationDir).filter((item) => item.endsWith(".json")).sort()) {
+      files.push([`provider_observation:${file}`, path.join(providerObservationDir, file)]);
     }
   }
   const agentsDir = path.join(runDirPath, "agents");
@@ -157,6 +173,13 @@ export function staleTrueHarnessEvidence(jsonFile: string): string[] {
   const runDirPath = path.dirname(path.dirname(jsonFile));
   const cwd = path.dirname(path.dirname(path.dirname(runDirPath)));
   const stale: string[] = [];
+  const recordedIds = new Set(payload.source_artifacts.map((source) => source.id));
+  const currentSources = sourceArtifacts(cwd, runDirPath);
+  for (const source of currentSources) {
+    if (source.exists && !recordedIds.has(source.id)) {
+      stale.push(`${source.id}: created after evidence generation`);
+    }
+  }
   for (const source of payload.source_artifacts) {
     const file = path.isAbsolute(source.file) ? source.file : path.resolve(cwd, source.file);
     if (!fs.existsSync(file)) {
@@ -174,44 +197,6 @@ export function staleTrueHarnessEvidence(jsonFile: string): string[] {
     }
   }
   return stale;
-}
-
-function providerObservationFiles(runDirPath: string): string[] {
-  const dir = path.join(runDirPath, "orchestration", "provider-observations");
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir)
-    .filter((file) => file.endsWith(".json"))
-    .sort()
-    .map((file) => path.join(dir, file));
-}
-
-function providerObservations(cwd: string, runDirPath: string): ProviderObservationRecord[] {
-  return providerObservationFiles(runDirPath).map((file) => {
-    const parsed = optionalJson<{
-      observed_agent_names?: unknown[];
-      agent_names?: unknown[];
-      observed_closed_count?: unknown;
-      closed_count?: unknown;
-      timestamp?: unknown;
-      observed_at?: unknown;
-    }>(file) || {};
-    const names = Array.isArray(parsed.observed_agent_names)
-      ? parsed.observed_agent_names
-      : Array.isArray(parsed.agent_names)
-        ? parsed.agent_names
-        : [];
-    const count = typeof parsed.observed_closed_count === "number"
-      ? parsed.observed_closed_count
-      : typeof parsed.closed_count === "number"
-        ? parsed.closed_count
-        : null;
-    return {
-      file: rel(cwd, file),
-      observed_agent_names: names.filter((item): item is string => typeof item === "string"),
-      observed_closed_count: count,
-      timestamp: typeof parsed.timestamp === "string" ? parsed.timestamp : typeof parsed.observed_at === "string" ? parsed.observed_at : null
-    };
-  });
 }
 
 function taskStatuses(runDirPath: string): string[] {
@@ -364,6 +349,8 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const agentNameMapFile = path.join(orchestrationDir, "agent-name-map.json");
   const agentNameMap = optionalJson<{ mappings?: unknown[] }>(agentNameMapFile);
   const handoffs = collectHandoffs(runDirPath, cwd);
+  const qualityLineageFile = writeQualityLineage(cwd, runId);
+  const qualityLineage = readQualityLineage(cwd, runId);
   const handoffEvidenceFiles = handoffs.flatMap((handoff) => handoff.evidence);
   const taskStatusValues = taskStatuses(runDirPath);
   const graphTaskIds = taskIds(runDirPath);
@@ -434,7 +421,9 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     .map((contract) => contract.id);
   const allContractsHaveCompletedWave = hasDispatchContract && missingCompletedWaveContracts.length === 0;
   const receipts = providerReceipts(cwd, runId);
-  const validReceipts = receipts.filter((receipt) => receiptProvesNativeSubagent(cwd, receipt));
+  const receiptValidations = receipts.map((receipt) => validateProviderReceipt(cwd, receipt));
+  const validationByAction = new Map(receiptValidations.map((validation) => [validation.action_id, validation]));
+  const validReceipts = receipts.filter((receipt) => validationByAction.get(receipt.action_id)?.valid === true);
   const receiptActionIds = new Set(validReceipts.map((receipt) => receipt.action_id));
   const missingProviderReceiptContracts = agentContractTargets
     .filter((contract) => {
@@ -513,7 +502,10 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
         provider_trace_id: receipt.provider_trace_id || null,
         provider_task_handle: receipt.provider_task_handle || null,
         origin: receipt.origin || "missing",
-        receipt_type: receipt.receipt_type || "missing"
+        receipt_type: receipt.receipt_type || "missing",
+        output_path: receipt.output_path || null,
+        integrity_output_sha256: receipt.integrity?.output_sha256 || null,
+        invalid_reasons: validationByAction.get(receipt.action_id)?.reasons || []
       }))
     },
     provider_observations: {
@@ -578,18 +570,22 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
       handoff_file: handoff.file,
       evidence: handoff.evidence
     })),
+    quality_lineage: {
+      file: rel(cwd, qualityLineageFile),
+      summary: qualityLineage?.summary || { qa: "blocked", review: "blocked", recheck_fix_loop: "blocked" },
+      lineages: qualityLineage?.lineages || []
+    },
     fix_loop_usage: {
       fix_tasks_present: graphTaskIds.some((taskId) => taskId.startsWith("FIX-")),
       replan_used: fs.existsSync(path.join(orchestrationDir, "task-planner-replan.md")) || typeof run.needs_task_replan_at === "string",
       design_rework_used: fs.existsSync(path.join(evidenceDir, "design-rework.md")) || taskStatusValues.includes("implementation_blocked_by_design")
     },
-    source_artifacts: sourceArtifacts(cwd, runDirPath)
+    source_artifacts: [] as SourceArtifactRecord[]
   };
 
   const jsonFile = path.join(orchestrationDir, "true-harness-evidence.json");
   const markdownFile = path.join(orchestrationDir, "true-harness-evidence.md");
   const methodProvenanceFile = path.join(orchestrationDir, "method-provenance.json");
-  writeText(jsonFile, `${JSON.stringify(payload, null, 2)}\n`);
   writeText(methodProvenanceFile, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
@@ -623,6 +619,8 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     },
     skill_evidence_contracts: payload.skill_evidence_contracts
   }, null, 2)}\n`);
+  payload.source_artifacts = sourceArtifacts(cwd, runDirPath);
+  writeText(jsonFile, `${JSON.stringify(payload, null, 2)}\n`);
   writeText(markdownFile, `# True Harness Evidence
 
 ## Goal
@@ -704,6 +702,13 @@ ${payload.handoff_validation.invalid.length > 0 ? payload.handoff_validation.inv
 ## Handoff Evidence Chain
 
 ${payload.handoff_evidence_chain.length > 0 ? payload.handoff_evidence_chain.map((handoff) => `- ${handoff.role}${handoff.task_id ? `/${handoff.task_id}` : ""}: ${handoff.status} -> ${handoff.handoff_file}`).join("\n") : "- none"}
+
+## Quality Lineage
+
+- file: ${payload.quality_lineage.file}
+- QA gate: ${payload.quality_lineage.summary.qa}
+- Review gate: ${payload.quality_lineage.summary.review}
+- Recheck fix loop: ${payload.quality_lineage.summary.recheck_fix_loop}
 
 ## Fix Loop Usage
 

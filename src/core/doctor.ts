@@ -231,14 +231,13 @@ function runConsistencyChecks(cwd: string): DoctorCheck[] {
 
   const dispatch = path.join(runRoot, "orchestration", "dispatch-contracts.json");
   const parallel = path.join(runRoot, "orchestration", "parallel-execution.json");
-  const receiptsDir = path.join(runRoot, "orchestration", "provider-receipts");
   const agentRunsFile = path.join(runRoot, "orchestration", "agent-runs.json");
   if (fs.existsSync(evidenceJson)) {
     const json = readJson(evidenceJson) as {
       true_harness_passed?: unknown;
       provider_capability?: { subagent_supported?: unknown; blocked?: unknown };
       parallel_execution?: { missing_completed_wave_contracts?: unknown[] };
-      provider_execution_receipts?: { missing_provider_receipt_contracts?: unknown[] };
+      provider_execution_receipts?: { missing_provider_receipt_contracts?: unknown[]; receipt_count?: unknown; valid_receipt_count?: unknown };
       handoff_validation?: { invalid?: unknown[] };
     };
     if (json.true_harness_passed === true) {
@@ -248,14 +247,13 @@ function runConsistencyChecks(cwd: string): DoctorCheck[] {
       const waveCount = fs.existsSync(parallel)
         ? ((readJson(parallel) as { wave_history?: unknown[] }).wave_history || []).length
         : 0;
-      const receiptCount = fs.existsSync(receiptsDir)
-        ? fs.readdirSync(receiptsDir).filter((file) => file.endsWith(".json")).length
-        : 0;
+      const receiptCount = Number(json.provider_execution_receipts?.receipt_count || 0);
+      const validReceiptCount = Number(json.provider_execution_receipts?.valid_receipt_count || 0);
       checks.push(check(
         "run.true_harness.runtime_evidence",
         "true harness runtime evidence",
-        dispatchCount > 0 && waveCount > 0 && receiptCount > 0 ? "pass" : "fail",
-        `dispatch_contracts=${dispatchCount}, waves=${waveCount}, receipts=${receiptCount}`
+        dispatchCount > 0 && waveCount > 0 && validReceiptCount > 0 ? "pass" : "fail",
+        `dispatch_contracts=${dispatchCount}, waves=${waveCount}, receipts=${receiptCount}, valid_receipts=${validReceiptCount}`
       ));
       checks.push(check(
         "run.provider_capability.consistency",

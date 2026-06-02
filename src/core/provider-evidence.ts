@@ -64,6 +64,12 @@ export interface ProviderExecutionReceipt {
   recorded_at: string;
 }
 
+export interface ProviderReceiptValidation {
+  action_id: string;
+  valid: boolean;
+  reasons: string[];
+}
+
 function runDir(cwd: string, runId: string): string {
   const dir = path.join(cwd, ".imfine", "runs", runId);
   if (!fs.existsSync(path.join(dir, "run.json"))) throw new Error(`Run not found: ${runId}`);
@@ -158,6 +164,10 @@ function defaultOutputPath(cwd: string, runId: string, agentId: string): string 
   return path.join(runDir(cwd, runId), "agents", agentId, "handoff.json");
 }
 
+function providerOutputSnapshotFile(cwd: string, runId: string, actionId: string): string {
+  return path.join(runDir(cwd, runId), "orchestration", "provider-outputs", `${safeFilePart(actionId)}.json`);
+}
+
 function isTerminalStatus(status: ProviderReceiptStatus): boolean {
   return status === "completed" || status === "blocked" || status === "failed";
 }
@@ -190,6 +200,16 @@ function integrityPassed(cwd: string, receipt: ProviderExecutionReceipt): boolea
   const output = path.isAbsolute(receipt.output_path) ? receipt.output_path : path.resolve(cwd, receipt.output_path);
   if (!fs.existsSync(output)) return false;
   return sha256File(output) === receipt.integrity.output_sha256;
+}
+
+function receiptOutputPath(cwd: string, receipt: ProviderExecutionReceipt): string {
+  return path.isAbsolute(receipt.output_path) ? receipt.output_path : path.resolve(cwd, receipt.output_path);
+}
+
+function receiptHasProviderOutputSnapshot(cwd: string, receipt: ProviderExecutionReceipt): boolean {
+  const output = receiptOutputPath(cwd, receipt);
+  const marker = `${path.sep}orchestration${path.sep}provider-outputs${path.sep}`;
+  return output.includes(marker) && fs.existsSync(output);
 }
 
 export function writeProviderDispatchReceipt(cwd: string, runId: string, input: {
@@ -295,6 +315,9 @@ export function writeProviderOriginReceipt(cwd: string, runId: string, input: {
   if (!input.providerTaskHandle.trim()) throw new Error("Provider-origin receipt requires providerTaskHandle.");
   const output = path.isAbsolute(input.outputPath) ? input.outputPath : path.resolve(cwd, input.outputPath);
   if (!fs.existsSync(output)) throw new Error(`Provider-origin receipt output does not exist: ${input.outputPath}`);
+  const outputSnapshot = providerOutputSnapshotFile(cwd, runId, input.actionId);
+  ensureDir(path.dirname(outputSnapshot));
+  if (path.resolve(output) !== path.resolve(outputSnapshot)) fs.copyFileSync(output, outputSnapshot);
   const capabilityFile = providerCapabilityFile(cwd, runId);
   const currentCapability = readProviderCapabilitySnapshot(cwd, runId);
   if (!currentCapability || currentCapability.provider !== input.provider) {
@@ -327,7 +350,7 @@ export function writeProviderOriginReceipt(cwd: string, runId: string, input: {
     taskId: input.taskId,
     parallelGroup: input.parallelGroup,
     status: "completed",
-    outputPath: input.outputPath,
+    outputPath: outputSnapshot,
     origin: "provider_native_subagent",
     receiptType: "provider_completed",
     providerAgentId: input.providerAgentId,
@@ -336,11 +359,12 @@ export function writeProviderOriginReceipt(cwd: string, runId: string, input: {
     providerTaskHandle: input.providerTaskHandle,
     integrity: {
       nonce: randomNonce(),
-      output_sha256: sha256File(output)
+      output_sha256: sha256File(outputSnapshot)
     },
     metadata: {
       ...(input.metadata || {}),
-      origin: "provider_native_subagent"
+      origin: "provider_native_subagent",
+      provider_output_snapshot: outputSnapshot
     }
   });
 }
@@ -354,23 +378,55 @@ export function providerReceipts(cwd: string, runId: string): ProviderExecutionR
     .map((file) => JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")) as ProviderExecutionReceipt);
 }
 
-function receiptOutputExists(cwd: string, receipt: ProviderExecutionReceipt): boolean {
-  const output = path.isAbsolute(receipt.output_path) ? receipt.output_path : path.resolve(cwd, receipt.output_path);
-  return fs.existsSync(output);
+export function validateProviderReceipt(cwd: string, receipt: ProviderExecutionReceipt): ProviderReceiptValidation {
+  const reasons: string[] = [];
+  if (receipt.status !== "completed") reasons.push("status_not_completed");
+  if (receipt.provider !== "codex" && receipt.provider !== "claude") reasons.push("provider_not_native");
+  if (receipt.origin !== "provider_native_subagent") reasons.push("origin_not_provider_native_subagent");
+  if (receipt.receipt_type !== "provider_completed") reasons.push("receipt_type_not_provider_completed");
+  if (receipt.provider === "codex" || receipt.provider === "claude") {
+    if (isSyntheticProviderValue(receipt.provider, receipt.provider_agent_id)) reasons.push("provider_agent_id_missing_or_synthetic");
+    if (isSyntheticProviderValue(receipt.provider, receipt.provider_session_id)) reasons.push("provider_session_id_missing_or_synthetic");
+  }
+  const hasTaskHandle = typeof receipt.provider_task_handle === "string" && receipt.provider_task_handle.trim().length > 0;
+  const hasTraceId = typeof receipt.provider_trace_id === "string" && receipt.provider_trace_id.trim().length > 0;
+  if (!hasTaskHandle && !hasTraceId) reasons.push("provider_task_handle_or_trace_id_missing");
+  if (typeof receipt.started_at !== "string" || receipt.started_at.trim().length === 0) reasons.push("started_at_missing");
+  if (typeof receipt.completed_at !== "string" || receipt.completed_at.trim().length === 0) reasons.push("completed_at_missing");
+  if (typeof receipt.output_path !== "string" || receipt.output_path.trim().length === 0) {
+    reasons.push("output_path_missing");
+  } else {
+    const output = receiptOutputPath(cwd, receipt);
+    if (!fs.existsSync(output)) reasons.push("output_snapshot_missing");
+    if (!receiptHasProviderOutputSnapshot(cwd, receipt)) reasons.push("output_snapshot_not_recorded_under_provider_outputs");
+  }
+  if (!receipt.integrity?.nonce) reasons.push("integrity_nonce_missing");
+  if (!receipt.integrity?.output_sha256) reasons.push("integrity_output_sha256_missing");
+  if (receipt.integrity?.nonce && receipt.integrity?.output_sha256 && !integrityPassed(cwd, receipt)) reasons.push("integrity_hash_mismatch");
+  if (!receipt.metadata || typeof receipt.metadata !== "object") {
+    reasons.push("metadata_missing");
+  } else {
+    if (receipt.metadata.origin !== "provider_native_subagent") reasons.push("metadata_origin_missing");
+    const metadataSnapshot = receipt.metadata.provider_output_snapshot;
+    if (typeof metadataSnapshot !== "string" || metadataSnapshot.trim().length === 0) {
+      reasons.push("metadata_provider_output_snapshot_missing");
+    } else {
+      const metadataSnapshotPath = path.isAbsolute(metadataSnapshot) ? metadataSnapshot : path.resolve(cwd, metadataSnapshot);
+      if (!fs.existsSync(metadataSnapshotPath)) reasons.push("metadata_provider_output_snapshot_missing_file");
+      if (typeof receipt.output_path === "string" && receipt.output_path.trim().length > 0 && path.resolve(metadataSnapshotPath) !== path.resolve(receiptOutputPath(cwd, receipt))) {
+        reasons.push("metadata_provider_output_snapshot_mismatch");
+      }
+    }
+  }
+  return {
+    action_id: receipt.action_id,
+    valid: reasons.length === 0,
+    reasons
+  };
 }
 
 export function receiptProvesNativeSubagent(cwd: string, receipt: ProviderExecutionReceipt): boolean {
-  return receipt.status === "completed"
-    && receipt.provider !== "unknown"
-    && receipt.origin === "provider_native_subagent"
-    && receipt.receipt_type === "provider_completed"
-    && !isSyntheticProviderValue(receipt.provider, receipt.provider_agent_id)
-    && !isSyntheticProviderValue(receipt.provider, receipt.provider_session_id)
-    && typeof receipt.provider_task_handle === "string"
-    && receipt.provider_task_handle.trim().length > 0
-    && receipt.output_path.trim().length > 0
-    && receiptOutputExists(cwd, receipt)
-    && integrityPassed(cwd, receipt);
+  return validateProviderReceipt(cwd, receipt).valid;
 }
 
 export function resolveProviderCapabilityFromReceipts(cwd: string, runId: string): ProviderCapabilitySnapshot {

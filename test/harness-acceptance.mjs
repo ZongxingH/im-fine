@@ -46,7 +46,8 @@ function makeGitProject(prefix) {
   git(["config", "user.email", "imfine@example.test"]);
   git(["config", "user.name", "imfine test"]);
   git(["remote", "add", "origin", remote]);
-  fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2));
+  fs.writeFileSync(path.join(project, "README.md"), "# Harness Fixture\n\nRuntime: Node.js >=22.\n\nRun tests with `npm run test`.\n");
+  fs.writeFileSync(path.join(project, "package.json"), JSON.stringify({ type: "module", engines: { node: ">=22" }, scripts: { test: "node --test" } }, null, 2));
   fs.mkdirSync(path.join(project, "src"));
   fs.mkdirSync(path.join(project, "test"));
   fs.writeFileSync(path.join(project, "src", "index.js"), "export const value = 1;\n");
@@ -241,6 +242,9 @@ function writeJson(file, payload) {
 
 function writeQaHandoff(runDir, runId) {
   const file = path.join(runDir, "agents", "qa-T1", "handoff.json");
+  const evidence = path.join(runDir, "evidence", "test-results.md");
+  fs.mkdirSync(path.dirname(evidence), { recursive: true });
+  fs.writeFileSync(evidence, "# Test Results\n\n- runtime version: node v22.17.0\n- command: npm run test\n\n```text\nPASS 1 test\n```\n");
   writeJson(file, {
     run_id: runId,
     task_id: "T1",
@@ -251,7 +255,7 @@ function writeQaHandoff(runDir, runId) {
     summary: "qa passed",
     commands: ["npm run test"],
     failures: [],
-    evidence: [file],
+    evidence: [evidence],
     next_state: "reviewing"
   });
 }

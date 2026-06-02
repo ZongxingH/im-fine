@@ -77,6 +77,33 @@ export function formatStatus(result: StatusResult): string {
   const actions = result.currentRunActions
     ? `ready=${result.currentRunActions.ready}, waiting=${result.currentRunActions.waiting}, blocked=${result.currentRunActions.blocked}, groups=${result.currentRunActions.currentParallelGroups.join(",") || "none"}`
     : "none";
+  const dispatch = result.currentRunDispatch
+    ? `contracts=${result.currentRunDispatch.contractCount}, waves=${result.currentRunDispatch.waveCount}, missing_completed_waves=${result.currentRunDispatch.missingCompletedWaveActionIds.join(",") || "none"}`
+    : "none";
+  const receipts = result.currentRunProviderReceipts
+    ? `receipts=${result.currentRunProviderReceipts.receiptCount}, valid=${result.currentRunProviderReceipts.validReceiptCount}, missing=${result.currentRunProviderReceipts.missingProviderReceiptActionIds.join(",") || "none"}, invalid=${result.currentRunProviderReceipts.invalidProviderReceiptActionIds.join(",") || "none"}`
+    : "none";
+  const observations = result.currentRunProviderObservations
+    ? `present=${result.currentRunProviderObservations.present ? "yes" : "no"}, count=${result.currentRunProviderObservations.observationCount}, names=${result.currentRunProviderObservations.observedAgentNames.join(",") || "none"}, closed=${result.currentRunProviderObservations.observedClosedCount}, screenshots=${result.currentRunProviderObservations.screenshots.join(",") || "none"}, boundary=${result.currentRunProviderObservations.proofBoundary}`
+    : "none";
+  const nameMap = result.currentRunAgentNameMap
+    ? `present=${result.currentRunAgentNameMap.present ? "yes" : "no"}, mappings=${result.currentRunAgentNameMap.mappings.map((item) => `${item.providerDisplayName}->${item.actionId}/${item.dispatchContractId}`).join(",") || "none"}`
+    : "none";
+  const freshness = result.currentRunTrueHarnessFreshness
+    ? `${result.currentRunTrueHarnessFreshness.status}, stale_sources=${result.currentRunTrueHarnessFreshness.staleSources.join(" | ") || "none"}`
+    : "none";
+  const quality = result.currentRunQualityLineage
+    ? `qa=${result.currentRunQualityLineage.qa}, review=${result.currentRunQualityLineage.review}, recheck=${result.currentRunQualityLineage.recheckFixLoop}, latest=${result.currentRunQualityLineage.latest.map((item) => `${item.role}/${item.taskId}:${item.status}:${item.latestStatus}`).join(",") || "none"}`
+    : "none";
+  const standardEvidence = result.currentRunStandardEvidence
+    ? `missing=${result.currentRunStandardEvidence.missing.join(",") || "none"}, records=${result.currentRunStandardEvidence.records.map((item) => `${item.id}:${item.exists ? "present" : "missing"}`).join(",") || "none"}`
+    : "none";
+  const runtimeRequirements = result.currentRunRuntimeRequirements
+    ? `status=${result.currentRunRuntimeRequirements.status}, declared=${result.currentRunRuntimeRequirements.declaredLanguages.join(",") || "none"}, files=${result.currentRunRuntimeRequirements.declarationFiles.join(",") || "none"}, blocked=${result.currentRunRuntimeRequirements.blockedChecks.join(",") || "none"}`
+    : "none";
+  const nextOwner = result.currentRunNextOwner
+    ? `${result.currentRunNextOwner.owner}: ${result.currentRunNextOwner.reason}; evidence=${result.currentRunNextOwner.evidence.join(",") || "none"}`
+    : "none";
   const blockers = result.currentRunBlockers
     ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}, next=${result.currentRunBlockers.nextAction || "none"}, doc=${result.currentRunBlockers.diagnosticDoc || "none"}`
     : "none";
@@ -93,6 +120,15 @@ export function formatStatus(result: StatusResult): string {
     `current run branch: ${result.currentRunBranch || "none"}`,
     `current run consistency: ${result.currentRunConsistency || "none"}`,
     `current run gates: ${gates}`,
+    `current run dispatch: ${dispatch}`,
+    `current run provider receipts: ${receipts}`,
+    `current run provider observations: ${observations}`,
+    `current run agent name map: ${nameMap}`,
+    `current run true harness freshness: ${freshness}`,
+    `current run quality lineage: ${quality}`,
+    `current run standard evidence: ${standardEvidence}`,
+    `current run runtime requirements: ${runtimeRequirements}`,
+    `current run next owner: ${nextOwner}`,
     `current run actions: ${actions}`,
     `current run blockers: ${blockers}`,
     `current run latest checkpoint: ${checkpoint}`,

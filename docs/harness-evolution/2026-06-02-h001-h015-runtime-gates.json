@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "record_id": "2026-06-02-h001-h015-runtime-gates",
+  "status": "verified",
+  "created_at": "2026-06-02T00:00:00.000+08:00",
+  "source_failures": [
+    {
+      "issue_id": "H-001",
+      "summary": "Orchestrator 输出没有被 runtime ingest，run 状态与 runtime artifact 脱节。"
+    },
+    {
+      "issue_id": "H-002",
+      "summary": "dispatch contracts、agent runs 和 wave history 缺失。"
+    },
+    {
+      "issue_id": "H-003",
+      "summary": "provider-origin receipt 缺失或无效时仍可能被误读为 true harness。"
+    },
+    {
+      "issue_id": "H-004",
+      "summary": "true harness evidence 可能在后续 artifact 更新后变 stale。"
+    },
+    {
+      "issue_id": "H-005",
+      "summary": "handoff 文件存在但未被 runtime 采纳或校验。"
+    },
+    {
+      "issue_id": "H-006",
+      "summary": "QA / Review recheck 未建模，旧 blocker 和新 pass 无法可靠关联。"
+    },
+    {
+      "issue_id": "H-007",
+      "summary": "archive handoff 或报告可能绕过 runtime final gates。"
+    },
+    {
+      "issue_id": "H-008",
+      "summary": "acceptance matrix 缺失或由 runtime 硬编码业务语义。"
+    },
+    {
+      "issue_id": "H-009",
+      "summary": "commit / push policy 没有强制形成可追踪交付状态。"
+    },
+    {
+      "issue_id": "H-010",
+      "summary": "status 依赖固定文件存在性而非 runtime gate 状态。"
+    },
+    {
+      "issue_id": "H-011",
+      "summary": "QA、Review、commit、push 等 evidence 没有统一标准路径和 manifest。"
+    },
+    {
+      "issue_id": "H-012",
+      "summary": "provider observation 诊断信息不完整，且边界不清。"
+    },
+    {
+      "issue_id": "H-013",
+      "summary": "provider display name 无法追溯到 action id 和 dispatch contract。"
+    },
+    {
+      "issue_id": "H-014",
+      "summary": "新项目 runtime requirements 未声明，QA evidence 未记录实际版本和命令输出。"
+    },
+    {
+      "issue_id": "H-015",
+      "summary": "反复出现的问题缺少强制维护的 replay fixture 覆盖表。"
+    }
+  ],
+  "affected_components": [
+    "src/core/orchestrator.ts",
+    "src/core/dispatch.ts",
+    "src/core/provider-evidence.ts",
+    "src/core/provider-observation.ts",
+    "src/core/true-harness-evidence.ts",
+    "src/core/quality-lineage.ts",
+    "src/core/final-gates.ts",
+    "src/core/runtime-requirements.ts",
+    "src/core/reconcile.ts",
+    "src/core/archive.ts",
+    "src/core/status.ts",
+    "src/core/format.ts",
+    "test/demo-replay.mjs",
+    "test/implementation-optimization.mjs",
+    "test/reconcile.mjs",
+    "test/harness-acceptance.mjs",
+    "test/smoke.mjs",
+    "test/replay-coverage.mjs",
+    "docs/HARNESS_ISSUE_BACKLOG.md"
+  ],
+  "predicted_impact": [
+    "runtime 能在 status、reconcile、archive 前物化和校验 Orchestrator session。",
+    "completed run 必须具备 dispatch、wave、provider receipt、handoff、QA/Review lineage、acceptance、commit/push、runtime requirements、final gates 和 fresh true harness evidence。",
+    "截图和 provider observation 只作为诊断证据，不能满足 provider receipt gate。",
+    "缺少可复现 runtime 声明或 QA 实际命令输出时，问题归类为环境 blocker 而不是产品功能失败。",
+    "每个已发现问题都能追溯到至少一个 replay fixture 或 coverage record。"
+  ],
+  "verification": {
+    "commands": [
+      "npm test"
+    ],
+    "observed_result": "通过。输出包含 smoke ok、harness acceptance ok、plan validation ok、reliability ok、implementation optimization ok、reconcile ok、demo replay ok、replay coverage ok。",
+    "verified_at": "2026-06-02T00:00:00.000+08:00"
+  },
+  "regression_risks": [
+    "final gates required 列表扩展后，旧 fixture 若没有同步补齐 evidence 会被正确阻断。",
+    "status 会生成 runtime-requirements.json，可能让 true harness evidence 在新增 source 后变 stale；这是预期行为，需要通过重新生成 evidence 闭合。",
+    "provider receipt 校验收紧后，runtime-only 或 synthetic receipt 不再能证明 true harness。",
+    "环境版本检测依赖本机 runtime 命令，命令不可用时应显示 environment blocker。"
+  ],
+  "follow_up": [
+    "后续新增 H-xxx 时，必须同步增加 replay coverage record 或在 test/replay-coverage.mjs 中登记。",
+    "后续非平凡 harness 修改必须新增 docs/harness-evolution/*.json，并通过 evolution record 测试。"
+  ]
+}

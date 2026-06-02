@@ -179,7 +179,7 @@ Before marking \`orchestration/orchestrator-session.json.status\` as \`completed
 - every required dispatch contract has a provider-origin completed receipt
 - every required Agent wrote \`agents/<agent-id>/handoff.json\`
 - \`parallel-execution.json\` has completed waves for required contracts
-- \`acceptance-matrix.json\` has no blocked required items; deviations use \`library/templates/acceptance-deviation.json\`
+- \`acceptance-matrix.json\` is agent-authored, declares \`required_coverage_declared_complete=true\`, has no blocked required items, and deviations use \`library/templates/acceptance-deviation.json\`
 - \`final-gates.json\` exists and all required gates pass
 - \`true-harness-evidence.json\` is fresh and \`true_harness_passed=true\`
 - commit/push/archive policy is satisfied; otherwise use \`ready_for_commit\`, \`awaiting_user_approval\`, \`waiting_for_agent_output\`, or \`blocked\`
@@ -374,7 +374,7 @@ provider agent id、session id 和 task handle 必须来自原生 provider run�
 - 每个 required dispatch contract 都有 provider-origin completed receipt
 - 每个 required Agent 都写出 \`agents/<agent-id>/handoff.json\`
 - \`parallel-execution.json\` 对 required contracts 有 completed wave
-- \`acceptance-matrix.json\` 没有 blocked required item；deviation 使用 \`library/templates/acceptance-deviation.json\`
+- \`acceptance-matrix.json\` 由 Agent 编写，声明 \`required_coverage_declared_complete=true\`，没有 blocked required item；deviation 使用 \`library/templates/acceptance-deviation.json\`
 - \`final-gates.json\` 存在且 required gates 全部 pass
 - \`true-harness-evidence.json\` fresh 且 \`true_harness_passed=true\`
 - commit/push/archive policy 已满足；否则只能使用 \`ready_for_commit\`、\`awaiting_user_approval\`、\`waiting_for_agent_output\` 或 \`blocked\`

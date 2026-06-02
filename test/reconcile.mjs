@@ -28,6 +28,10 @@ function makeProject(prefix, withCommit = false) {
   return cwd;
 }
 
+function makeNonGitProject(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
 function makeRun(cwd, runId, status = "planned", requirement = "Build a system") {
   const runDir = path.join(cwd, ".imfine", "runs", runId);
   fs.mkdirSync(path.join(runDir, "orchestration"), { recursive: true });
@@ -75,6 +79,7 @@ function writeProviderSupported(runDir, runId) {
 function writeAgentAcceptanceMatrix(runDir, items) {
   fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify({
     schema_version: 1,
+    required_coverage_declared_complete: true,
     items
   }, null, 2) + "\n");
 }
@@ -151,6 +156,11 @@ function writeSession(runDir, runId) {
 }
 
 function writeHappyHarness(cwd, runDir, runId) {
+  fs.writeFileSync(path.join(cwd, "README.md"), "# Demo\n\nRuntime: Node.js >=22.\n\nRun tests with `npm run test`.\n");
+  fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({
+    engines: { node: ">=22" },
+    scripts: { test: "node --test" }
+  }, null, 2) + "\n");
   writeProviderSupported(runDir, runId);
   writeSession(runDir, runId);
   const patch = path.join(runDir, "agents", "T1", "patch.diff");
@@ -205,9 +215,37 @@ function writeHappyHarness(cwd, runDir, runId) {
     outputPath: path.join(runDir, "agents", "T1", "handoff.json")
   });
   fs.mkdirSync(path.join(runDir, "evidence"), { recursive: true });
-  fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Tests\n\npass\n");
+  fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Tests\n\n- runtime version: node v22.17.0\n- command: npm run test\n\n```text\nPASS 4 tests\n```\n");
   fs.writeFileSync(path.join(runDir, "evidence", "review.md"), "# Review\n\npass\n");
   fs.writeFileSync(path.join(runDir, "evidence", "risk-review.md"), "# Risk\n\npass\n");
+  fs.mkdirSync(path.join(runDir, "agents", "qa-T1"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "agents", "qa-T1", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "qa passed",
+    commands: [],
+    failures: [],
+    evidence: [path.join(runDir, "evidence", "test-results.md")],
+    next_state: "reviewing"
+  }, null, 2) + "\n");
+  fs.mkdirSync(path.join(runDir, "agents", "reviewer-T1"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "agents", "reviewer-T1", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "reviewer",
+    from: "reviewer",
+    to: "archive",
+    status: "approved",
+    summary: "review approved",
+    commands: [],
+    findings: [],
+    evidence: [path.join(runDir, "evidence", "review.md")],
+    next_state: "committing"
+  }, null, 2) + "\n");
   fs.mkdirSync(path.join(runDir, "agents", "archive"), { recursive: true });
   fs.mkdirSync(path.join(runDir, "archive"), { recursive: true });
   const archiveReport = path.join(runDir, "archive", "archive-report.md");
@@ -261,6 +299,21 @@ function writeHappyHarness(cwd, runDir, runId) {
     evidence: ["backend/run-tests.sh"]
   });
   fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify(existing, null, 2) + "\n");
+}
+
+function writeMinimalTaskGraph(runDir, runId) {
+  fs.mkdirSync(path.join(runDir, "planning"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "planning", "task-graph.json"), JSON.stringify({
+    run_id: runId,
+    strategy: "parallel",
+    tasks: []
+  }, null, 2) + "\n");
+}
+
+function writeQualityHandoff(runDir, agentId, payload) {
+  const agentDir = path.join(runDir, "agents", agentId);
+  fs.mkdirSync(agentDir, { recursive: true });
+  fs.writeFileSync(path.join(agentDir, "handoff.json"), JSON.stringify(payload, null, 2) + "\n");
 }
 
 {
@@ -392,6 +445,113 @@ function writeHappyHarness(cwd, runDir, runId) {
 }
 
 {
+  const cwd = makeProject("imfine-acceptance-agent-declared-coverage-", true);
+  const runId = "declared-coverage";
+  const runDir = makeRun(cwd, runId, "planned", "Build a small API.");
+  fs.mkdirSync(path.join(cwd, "api"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "api", "index.js"), "export const ok = true;\n");
+  writeAgentAcceptanceMatrix(runDir, [{
+    id: "api.basic-delivery",
+    category: "api",
+    requirement_level: "required",
+    classification: "required",
+    status: "pass",
+    detail: "Agent declared API requirement covered.",
+    expected: "API implementation",
+    observed: "api/index.js",
+    accepted_by_review: true,
+    evidence: ["api/index.js"]
+  }]);
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "pass");
+  const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "acceptance-matrix.json"), "utf8"));
+  assert.equal(matrix.summary.required_coverage_declared_complete, true);
+  assert.equal(matrix.items.some((item) => item.id === "frontend.user_mini_program"), false);
+}
+
+{
+  const cwd = makeProject("imfine-acceptance-coverage-not-declared-", true);
+  const runId = "coverage-not-declared";
+  const runDir = makeRun(cwd, runId, "planned", "Build a small API.");
+  fs.mkdirSync(path.join(cwd, "api"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "api", "index.js"), "export const ok = true;\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), JSON.stringify({
+    schema_version: 1,
+    items: [{
+      id: "api.basic-delivery",
+      category: "api",
+      requirement_level: "required",
+      classification: "required",
+      status: "pass",
+      detail: "Agent listed one requirement but did not declare complete coverage.",
+      expected: "API implementation",
+      observed: "api/index.js",
+      accepted_by_review: true,
+      evidence: ["api/index.js"]
+    }]
+  }, null, 2) + "\n");
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "blocked");
+  const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "acceptance-matrix.json"), "utf8"));
+  assert.ok(matrix.items.some((item) => item.id === "agent_authored_acceptance_matrix.required_coverage_not_declared"));
+}
+
+{
+  const cwd = makeProject("imfine-acceptance-required-evidence-missing-", true);
+  const runId = "required-evidence-missing";
+  const runDir = makeRun(cwd, runId, "planned", "Build a small API.");
+  writeAgentAcceptanceMatrix(runDir, [{
+    id: "api.basic-delivery",
+    category: "api",
+    requirement_level: "required",
+    classification: "required",
+    status: "pass",
+    detail: "Agent accepted without evidence.",
+    expected: "API implementation",
+    observed: "claimed",
+    accepted_by_review: true,
+    evidence: []
+  }]);
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "blocked");
+  const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "acceptance-matrix.json"), "utf8"));
+  assert.match(matrix.items.find((item) => item.id === "api.basic-delivery").detail, /required item lacks evidence/);
+}
+
+{
+  const cwd = makeProject("imfine-acceptance-deviation-not-qa-review-", true);
+  const runId = "deviation-not-qa-review";
+  const runDir = makeRun(cwd, runId, "planned", "Build durable storage.");
+  fs.mkdirSync(path.join(cwd, "backend"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "backend", "run-tests.sh"), "#!/bin/sh\n");
+  writeAgentAcceptanceMatrix(runDir, [{
+    id: "storage.demo-substitute",
+    category: "storage",
+    requirement_level: "required",
+    classification: "deviation",
+    status: "pass",
+    detail: "Agent accepted substitute without QA/Reviewer approval.",
+    expected: "durable storage",
+    observed: "in-memory store",
+    accepted_by_review: true,
+    evidence: ["backend/run-tests.sh"],
+    deviation: {
+      requested: "durable storage",
+      delivered: "in-memory store",
+      reason: "demo scope",
+      risk: "data is not durable",
+      accepted_by: ["architect"],
+      evidence: ["backend/run-tests.sh"],
+      required_follow_up: ["replace with durable storage"]
+    }
+  }]);
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "blocked");
+  const matrix = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "acceptance-matrix.json"), "utf8"));
+  assert.match(matrix.items.find((item) => item.id === "storage.demo-substitute").detail, /accepted_by_qa_or_reviewer/);
+}
+
+{
   const cwd = makeProject("imfine-deviation-template-accepted-", true);
   const runId = "deviation";
   const runDir = makeRun(cwd, runId, "planned", "Build a backend system with tests.");
@@ -449,6 +609,154 @@ function writeHappyHarness(cwd, runDir, runId) {
   const testEvidence = path.join(runDir, "evidence", "test-results.md");
   assert.ok(fs.existsSync(testEvidence));
   assert.match(fs.readFileSync(testEvidence, "utf8"), /Indexed from standard handoff evidence references/);
+  const manifest = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "standard-evidence.json"), "utf8"));
+  const qaRecord = manifest.records.find((item) => item.id === "qa");
+  assert.equal(qaRecord.exists, true);
+  assert.ok(qaRecord.sources.some((item) => item.endsWith("evidence/qa-output.md")));
+}
+
+{
+  const cwd = makeProject("imfine-qa-recheck-lineage-", true);
+  const runId = "qa-recheck";
+  const runDir = makeRun(cwd, runId, "planned", "Model QA recheck lineage.");
+  writeMinimalTaskGraph(runDir, runId);
+  const firstEvidence = path.join(runDir, "evidence", "qa-first.md");
+  const recheckEvidence = path.join(runDir, "evidence", "qa-recheck.md");
+  fs.mkdirSync(path.dirname(firstEvidence), { recursive: true });
+  fs.writeFileSync(firstEvidence, "# QA first\n\nfail\n");
+  fs.writeFileSync(recheckEvidence, "# QA recheck\n\npass\n");
+  writeQualityHandoff(runDir, "qa-T1", {
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "dev",
+    status: "fail",
+    summary: "QA found login failure",
+    commands: [],
+    failures: ["qa-login-failure"],
+    finding_ids: ["qa-login-failure"],
+    evidence: [firstEvidence],
+    next_state: "needs_dev_fix",
+    fix_task_id: "FIX-T1-1"
+  });
+  writeQualityHandoff(runDir, "qa-T1-recheck", {
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "QA recheck passed after fix",
+    commands: [],
+    failures: [],
+    evidence: [recheckEvidence],
+    resolves: ["qa-login-failure"],
+    supersedes: ["qa-login-failure"],
+    next_state: "reviewing"
+  });
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "qa").status, "pass");
+  assert.equal(result.gates.find((gate) => gate.id === "recheck_fix_loop").status, "pass");
+  const lineage = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "quality-lineage.json"), "utf8"));
+  assert.equal(lineage.summary.qa, "pass");
+  const qaLineage = lineage.lineages.find((item) => item.role === "qa");
+  assert.deepEqual(qaLineage.resolved_findings, ["qa-login-failure"]);
+  assert.match(qaLineage.latest_handoff, /qa-T1-recheck\/handoff\.json$/);
+}
+
+{
+  const cwd = makeProject("imfine-review-recheck-lineage-", true);
+  const runId = "review-recheck";
+  const runDir = makeRun(cwd, runId, "planned", "Model reviewer recheck lineage.");
+  writeMinimalTaskGraph(runDir, runId);
+  const firstEvidence = path.join(runDir, "evidence", "review-first.md");
+  const recheckEvidence = path.join(runDir, "evidence", "review-recheck.md");
+  fs.mkdirSync(path.dirname(firstEvidence), { recursive: true });
+  fs.writeFileSync(firstEvidence, "# Review first\n\nchanges requested\n");
+  fs.writeFileSync(recheckEvidence, "# Review recheck\n\napproved\n");
+  writeQualityHandoff(runDir, "reviewer-T1", {
+    run_id: runId,
+    task_id: "T1",
+    role: "reviewer",
+    from: "reviewer",
+    to: "dev",
+    status: "changes_requested",
+    summary: "Review found missing authorization",
+    commands: [],
+    findings: [{ id: "review-authz-missing", severity: "high", file: "src/api.js", line: 1, issue: "missing authz", required_change: "add authz" }],
+    evidence: [firstEvidence],
+    next_state: "needs_dev_fix",
+    fix_task_id: "FIX-T1-2"
+  });
+  writeQualityHandoff(runDir, "reviewer-T1-recheck", {
+    run_id: runId,
+    task_id: "T1",
+    role: "reviewer",
+    from: "reviewer",
+    to: "archive",
+    status: "approved",
+    summary: "Reviewer recheck approved fix",
+    commands: [],
+    findings: [],
+    evidence: [recheckEvidence],
+    resolves: ["review-authz-missing"],
+    supersedes: ["review-authz-missing"],
+    next_state: "committing"
+  });
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "review").status, "pass");
+  assert.equal(result.gates.find((gate) => gate.id === "recheck_fix_loop").status, "pass");
+  const evidence = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
+  assert.equal(evidence.quality_lineage.summary.review, "pass");
+  const reviewLineage = evidence.quality_lineage.lineages.find((item) => item.role === "reviewer");
+  assert.deepEqual(reviewLineage.resolved_findings, ["review-authz-missing"]);
+  assert.match(reviewLineage.latest_handoff, /reviewer-T1-recheck\/handoff\.json$/);
+}
+
+{
+  const cwd = makeProject("imfine-recheck-without-lineage-", true);
+  const runId = "recheck-without-lineage";
+  const runDir = makeRun(cwd, runId, "planned", "Reject recheck without lineage.");
+  writeMinimalTaskGraph(runDir, runId);
+  const firstEvidence = path.join(runDir, "evidence", "qa-first.md");
+  const recheckEvidence = path.join(runDir, "evidence", "qa-recheck.md");
+  fs.mkdirSync(path.dirname(firstEvidence), { recursive: true });
+  fs.writeFileSync(firstEvidence, "# QA first\n\nfail\n");
+  fs.writeFileSync(recheckEvidence, "# QA recheck\n\npass\n");
+  writeQualityHandoff(runDir, "qa-T1", {
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "dev",
+    status: "fail",
+    summary: "QA found blocker",
+    commands: [],
+    failures: ["qa-blocker"],
+    finding_ids: ["qa-blocker"],
+    evidence: [firstEvidence],
+    next_state: "needs_dev_fix",
+    fix_task_id: "FIX-T1-1"
+  });
+  writeQualityHandoff(runDir, "qa-T1-recheck", {
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "QA recheck passed but forgot lineage",
+    commands: [],
+    failures: [],
+    evidence: [recheckEvidence],
+    next_state: "reviewing"
+  });
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "qa").status, "blocked");
+  assert.equal(result.gates.find((gate) => gate.id === "recheck_fix_loop").status, "blocked");
+  const lineage = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "quality-lineage.json"), "utf8"));
+  assert.deepEqual(lineage.lineages.find((item) => item.role === "qa").unresolved_findings, ["qa-blocker"]);
 }
 
 {
@@ -460,7 +768,7 @@ function writeHappyHarness(cwd, runDir, runId) {
   assert.equal(result.status, "completed");
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8")).status, "completed");
   const gates = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "final-gates.json"), "utf8")).gates;
-  for (const gate of ["planning", "dispatch", "qa", "review", "recheck_fix_loop", "committer", "push", "archive", "true_harness", "project_knowledge"]) {
+  for (const gate of ["planning", "dispatch", "qa", "review", "recheck_fix_loop", "runtime_requirements", "committer", "push", "archive", "true_harness", "project_knowledge"]) {
     assert.equal(gates[gate], "pass", `${gate} should pass`);
   }
   assert.equal(gates.orchestrator_runtime_consistency, "pass");
@@ -468,6 +776,79 @@ function writeHappyHarness(cwd, runDir, runId) {
   assert.match(finalReport, /^# Final Archive Report/);
   const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
   assert.equal(freshness.status, "fresh");
+}
+
+{
+  const cwd = makeProject("imfine-runtime-requirements-reconcile-blocked-", true);
+  const runId = "runtime-req-blocked";
+  const runDir = makeRun(cwd, runId, "planned", "Build a backend system with tests.");
+  writeHappyHarness(cwd, runDir, runId);
+  fs.rmSync(path.join(cwd, "README.md"));
+  fs.rmSync(path.join(cwd, "package.json"));
+  fs.writeFileSync(path.join(runDir, "evidence", "test-results.md"), "# Tests\n\npass\n");
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.status, "blocked");
+  const gate = result.gates.find((item) => item.id === "runtime_requirements");
+  assert.equal(gate.status, "blocked");
+  assert.match(gate.detail, /runtime_version_declaration/);
+  assert.match(gate.detail, /qa_records_runtime_version/);
+  const runtimeRequirements = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "runtime-requirements.json"), "utf8"));
+  assert.equal(runtimeRequirements.status, "blocked");
+  const finalGates = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "final-gates.json"), "utf8"));
+  assert.equal(finalGates.gates.runtime_requirements, "blocked");
+}
+
+{
+  const cwd = makeProject("imfine-runtime-requirements-reconcile-pass-", true);
+  const runId = "runtime-req-pass";
+  const runDir = makeRun(cwd, runId, "planned", "Build a backend system with tests.");
+  writeHappyHarness(cwd, runDir, runId);
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((item) => item.id === "runtime_requirements").status, "pass");
+  const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
+  assert.match(finalReport, /## Runtime Requirements/);
+  assert.match(finalReport, /runtime-requirements\.json/);
+}
+
+{
+  const cwd = makeNonGitProject("imfine-non-git-commit-policy-");
+  const runId = "non-git";
+  const runDir = makeRun(cwd, runId, "planned", "Build without git should not complete.");
+  writeHappyHarness(cwd, runDir, runId);
+  fs.writeFileSync(path.join(runDir, "evidence", "commits.md"), "# Commit Evidence\n\n- stale old file\n");
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "commit").status, "blocked");
+  assert.equal(result.gates.find((gate) => gate.id === "committer").status, "blocked");
+  const run = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
+  assert.equal(run.status, "blocked");
+  assert.equal(run.commit_blocked_reason, "git repository is not initialized");
+  assert.match(fs.readFileSync(path.join(runDir, "evidence", "commits.md"), "utf8"), /blocked_no_git_repository/);
+}
+
+{
+  const cwd = makeProject("imfine-no-remote-push-policy-", true);
+  const runId = "no-remote";
+  const runDir = makeRun(cwd, runId, "planned", "No remote should record push blocker.");
+  writeHappyHarness(cwd, runDir, runId);
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "push").status, "pass");
+  const run = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
+  assert.equal(run.push_status, "push_blocked_no_remote");
+  assert.match(fs.readFileSync(path.join(runDir, "evidence", "push.md"), "utf8"), /configure origin remote/);
+}
+
+{
+  const cwd = makeProject("imfine-completed-report-commit-hash-", true);
+  const runId = "completed-commit-hash";
+  const runDir = makeRun(cwd, runId, "planned", "Completed report must cite commit hash.");
+  writeHappyHarness(cwd, runDir, runId);
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.status, "completed");
+  const run = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));
+  assert.ok(Array.isArray(run.commit_hashes) && run.commit_hashes.length > 0);
+  const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
+  assert.match(finalReport, /## Commit Trace/);
+  assert.match(finalReport, new RegExp(run.commit_hashes[0].slice(0, 12)));
 }
 
 {

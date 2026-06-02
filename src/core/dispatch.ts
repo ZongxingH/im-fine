@@ -126,29 +126,35 @@ export function buildDispatchContracts(cwd: string, runId: string, runDir: strin
     }));
   const missingAgentActions: DispatchContract[] = actions
     .filter((action) => action.kind === "agent" && !agentActionIds.has(action.id))
-    .map((action) => ({
-      id: action.id,
-      role: action.role,
-      task_id: action.taskId,
-      run_id: runId,
-      action_id: action.id,
-      status: normalizeStatus(action.status),
-      kind: "agent" as const,
-      depends_on: action.dependsOn,
-      read_scope: [],
-      write_scope: [],
-      inputs: action.inputs,
-      required_outputs: action.outputs,
-      expected_handoff_path: path.join(runDir, "agents", action.taskId ? `${action.role}-${action.taskId}` : action.role, "handoff.json"),
-      expected_provider_receipt_path: path.join(runDir, "orchestration", "provider-receipts", `${action.id.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`),
-      expected_output_paths: action.outputs,
-      skills: [],
-      handoff_schema: handoffSchemaForRole(action.role),
-      role_required_evidence: evidenceRequirementsForRole(action.role),
-      allowed_transitions: allowedTransitionsForRole(action.role),
-      parallel_group: action.parallelGroup,
-      ready_reason: action.status === "ready" ? action.reason : undefined,
-      blocked_reason: action.status === "blocked" ? action.reason : undefined
-    }));
+    .map((action) => {
+      const outputHandoff = action.outputs.find((item) => item.endsWith("handoff.json"));
+      return {
+        id: action.id,
+        role: action.role,
+        task_id: action.taskId,
+        run_id: runId,
+        action_id: action.id,
+        status: normalizeStatus(action.status),
+        kind: "agent" as const,
+        depends_on: action.dependsOn,
+        read_scope: [],
+        write_scope: [],
+        inputs: action.inputs,
+        required_outputs: action.outputs,
+        expected_handoff_path: outputHandoff || path.join(runDir, "agents", action.taskId ? `${action.role}-${action.taskId}` : action.role, "handoff.json"),
+        expected_provider_receipt_path: path.join(runDir, "orchestration", "provider-receipts", `${action.id.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`),
+        expected_output_paths: Array.from(new Set([
+          ...action.outputs,
+          outputHandoff || path.join(runDir, "agents", action.taskId ? `${action.role}-${action.taskId}` : action.role, "handoff.json")
+        ])),
+        skills: [],
+        handoff_schema: handoffSchemaForRole(action.role),
+        role_required_evidence: evidenceRequirementsForRole(action.role),
+        allowed_transitions: allowedTransitionsForRole(action.role),
+        parallel_group: action.parallelGroup,
+        ready_reason: action.status === "ready" ? action.reason : undefined,
+        blocked_reason: action.status === "blocked" ? action.reason : undefined
+      };
+    });
   return [...agentContracts, ...missingAgentActions, ...runtimeContracts];
 }

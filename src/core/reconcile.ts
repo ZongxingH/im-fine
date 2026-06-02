@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { validateRuntimeFinalGates } from "./final-gates.js";
 import { ensureDir, writeText } from "./fs.js";
+import { ingestOrchestratorSession } from "./orchestrator.js";
+import { writeQualityLineage } from "./quality-lineage.js";
+import { writeRuntimeRequirements } from "./runtime-requirements.js";
 import { staleTrueHarnessEvidence, validateTrueHarnessEvidenceFiles, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { runCommand } from "./shell.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
@@ -31,6 +35,7 @@ interface RunMetadata {
   archive_commit?: string;
   pushed_head?: string;
   push_status?: string;
+  commit_blocked_reason?: string;
   commit?: { hash?: string };
 }
 
@@ -70,16 +75,23 @@ function ensureEvidenceDir(dir: string): string {
   return evidence;
 }
 
+interface StandardEvidenceRecord {
+  id: string;
+  standard_path: string;
+  exists: boolean;
+  sources: string[];
+}
+
 function copyReportIfExists(source: string, target: string, title: string): string | null {
   if (!fs.existsSync(source) || fs.existsSync(target)) return fs.existsSync(target) ? target : null;
   writeText(target, `# ${title}\n\nSource: ${source}\n\n${readText(source).trim()}\n`);
   return target;
 }
 
-function collectReferencedEvidence(cwd: string, dir: string, target: string, title: string, matcher: (file: string) => boolean): string | null {
-  if (fs.existsSync(target)) return target;
+function collectReferencedEvidence(cwd: string, dir: string, target: string, title: string, matcher: (file: string) => boolean): { file: string | null; sources: string[] } {
+  if (fs.existsSync(target)) return { file: target, sources: [] };
   const agentsDir = path.join(dir, "agents");
-  if (!fs.existsSync(agentsDir)) return null;
+  if (!fs.existsSync(agentsDir)) return { file: null, sources: [] };
   const references: string[] = [];
   for (const agent of fs.readdirSync(agentsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name)) {
     const handoffFile = path.join(agentsDir, agent, "handoff.json");
@@ -91,24 +103,46 @@ function collectReferencedEvidence(cwd: string, dir: string, target: string, tit
       if (fs.existsSync(absolute) && matcher(absolute)) references.push(absolute);
     }
   }
-  if (references.length === 0) return null;
+  if (references.length === 0) return { file: null, sources: [] };
   writeText(target, `# ${title}\n\nIndexed from standard handoff evidence references.\n\n${references.map((file) => `## ${path.relative(cwd, file)}\n\n${readText(file).trim()}`).join("\n\n")}\n`);
-  return target;
+  return { file: target, sources: references };
 }
 
 export function collectStandardEvidence(cwd: string, runId: string): string[] {
   const dir = runDir(cwd, runId);
   const evidence = ensureEvidenceDir(dir);
-  const files = [
-    copyReportIfExists(path.join(dir, "review", "qa-report.md"), path.join(evidence, "test-results.md"), "Test Results"),
-    copyReportIfExists(path.join(dir, "review", "code-review.md"), path.join(evidence, "review.md"), "Review Evidence"),
-    copyReportIfExists(path.join(dir, "review", "risk-review.md"), path.join(evidence, "risk-review.md"), "Risk Review Evidence"),
-    collectReferencedEvidence(cwd, dir, path.join(evidence, "test-results.md"), "Test Results", (file) => /qa|test|result/i.test(file)),
-    collectReferencedEvidence(cwd, dir, path.join(evidence, "review.md"), "Review Evidence", (file) => /review/i.test(file) && !/risk/i.test(file)),
-    collectReferencedEvidence(cwd, dir, path.join(evidence, "risk-review.md"), "Risk Review Evidence", (file) => /risk/i.test(file)),
-    collectReferencedEvidence(cwd, dir, path.join(evidence, "commits.md"), "Commit Evidence", (file) => /commit/i.test(file)),
-    collectReferencedEvidence(cwd, dir, path.join(evidence, "push.md"), "Push Evidence", (file) => /push/i.test(file))
-  ].filter((file): file is string => Boolean(file));
+  const targets = [
+    { id: "qa", file: path.join(evidence, "test-results.md"), title: "Test Results", reviewSource: path.join(dir, "review", "qa-report.md"), matcher: (file: string) => /qa|test|result/i.test(file) },
+    { id: "review", file: path.join(evidence, "review.md"), title: "Review Evidence", reviewSource: path.join(dir, "review", "code-review.md"), matcher: (file: string) => /review/i.test(file) && !/risk/i.test(file) },
+    { id: "risk_review", file: path.join(evidence, "risk-review.md"), title: "Risk Review Evidence", reviewSource: path.join(dir, "review", "risk-review.md"), matcher: (file: string) => /risk/i.test(file) },
+    { id: "commit", file: path.join(evidence, "commits.md"), title: "Commit Evidence", reviewSource: null, matcher: (file: string) => /commit/i.test(file) },
+    { id: "push", file: path.join(evidence, "push.md"), title: "Push Evidence", reviewSource: null, matcher: (file: string) => /push/i.test(file) }
+  ];
+  const files: string[] = [];
+  const records: StandardEvidenceRecord[] = [];
+  for (const target of targets) {
+    const sources: string[] = [];
+    if (target.reviewSource) {
+      const copied = copyReportIfExists(target.reviewSource, target.file, target.title);
+      if (copied) sources.push(target.reviewSource);
+    }
+    const collected = collectReferencedEvidence(cwd, dir, target.file, target.title, target.matcher);
+    if (collected.file) files.push(collected.file);
+    sources.push(...collected.sources);
+    if (fs.existsSync(target.file) && !files.includes(target.file)) files.push(target.file);
+    records.push({
+      id: target.id,
+      standard_path: path.relative(cwd, target.file),
+      exists: fs.existsSync(target.file),
+      sources: Array.from(new Set(sources.map((file) => path.relative(cwd, file))))
+    });
+  }
+  writeText(path.join(dir, "orchestration", "standard-evidence.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    records
+  }, null, 2)}\n`);
   return files;
 }
 
@@ -131,6 +165,10 @@ function gitCommitRecords(cwd: string, since?: string): Array<{ hash: string; su
 function gitHead(cwd: string): string | null {
   const result = git(cwd, ["rev-parse", "HEAD"]);
   return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+}
+
+function gitRepositoryAvailable(cwd: string): boolean {
+  return git(cwd, ["rev-parse", "--is-inside-work-tree"]).code === 0;
 }
 
 function shortHash(value: string): string {
@@ -162,6 +200,14 @@ export function reconcileCommits(cwd: string, runId: string): string | null {
   const run = readJson<RunMetadata>(runFile(cwd, runId));
   const evidence = ensureEvidenceDir(dir);
   const file = path.join(evidence, "commits.md");
+  if (!gitRepositoryAvailable(cwd)) {
+    writeText(file, "# Commit Evidence\n\n- status: blocked_no_git_repository\n- user action: initialize git repository or provide explicit commit evidence before finalization\n");
+    updateRunFile(cwd, runId, {
+      commit_blocked_reason: "git repository is not initialized",
+      commit_evidence: file
+    });
+    return null;
+  }
   const head = gitHead(cwd);
   const reports = reportHashSources(dir);
   const recorded = uniqueStrings([
@@ -190,7 +236,14 @@ export function reconcileCommits(cwd: string, runId: string): string | null {
     ? recorded.map((hash) => ({ hash, subject: "recorded in run evidence" }))
     : gitCommitRecords(cwd, run.created_at);
   const commitSet = uniqueStrings([...commits.map((commit) => commit.hash), head]);
-  if (commitSet.length === 0) return fs.existsSync(file) ? file : null;
+  if (commitSet.length === 0) {
+    writeText(file, "# Commit Evidence\n\n- status: blocked_no_commit\n- user action: create or approve a runtime commit before finalization\n");
+    updateRunFile(cwd, runId, {
+      commit_blocked_reason: "missing commit hash",
+      commit_evidence: file
+    });
+    return null;
+  }
   writeText(file, `# Commit Evidence\n\n- status: recorded\n- final head: ${head || "unknown"}\n- commit set: ${commitSet.join(", ")}\n\n## Commits\n\n${commitSet.map((hash) => `- ${hash}: ${hash === head ? "current HEAD" : "run evidence"}`).join("\n")}\n`);
   updateRunFile(cwd, runId, {
     commit_hashes: commitSet,
@@ -201,6 +254,25 @@ export function reconcileCommits(cwd: string, runId: string): string | null {
     commit_evidence: file
   });
   return file;
+}
+
+function validCommitEvidence(cwd: string, runId: string): { passed: boolean; detail: string } {
+  const dir = runDir(cwd, runId);
+  const run = readJson<RunMetadata>(runFile(cwd, runId));
+  const file = path.join(dir, "evidence", "commits.md");
+  if (!fs.existsSync(file)) return { passed: false, detail: "missing commit evidence" };
+  const commits = uniqueStrings([
+    ...(Array.isArray(run.commit_hashes) ? run.commit_hashes : []),
+    ...(Array.isArray(run.commit_set) ? run.commit_set : []),
+    run.commit_hash,
+    run.final_head,
+    run.implementation_commit,
+    run.evidence_sync_commit,
+    run.archive_commit,
+    run.commit?.hash
+  ]);
+  if (commits.length === 0) return { passed: false, detail: run.commit_blocked_reason || "missing commit hash" };
+  return { passed: true, detail: file };
 }
 
 export function reconcilePush(cwd: string, runId: string): string {
@@ -249,25 +321,14 @@ interface AcceptanceItem {
   };
 }
 
-const REQUIRED_ACCEPTANCE_CATEGORIES = [
-  "user_auth.register_login",
-  "seat.floor_management",
-  "seat.seat_management",
-  "reservation.timeslot_booking",
-  "reservation.timeout_auto_release",
-  "report.occupancy_report",
-  "admin.review_workflow",
-  "analytics.seat_usage_statistics",
-  "architecture.frontend_backend_separation",
-  "api.rest_api",
-  "frontend.user_mini_program",
-  "frontend.admin_pages",
-  "database.entities_and_relations",
-  "tests.interface_unit_tests",
-  "frontend.form_validation_and_pagination"
-];
+interface AcceptanceSource {
+  file: string;
+  requiredCoverageDeclaredComplete: boolean;
+  items: AcceptanceItem[];
+  errors: string[];
+}
 
-function readAgentAcceptanceItems(dir: string): AcceptanceItem[] {
+function readAgentAcceptanceSources(dir: string): AcceptanceSource[] {
   const sources = [
     path.join(dir, "orchestration", "agent-acceptance-matrix.json"),
     path.join(dir, "agents", "product-planner", "acceptance-matrix.json"),
@@ -275,24 +336,42 @@ function readAgentAcceptanceItems(dir: string): AcceptanceItem[] {
     path.join(dir, "agents", "qa", "acceptance-matrix.json"),
     path.join(dir, "agents", "reviewer", "acceptance-matrix.json")
   ];
-  const items: AcceptanceItem[] = [];
+  const result: AcceptanceSource[] = [];
   for (const file of sources) {
     if (!fs.existsSync(file)) continue;
-    const parsed = readJson<{ items?: unknown[] }>(file);
+    const parsed = readJson<{ required_coverage_declared_complete?: unknown; coverage?: { required_complete?: unknown }; items?: unknown[] }>(file);
     const rawItems = Array.isArray(parsed.items) ? parsed.items : [];
+    const source: AcceptanceSource = {
+      file,
+      requiredCoverageDeclaredComplete: parsed.required_coverage_declared_complete === true || parsed.coverage?.required_complete === true,
+      items: [],
+      errors: []
+    };
+    if (!source.requiredCoverageDeclaredComplete) {
+      source.errors.push("agent matrix must declare required_coverage_declared_complete=true");
+    }
     for (const raw of rawItems) {
-      if (!raw || typeof raw !== "object") continue;
+      if (!raw || typeof raw !== "object") {
+        source.errors.push("acceptance item must be an object");
+        continue;
+      }
       const item = raw as Partial<AcceptanceItem>;
-      if (typeof item.id !== "string" || typeof item.category !== "string") continue;
-      if (item.requirement_level !== "required" && item.requirement_level !== "negotiable") continue;
-      if (!["required", "negotiable", "demo-substitute", "deviation"].includes(String(item.classification))) continue;
-      if (item.status !== "pass" && item.status !== "blocked") continue;
-      items.push({
-        id: item.id,
-        category: item.category,
-        requirement_level: item.requirement_level,
+      const errors: string[] = [];
+      if (typeof item.id !== "string" || !item.id.trim()) errors.push("missing id");
+      if (typeof item.category !== "string" || !item.category.trim()) errors.push("missing category");
+      if (item.requirement_level !== "required" && item.requirement_level !== "negotiable") errors.push("invalid requirement_level");
+      if (!["required", "negotiable", "demo-substitute", "deviation"].includes(String(item.classification))) errors.push("invalid classification");
+      if (item.status !== "pass" && item.status !== "blocked") errors.push("invalid status");
+      if (errors.length > 0) {
+        source.errors.push(`invalid item ${typeof item.id === "string" ? item.id : "unknown"}: ${errors.join(", ")}`);
+        continue;
+      }
+      source.items.push({
+        id: item.id as string,
+        category: item.category as string,
+        requirement_level: item.requirement_level as AcceptanceItem["requirement_level"],
         classification: item.classification as AcceptanceItem["classification"],
-        status: item.status,
+        status: item.status as AcceptanceItem["status"],
         detail: typeof item.detail === "string" ? item.detail : "",
         expected: typeof item.expected === "string" ? item.expected : "",
         observed: typeof item.observed === "string" ? item.observed : "",
@@ -303,8 +382,9 @@ function readAgentAcceptanceItems(dir: string): AcceptanceItem[] {
           : undefined
       });
     }
+    result.push(source);
   }
-  return items;
+  return result;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -329,7 +409,8 @@ function normalizeDeviation(value: Record<string, unknown>): AcceptanceItem["dev
 
 export function writeAcceptanceMatrix(cwd: string, runId: string): string {
   const dir = runDir(cwd, runId);
-  const items = readAgentAcceptanceItems(dir);
+  const sources = readAgentAcceptanceSources(dir);
+  const items = sources.flatMap((source) => source.items);
   if (items.length === 0) {
     items.push({
       id: "agent_authored_acceptance_matrix.missing",
@@ -344,23 +425,35 @@ export function writeAcceptanceMatrix(cwd: string, runId: string): string {
       evidence: []
     });
   }
-  const covered = new Set(items.map((item) => item.id));
-  for (const id of REQUIRED_ACCEPTANCE_CATEGORIES) {
-    if (covered.has(id)) continue;
+  for (const source of sources.filter((item) => item.errors.length > 0)) {
     items.push({
-      id,
-      category: "required_acceptance_coverage",
+      id: `agent_authored_acceptance_matrix.invalid.${path.basename(path.dirname(source.file))}.${path.basename(source.file, ".json")}`,
+      category: "acceptance_contract",
       requirement_level: "required",
       classification: "required",
       status: "blocked",
-      detail: "Agent-authored acceptance matrix is missing this required coverage item.",
-      expected: id,
-      observed: "missing from agent-authored matrix",
+      detail: source.errors.join("; "),
+      expected: "Agent-authored matrix declares complete required coverage and contains valid schema items.",
+      observed: source.file,
       accepted_by_review: false,
       evidence: []
     });
   }
-  const evidenceMissing = items.flatMap((item) => item.evidence.filter((file) => !fs.existsSync(path.isAbsolute(file) ? file : path.join(cwd, file))));
+  if (sources.length > 0 && !sources.some((source) => source.requiredCoverageDeclaredComplete)) {
+    items.push({
+      id: "agent_authored_acceptance_matrix.required_coverage_not_declared",
+      category: "acceptance_contract",
+      requirement_level: "required",
+      classification: "required",
+      status: "blocked",
+      detail: "Runtime does not infer product requirements; an agent-authored matrix must declare required coverage complete.",
+      expected: "required_coverage_declared_complete=true",
+      observed: sources.map((source) => source.file).join(", "),
+      accepted_by_review: false,
+      evidence: []
+    });
+  }
+  const missingEvidence = (files: string[]): string[] => files.filter((file) => !fs.existsSync(path.isAbsolute(file) ? file : path.join(cwd, file)));
   for (const item of items) {
     if ((item.classification === "deviation" || item.classification === "demo-substitute") && item.requirement_level === "required") {
       const deviation = item.deviation;
@@ -371,22 +464,24 @@ export function writeAcceptanceMatrix(cwd: string, runId: string): string {
           deviation.delivered ? "" : "delivered",
           deviation.reason ? "" : "reason",
           deviation.risk ? "" : "risk",
-          deviation.accepted_by.length > 0 ? "" : "accepted_by",
+          deviation.accepted_by.includes("qa") || deviation.accepted_by.includes("reviewer") ? "" : "accepted_by_qa_or_reviewer",
           deviation.evidence.length > 0 ? "" : "evidence",
           deviation.required_follow_up.length > 0 ? "" : "required_follow_up"
         ].filter(Boolean);
-      if (missingDeviationFields.length > 0 || !item.accepted_by_review) {
+      const missingDeviationEvidence = deviation ? missingEvidence(deviation.evidence) : [];
+      if (missingDeviationFields.length > 0 || !item.accepted_by_review || missingDeviationEvidence.length > 0) {
         item.status = "blocked";
-        item.detail = `${item.detail}; deviation template incomplete or not accepted: ${missingDeviationFields.join(", ") || "not accepted"}`;
+        item.detail = `${item.detail}; deviation template incomplete, not accepted, or missing evidence: ${[...missingDeviationFields, ...missingDeviationEvidence].join(", ") || "not accepted"}`;
       }
     }
     if (item.requirement_level === "required" && item.status === "pass" && item.evidence.length === 0) {
-      item.status = item.accepted_by_review ? "pass" : "blocked";
+      item.status = "blocked";
       item.detail = `${item.detail}; required item lacks evidence`;
     }
-    if (item.evidence.some((file) => evidenceMissing.includes(file))) {
-      item.status = item.accepted_by_review ? "pass" : "blocked";
-      item.detail = `${item.detail}; missing evidence`;
+    const itemMissingEvidence = missingEvidence(item.evidence);
+    if (itemMissingEvidence.length > 0) {
+      item.status = "blocked";
+      item.detail = `${item.detail}; missing evidence: ${itemMissingEvidence.join(", ")}`;
     }
   }
   const file = path.join(dir, "orchestration", "acceptance-matrix.json");
@@ -399,8 +494,16 @@ export function writeAcceptanceMatrix(cwd: string, runId: string): string {
       negotiable: items.filter((item) => item.requirement_level === "negotiable").length,
       demo_substitute: items.filter((item) => item.classification === "demo-substitute").length,
       deviations: items.filter((item) => item.classification === "deviation").length,
+      sources: sources.length,
+      required_coverage_declared_complete: sources.some((source) => source.requiredCoverageDeclaredComplete),
       blocked: items.filter((item) => item.status === "blocked").length
     },
+    sources: sources.map((source) => ({
+      file: source.file,
+      required_coverage_declared_complete: source.requiredCoverageDeclaredComplete,
+      item_count: source.items.length,
+      errors: source.errors
+    })),
     items
   }, null, 2)}\n`);
   return file;
@@ -413,6 +516,23 @@ function gate(id: string, passed: boolean, detail: string): ReconcileGate {
 function fileGate(dir: string, id: string, relative: string): ReconcileGate {
   const file = path.join(dir, relative);
   return gate(id, fs.existsSync(file), file);
+}
+
+function qualityLineageGate(dir: string, id: "qa" | "review" | "recheck_fix_loop", qualityLineageFile: string): ReconcileGate {
+  if (!fs.existsSync(qualityLineageFile)) return gate(id, false, qualityLineageFile);
+  const quality = readJson<{ summary?: Record<string, unknown>; lineages?: Array<{ role?: string; status?: string; unresolved_findings?: string[]; invalid_rechecks?: unknown[] }> }>(qualityLineageFile);
+  const status = quality.summary?.[id];
+  const blocked = Array.isArray(quality.lineages)
+    ? quality.lineages.filter((item) => {
+      if (id === "qa" && item.role !== "qa") return false;
+      if (id === "review" && item.role !== "reviewer") return false;
+      return item.status !== "pass" || (Array.isArray(item.invalid_rechecks) && item.invalid_rechecks.length > 0);
+    })
+    : [];
+  const detail = blocked.length > 0
+    ? blocked.map((item) => `${item.role || "quality"} unresolved=${Array.isArray(item.unresolved_findings) ? item.unresolved_findings.join("|") : "unknown"}`).join(", ")
+    : qualityLineageFile;
+  return gate(id, status === "pass", detail);
 }
 
 function acceptanceGate(file: string): ReconcileGate {
@@ -634,6 +754,17 @@ function writeFinalReport(cwd: string, runId: string, status: ReconcileResult["s
     ? readJson<{ items?: AcceptanceItem[] }>(acceptanceFile)
     : {};
   const items = Array.isArray(acceptance.items) ? acceptance.items : [];
+  const run = readJson<RunMetadata>(runFile(cwd, runId));
+  const commitHashes = uniqueStrings([
+    ...(Array.isArray(run.commit_hashes) ? run.commit_hashes : []),
+    ...(Array.isArray(run.commit_set) ? run.commit_set : []),
+    run.commit_hash,
+    run.final_head,
+    run.implementation_commit,
+    run.evidence_sync_commit,
+    run.archive_commit,
+    run.commit?.hash
+  ]);
   const required = items.filter((item) => item.requirement_level === "required");
   const negotiable = items.filter((item) => item.requirement_level === "negotiable");
   const substitutions = items.filter((item) => item.classification === "demo-substitute");
@@ -642,7 +773,8 @@ function writeFinalReport(cwd: string, runId: string, status: ReconcileResult["s
     ? values.map((item) => `- ${item.id}: ${item.status}; classification=${item.classification}; expected=${item.expected}; observed=${item.observed}; QA/Review accepted=${item.accepted_by_review ? "yes" : "no"}`).join("\n")
     : "- none";
   const title = status === "completed" ? "Final Archive Report" : "Blocked Archive Report";
-  writeText(report, `# ${title}\n\n- run: ${runId}\n- status: ${status}\n- blocker matrix: ${blockerMatrix}\n\n## Gates\n\n${gates.map((item) => `- ${item.id}: ${item.status} (${item.detail})`).join("\n")}\n\n## Required\n\n${renderItems(required)}\n\n## Negotiable\n\n${renderItems(negotiable)}\n\n## Demo Substitute\n\n${renderItems(substitutions)}\n\n## Deviation\n\n${renderItems(deviations)}\n\n## QA Review Acceptance\n\n${items.length > 0 ? items.map((item) => `- ${item.id}: ${item.accepted_by_review ? "accepted" : "not accepted"}`).join("\n") : "- none"}\n\n## Structured Blockers\n\n${structuredBlockers.length > 0 ? structuredBlockers.map((blocker) => `- ${blocker.id}: owner=${blocker.owner}; evidence=${blocker.required_evidence.join(", ")}; close=${blocker.review_close_action}; summary=${blocker.summary}`).join("\n") : "- none"}\n`);
+  const runtimeRequirements = path.join(dir, "orchestration", "runtime-requirements.json");
+  writeText(report, `# ${title}\n\n- run: ${runId}\n- status: ${status}\n- blocker matrix: ${blockerMatrix}\n\n## Runtime Requirements\n\n- runtime requirements: ${fs.existsSync(runtimeRequirements) ? runtimeRequirements : "missing"}\n\n## Commit Trace\n\n- commit hashes: ${commitHashes.length > 0 ? commitHashes.join(", ") : "missing"}\n- final head: ${run.final_head || "missing"}\n- push status: ${run.push_status || "missing"}\n\n## Gates\n\n${gates.map((item) => `- ${item.id}: ${item.status} (${item.detail})`).join("\n")}\n\n## Required\n\n${renderItems(required)}\n\n## Negotiable\n\n${renderItems(negotiable)}\n\n## Demo Substitute\n\n${renderItems(substitutions)}\n\n## Deviation\n\n${renderItems(deviations)}\n\n## QA Review Acceptance\n\n${items.length > 0 ? items.map((item) => `- ${item.id}: ${item.accepted_by_review ? "accepted" : "not accepted"}`).join("\n") : "- none"}\n\n## Structured Blockers\n\n${structuredBlockers.length > 0 ? structuredBlockers.map((blocker) => `- ${blocker.id}: owner=${blocker.owner}; evidence=${blocker.required_evidence.join(", ")}; close=${blocker.review_close_action}; summary=${blocker.summary}`).join("\n") : "- none"}\n`);
   return report;
 }
 
@@ -724,11 +856,15 @@ function orchestratorRuntimeConsistencyGate(dir: string, runStatus: string | und
 
 export function finalizeRun(cwd: string, runId: string): ReconcileResult {
   const dir = runDir(cwd, runId);
+  ingestOrchestratorSession(cwd, runId, { writeHarnessEvidence: false });
   collectStandardEvidence(cwd, runId);
+  const qualityLineage = writeQualityLineage(cwd, runId);
   const structuredBlockers = collectStructuredBlockers(cwd, runId);
   const commitEvidence = reconcileCommits(cwd, runId);
   const pushEvidence = reconcilePush(cwd, runId);
+  const commitCheck = validCommitEvidence(cwd, runId);
   const acceptance = writeAcceptanceMatrix(cwd, runId);
+  const runtimeRequirements = writeRuntimeRequirements(cwd, runId);
   const harnessFiles = writeTrueHarnessEvidence(cwd, runId);
   const harness = harnessFiles.json;
   const harnessPayload = readJson<{ true_harness_passed?: boolean }>(harness);
@@ -744,12 +880,13 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
   const gates: ReconcileGate[] = [
     gate("planning", planningPassed, "analysis/project-context.md, orchestration/context.json, planning/task-graph.json"),
     gate("dispatch", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
-    fileGate(dir, "qa", "evidence/test-results.md"),
-    fileGate(dir, "review", "evidence/review.md"),
-    gate("recheck_fix_loop", taskGraphExists && fixTasks.length === 0, !taskGraphExists ? "missing planning/task-graph.json" : fixTasks.length === 0 ? "no open FIX tasks" : fixTasks.join(", ")),
+    qualityLineageGate(dir, "qa", qualityLineage),
+    qualityLineageGate(dir, "review", qualityLineage),
+    gate("recheck_fix_loop", taskGraphExists && qualityLineageGate(dir, "recheck_fix_loop", qualityLineage).status === "pass", !taskGraphExists ? "missing planning/task-graph.json" : qualityLineageGate(dir, "recheck_fix_loop", qualityLineage).status === "pass" ? qualityLineage : fixTasks.join(", ") || qualityLineage),
+    gate("runtime_requirements", runtimeRequirements.result.status === "pass", runtimeRequirements.result.status === "pass" ? runtimeRequirements.json : runtimeRequirements.result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; ")),
     fileGate(dir, "risk_review", "evidence/risk-review.md"),
-    gate("commit", Boolean(commitEvidence), commitEvidence || "missing commit evidence"),
-    gate("committer", Boolean(commitEvidence), commitEvidence || "missing commit evidence"),
+    gate("commit", Boolean(commitEvidence) && commitCheck.passed, commitCheck.detail),
+    gate("committer", Boolean(commitEvidence) && commitCheck.passed, commitCheck.detail),
     gate("push", Boolean(pushEvidence), pushEvidence),
     archiveGate(dir),
     acceptanceGate(acceptance),
@@ -771,11 +908,12 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     checks: gates
   }, null, 2)}\n`);
   writeTrueHarnessEvidence(cwd, runId);
-  if (status === "completed") {
+  const finalGateValidation = validateRuntimeFinalGates(finalGates);
+  if (status === "completed" && finalGateValidation.passed) {
     assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString(), final_gates: finalGates }), `finalize archive ${runId}`);
     assertTransitionAccepted(transitionRunState(cwd, runId, "completed", { completed_at: new Date().toISOString(), final_gates: finalGates }), `finalize run ${runId}`);
   } else {
-    const transition = transitionRunState(cwd, runId, "blocked", { blocked_at: new Date().toISOString(), blocked_reason: "finalize gates blocked", final_gates: finalGates });
+    const transition = transitionRunState(cwd, runId, "blocked", { blocked_at: new Date().toISOString(), blocked_reason: finalGateValidation.passed ? "finalize gates blocked" : `runtime final gates invalid: ${finalGateValidation.errors.join("; ")}`, final_gates: finalGates });
     if (!transition.accepted) {
       updateRunFile(cwd, runId, {
         status: "blocked",
@@ -789,7 +927,7 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     runId,
     status,
     gates,
-    files: [finalGates, acceptance, harness, commitEvidence, pushEvidence, finalReport, blockerMatrix, ...fixTaskFiles].filter((file): file is string => Boolean(file))
+    files: [finalGates, acceptance, runtimeRequirements.json, runtimeRequirements.markdown, harness, qualityLineage, commitEvidence, pushEvidence, finalReport, blockerMatrix, ...fixTaskFiles].filter((file): file is string => Boolean(file))
   };
 }
 

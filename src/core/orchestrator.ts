@@ -30,6 +30,8 @@ export interface OrchestrationAction {
 
 export interface AgentRun {
   id: string;
+  actionId?: string;
+  dispatchContractId?: string;
   instanceId?: string;
   role: string;
   taskId?: string;
@@ -81,6 +83,7 @@ export interface OrchestratorResult {
     dispatchContracts: string;
     parallelPlan: string;
     parallelExecution: string;
+    consistency: string;
     timeline: string;
   };
 }
@@ -119,6 +122,20 @@ interface AgentAuthoredSession {
 }
 
 type JsonObject = Record<string, unknown>;
+
+type ParallelExecutionWaveStatus = "waiting_for_agent_output" | "dispatched" | "completed" | "blocked" | "failed";
+
+interface ParallelExecutionWave {
+  iteration: number;
+  parallel_group: string;
+  action_ids: string[];
+  task_ids: string[];
+  roles: string[];
+  status: ParallelExecutionWaveStatus;
+  reason: string;
+  started_at: string;
+  completed_at?: string;
+}
 
 function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
@@ -449,9 +466,6 @@ function validateSession(session: AgentAuthoredSession, runId: string): string[]
     for (const dependency of action.dependsOn) {
       if (!actionIds.has(dependency)) errors.push(`next_actions.${action.id}.dependsOn references unknown action ${dependency}`);
     }
-    if (action.kind === "agent" && !agents.some((agent) => actionMatchesAgent(action, agent))) {
-      errors.push(`next_actions.${action.id} has no matching agent_run`);
-    }
   }
 
   for (const agent of agents) {
@@ -513,20 +527,32 @@ function writeTimeline(file: string, result: Omit<OrchestratorResult, "files">):
   ].join("\n"));
 }
 
-function writeAgentNameMap(cwd: string, runId: string, runDirPath: string, agents: AgentRun[], actions: OrchestrationAction[]): string {
+function relativeToCwd(cwd: string, file: string): string {
+  return path.isAbsolute(file) ? path.relative(cwd, file) : file;
+}
+
+function writeAgentNameMap(cwd: string, runId: string, runDirPath: string, agents: AgentRun[], actions: OrchestrationAction[], dispatchContracts: DispatchContract[]): string {
   const file = path.join(runDirPath, "orchestration", "agent-name-map.json");
   const mappings = agents.map((agent) => {
     const action = actions.find((item) => item.kind === "agent" && actionMatchesAgent(item, agent));
-    const expectedOutput = agent.handoffFile || path.join(runDirPath, "agents", agent.id, "handoff.json");
+    const contract = dispatchContracts.find((item) => item.kind === "agent" && agentRunMatchesContract(agent, item));
+    const actionId = agent.actionId || contract?.action_id || action?.id || `agent-${agent.id}`;
+    const handoffPath = relativeToCwd(cwd, agent.handoffFile || contract?.expected_handoff_path || path.join(runDirPath, "agents", agent.id, "handoff.json"));
+    const expectedOutput = relativeToCwd(cwd, contract?.expected_handoff_path || agent.outputs[0] || agent.handoffFile || path.join(runDirPath, "agents", agent.id, "handoff.json"));
+    const receiptPath = relativeToCwd(cwd, contract?.expected_provider_receipt_path || path.join(runDirPath, "orchestration", "provider-receipts", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`));
     return {
       provider_display_name: agent.instanceId || agent.id,
-      action_id: action?.id || `agent-${agent.id}`,
+      action_id: actionId,
       agent_id: agent.id,
+      dispatch_contract_id: agent.dispatchContractId || contract?.id || agent.id,
       role: agent.role,
       task_id: agent.taskId || null,
       parallel_group: agent.parallelGroup,
       started_at: agent.startedAt || null,
-      expected_output: path.isAbsolute(expectedOutput) ? path.relative(cwd, expectedOutput) : expectedOutput
+      expected_output: expectedOutput,
+      handoff_path: handoffPath,
+      provider_receipt_path: receiptPath,
+      gate_ids: ["dispatch", "true_harness", agent.role === "qa" ? "qa" : agent.role === "reviewer" ? "review" : "recheck_fix_loop"]
     };
   });
   writeText(file, `${JSON.stringify({
@@ -538,7 +564,162 @@ function writeAgentNameMap(cwd: string, runId: string, runDirPath: string, agent
   return file;
 }
 
-function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "files">): OrchestratorResult {
+function writeOrchestratorRuntimeConsistency(file: string, runId: string, result: Omit<OrchestratorResult, "files">, dispatchContracts: DispatchContract[]): void {
+  const blockers: string[] = [];
+  if (result.nextActions.length > 0 && dispatchContracts.length === 0) blockers.push("session_actions_not_materialized");
+  if (result.agentRuns.length > 0 && dispatchContracts.filter((contract) => contract.kind === "agent").length === 0) blockers.push("agent_runs_not_materialized");
+  writeText(file, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_at: new Date().toISOString(),
+    status: blockers.length > 0 ? "blocked" : "pass",
+    session_action_count: result.nextActions.length,
+    session_agent_run_count: result.agentRuns.length,
+    dispatch_contract_count: dispatchContracts.length,
+    agent_dispatch_contract_count: dispatchContracts.filter((contract) => contract.kind === "agent").length,
+    runtime_dispatch_contract_count: dispatchContracts.filter((contract) => contract.kind === "runtime").length,
+    blockers
+  }, null, 2)}\n`);
+}
+
+function actionIdsForContract(contract: DispatchContract): string[] {
+  return [
+    contract.action_id,
+    contract.id,
+    `agent-${contract.id}`,
+    `agent-${contract.role}`,
+    contract.task_id ? `agent-${contract.role}-${contract.task_id}` : undefined
+  ].filter((item): item is string => Boolean(item));
+}
+
+function waveContainsContract(wave: unknown, contract: DispatchContract, status?: ParallelExecutionWaveStatus): boolean {
+  if (!isObject(wave)) return false;
+  if (status && wave.status !== status) return false;
+  if (!Array.isArray(wave.action_ids)) return false;
+  const actionIds = new Set(wave.action_ids.filter((item): item is string => typeof item === "string"));
+  return actionIdsForContract(contract).some((id) => actionIds.has(id));
+}
+
+function waveStatusForContract(contract: DispatchContract): ParallelExecutionWaveStatus {
+  if (contract.status === "done") return "completed";
+  if (contract.status === "blocked") return "blocked";
+  return "waiting_for_agent_output";
+}
+
+function materializeWaveHistory(runId: string, existingExecution: { wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] } | null, dispatchContracts: DispatchContract[]): {
+  executed_parallel_groups: string[];
+  blocked_parallel_groups: string[];
+  wave_history: unknown[];
+} {
+  const waveHistory = Array.isArray(existingExecution?.wave_history) ? [...existingExecution.wave_history] : [];
+  const executed = new Set(Array.isArray(existingExecution?.executed_parallel_groups) ? existingExecution.executed_parallel_groups : []);
+  const blocked = new Set(Array.isArray(existingExecution?.blocked_parallel_groups) ? existingExecution.blocked_parallel_groups : []);
+  const now = new Date().toISOString();
+  const addWave = (contract: DispatchContract, status: ParallelExecutionWaveStatus, reason: string): void => {
+    const wave: ParallelExecutionWave = {
+      iteration: waveHistory.length + 1,
+      parallel_group: contract.parallel_group,
+      action_ids: [contract.action_id],
+      task_ids: contract.task_id ? [contract.task_id] : [],
+      roles: [contract.role],
+      status,
+      reason,
+      started_at: now
+    };
+    if (status === "completed" || status === "blocked" || status === "failed") wave.completed_at = now;
+    waveHistory.push(wave);
+  };
+
+  for (const contract of dispatchContracts) {
+    if (!waveHistory.some((wave) => waveContainsContract(wave, contract))) {
+      addWave(contract, "waiting_for_agent_output", `runtime materialized dispatch start for ${contract.action_id}`);
+    }
+    const status = waveStatusForContract(contract);
+    if ((status === "completed" || status === "blocked") && !waveHistory.some((wave) => waveContainsContract(wave, contract, status))) {
+      addWave(contract, status, `orchestrator session declared ${contract.action_id} ${contract.status}`);
+    }
+    if (status === "completed") {
+      executed.add(contract.parallel_group);
+      blocked.delete(contract.parallel_group);
+    }
+    if (status === "blocked") blocked.add(contract.parallel_group);
+  }
+
+  return {
+    executed_parallel_groups: Array.from(executed).sort(),
+    blocked_parallel_groups: Array.from(blocked).sort(),
+    wave_history: waveHistory
+  };
+}
+
+function agentRunMatchesContract(agent: AgentRun, contract: DispatchContract): boolean {
+  return agent.id === contract.id
+    || agent.actionId === contract.action_id
+    || (agent.role === contract.role && (agent.taskId || "") === (contract.task_id || ""));
+}
+
+function adoptValidatedHandoffs(result: Omit<OrchestratorResult, "files">, dispatchContracts: DispatchContract[], runDirPath: string, runId: string): AgentRun[] {
+  const agents = [...result.agentRuns];
+  for (const contract of dispatchContracts.filter((item) => item.kind === "agent")) {
+    const validation = validateAgentHandoff({
+      id: contract.id,
+      role: contract.role,
+      taskId: contract.task_id,
+      handoffFile: contract.expected_handoff_path || undefined
+    }, runDirPath, runId);
+    if (!validation.passed || !validation.file) continue;
+    const existing = agents.find((agent) => agentRunMatchesContract(agent, contract));
+    if (existing) {
+      existing.status = "completed";
+      existing.executionSource = "true_harness";
+      existing.executedBy = "native_agent";
+      existing.executionStatus = "completed";
+      existing.handoffFile = validation.file;
+      existing.actionId = contract.action_id;
+      existing.dispatchContractId = contract.id;
+      existing.completedAt = existing.completedAt || new Date().toISOString();
+      continue;
+    }
+    agents.push({
+      id: path.basename(path.dirname(validation.file)),
+      actionId: contract.action_id,
+      dispatchContractId: contract.id,
+      role: contract.role,
+      taskId: contract.task_id,
+      workflowState: contract.workflow_state,
+      status: "completed",
+      executionSource: "true_harness",
+      executedBy: "native_agent",
+      executionStatus: "completed",
+      outputDir: path.dirname(validation.file),
+      handoffFile: validation.file,
+      completedAt: new Date().toISOString(),
+      executionType: "native_agent_run",
+      skills: contract.skills,
+      inputs: contract.inputs,
+      outputs: contract.required_outputs,
+      readScope: contract.read_scope,
+      writeScope: contract.write_scope,
+      dependsOn: contract.depends_on,
+      parallelGroup: contract.parallel_group
+    });
+  }
+  return agents;
+}
+
+function completeContractsWithAdoptedHandoffs(dispatchContracts: DispatchContract[], agentRuns: AgentRun[]): DispatchContract[] {
+  return dispatchContracts.map((contract) => {
+    if (contract.kind !== "agent") return contract;
+    const adopted = agentRuns.some((agent) => agentRunMatchesContract(agent, contract)
+      && agent.status === "completed"
+      && agent.executionStatus === "completed"
+      && typeof agent.handoffFile === "string"
+      && agent.handoffFile.length > 0);
+    return adopted ? { ...contract, status: "done" as const } : contract;
+  });
+}
+
+function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "files">, options: { writeHarnessEvidence?: boolean } = {}): OrchestratorResult {
   const runDirPath = runDir(cwd, runId);
   const orchestrationDir = path.join(runDirPath, "orchestration");
   ensureDir(orchestrationDir);
@@ -550,11 +731,14 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     dispatchContracts: path.join(orchestrationDir, "dispatch-contracts.json"),
     parallelPlan: path.join(orchestrationDir, "parallel-plan.json"),
     parallelExecution: path.join(orchestrationDir, "parallel-execution.json"),
+    consistency: path.join(orchestrationDir, "orchestrator-runtime-consistency.json"),
     timeline: path.join(orchestrationDir, "auto-timeline.md")
   };
-  const dispatchContracts = exists(files.session) && result.nextActions.length > 0 && result.agentRuns.length > 0
+  const initialDispatchContracts = exists(files.session) && result.nextActions.length > 0
     ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
     : [];
+  const adoptedAgentRuns = adoptValidatedHandoffs(result, initialDispatchContracts, runDirPath, runId);
+  const dispatchContracts = completeContractsWithAdoptedHandoffs(initialDispatchContracts, adoptedAgentRuns);
   for (const contract of dispatchContracts.filter((item) => item.kind === "agent" && (item.status === "ready" || item.status === "waiting"))) {
     writeProviderDispatchReceipt(cwd, runId, {
       actionId: contract.action_id,
@@ -571,6 +755,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
   }
   const actionable = result.nextActions.filter((action) => action.status !== "done");
   const existingExecution = optionalJson<{ wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] }>(files.parallelExecution);
+  const execution = materializeWaveHistory(runId, existingExecution, dispatchContracts);
 
   writeText(files.state, `${JSON.stringify({
     schema_version: 1,
@@ -603,13 +788,13 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     schema_version: 1,
     run_id: runId,
     artifact_type: "execution",
-    executed_parallel_groups: Array.isArray(existingExecution?.executed_parallel_groups) ? existingExecution.executed_parallel_groups : [],
-    blocked_parallel_groups: Array.isArray(existingExecution?.blocked_parallel_groups) ? existingExecution.blocked_parallel_groups : [],
-    wave_history: Array.isArray(existingExecution?.wave_history) ? existingExecution.wave_history : []
+    executed_parallel_groups: execution.executed_parallel_groups,
+    blocked_parallel_groups: execution.blocked_parallel_groups,
+    wave_history: execution.wave_history
   }, null, 2)}\n`);
   writeTimeline(files.timeline, result);
-  writeAgentNameMap(cwd, runId, runDirPath, result.agentRuns, result.nextActions);
-  const nativeAgents = result.agentRuns.map((agent) => ({
+  writeAgentNameMap(cwd, runId, runDirPath, adoptedAgentRuns, result.nextActions, dispatchContracts);
+  const nativeAgents = adoptedAgentRuns.map((agent) => ({
     ...agent,
     executionType: "native_agent_run" as const
   }));
@@ -634,8 +819,9 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     runtime_gates: runtimeGates,
     execution_units: [...nativeAgents, ...runtimeGates]
   }, null, 2)}\n`);
-  writeTrueHarnessEvidence(cwd, runId);
-  return { ...result, dispatchContracts, files };
+  writeOrchestratorRuntimeConsistency(files.consistency, runId, { ...result, agentRuns: adoptedAgentRuns }, dispatchContracts);
+  if (options.writeHarnessEvidence !== false) writeTrueHarnessEvidence(cwd, runId);
+  return { ...result, agentRuns: adoptedAgentRuns, dispatchContracts, files };
 }
 
 function waitingForOrchestratorDecision(cwd: string, runId: string, mode: OrchestratorResult["mode"]): OrchestratorResult {
@@ -669,6 +855,7 @@ function completedSnapshot(cwd: string, runId: string, mode: OrchestratorResult[
     dispatchContracts: path.join(orchestrationDir, "dispatch-contracts.json"),
     parallelPlan: path.join(orchestrationDir, "parallel-plan.json"),
     parallelExecution: path.join(orchestrationDir, "parallel-execution.json"),
+    consistency: path.join(orchestrationDir, "orchestrator-runtime-consistency.json"),
     timeline: path.join(orchestrationDir, "auto-timeline.md")
   };
   const session = optionalJson<AgentAuthoredSession>(files.session);
@@ -699,6 +886,7 @@ function readOnlySnapshot(cwd: string, runId: string, mode: OrchestratorResult["
     dispatchContracts: path.join(orchestrationDir, "dispatch-contracts.json"),
     parallelPlan: path.join(orchestrationDir, "parallel-plan.json"),
     parallelExecution: path.join(orchestrationDir, "parallel-execution.json"),
+    consistency: path.join(orchestrationDir, "orchestrator-runtime-consistency.json"),
     timeline: path.join(orchestrationDir, "auto-timeline.md")
   };
   const session = optionalJson<AgentAuthoredSession>(files.session);
@@ -730,7 +918,8 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
   const runDirPath = runDir(cwd, runId);
   const currentMetadata = readJson<RunMetadata>(path.join(runDirPath, "run.json"));
   const currentNormalizedStatus = normalizeRunState(currentMetadata.status);
-  if (currentNormalizedStatus === "completed") {
+  const sessionFile = path.join(runDirPath, "orchestration", "orchestrator-session.json");
+  if (currentNormalizedStatus === "completed" && !exists(sessionFile)) {
     return {
       runId,
       runDir: runDirPath,
@@ -743,7 +932,6 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       parallelGroups: []
     };
   }
-  const sessionFile = path.join(runDirPath, "orchestration", "orchestrator-session.json");
   if (!exists(sessionFile)) {
     return {
       runId,
@@ -758,26 +946,7 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
     };
   }
 
-  const provider = readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
-  if (provider.blocked) {
-    transitionRunState(cwd, runId, "blocked", {
-      blocked_at: new Date().toISOString(),
-      blocked_reason: provider.blocked_reason,
-      provider_capability: path.join(runDirPath, "orchestration", "provider-capability.json")
-    });
-    writeBlockerSummary(cwd, runId);
-    return {
-      runId,
-      runDir: runDirPath,
-      mode,
-      status: "blocked",
-      executionMode: "true_harness",
-      nextActions: [],
-      agentRuns: [],
-      dispatchContracts: [],
-      parallelGroups: []
-    };
-  }
+  readProviderCapabilitySnapshot(cwd, runId) || writeProviderCapabilitySnapshot(cwd, runId);
 
   const rawSession = readJson<AgentAuthoredSession>(sessionFile);
   const normalized = normalizeSession(rawSession);
@@ -853,10 +1022,10 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       mode,
       status: "blocked",
       executionMode: "true_harness",
-      nextActions: [],
-      agentRuns: [],
+      nextActions,
+      agentRuns,
       dispatchContracts: [],
-      parallelGroups: []
+      parallelGroups: groupActions(nextActions)
     };
   }
   const parallelGroups = groupActions(nextActions);
@@ -880,6 +1049,14 @@ export function orchestrateRun(cwd: string, runId: string, mode: OrchestratorRes
   if (readRunStatus(cwd, runId) === "completed") return completedSnapshot(cwd, runId, mode);
   if (!exists(sessionFile)) return waitingForOrchestratorDecision(cwd, runId, mode);
   return persist(cwd, runId, buildSessionDrivenDecision(cwd, runId, mode));
+}
+
+export function ingestOrchestratorSession(cwd: string, runId: string, options: { writeHarnessEvidence?: boolean } = {}): OrchestratorResult {
+  const status = readRunStatus(cwd, runId);
+  if (status === "completed") return completedSnapshot(cwd, runId, "orchestrate");
+  const sessionFile = path.join(runDir(cwd, runId), "orchestration", "orchestrator-session.json");
+  if (!exists(sessionFile)) return readOnlySnapshot(cwd, runId, "orchestrate");
+  return persist(cwd, runId, buildSessionDrivenDecision(cwd, runId, "orchestrate"), options);
 }
 
 export function resumeRun(cwd: string, runId: string): OrchestratorResult {

@@ -1,6 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { blockerSummary } from "./blocker-summary.js";
+import { validateRuntimeFinalGates } from "./final-gates.js";
+import { ingestOrchestratorSession } from "./orchestrator.js";
+import { providerObservations } from "./provider-observation.js";
+import { providerReceipts, validateProviderReceipt } from "./provider-evidence.js";
+import { readQualityLineage, writeQualityLineage } from "./quality-lineage.js";
+import { writeRuntimeRequirements } from "./runtime-requirements.js";
 import { staleTrueHarnessEvidence } from "./true-harness-evidence.js";
 
 export interface StatusResult {
@@ -13,6 +19,83 @@ export interface StatusResult {
   currentRunBranch: string | null;
   currentRunGates: Record<string, string> | null;
   currentRunConsistency: "consistent" | "inconsistent" | null;
+  currentRunDispatch: {
+    contractCount: number;
+    waveCount: number;
+    missingCompletedWaveActionIds: string[];
+  } | null;
+  currentRunProviderReceipts: {
+    receiptCount: number;
+    validReceiptCount: number;
+    missingProviderReceiptActionIds: string[];
+    invalidProviderReceiptActionIds: string[];
+  } | null;
+  currentRunProviderObservations: {
+    present: boolean;
+    observationCount: number;
+    observedAgentNames: string[];
+    observedClosedCount: number;
+    screenshots: string[];
+    notes: string[];
+    proofBoundary: string;
+  } | null;
+  currentRunAgentNameMap: {
+    present: boolean;
+    mappings: Array<{
+      providerDisplayName: string;
+      actionId: string;
+      dispatchContractId: string;
+      role: string;
+      parallelGroup: string;
+      handoffPath: string | null;
+      providerReceiptPath: string | null;
+      gateIds: string[];
+    }>;
+  } | null;
+  currentRunTrueHarnessFreshness: {
+    status: "fresh" | "stale" | "missing";
+    staleSources: string[];
+  } | null;
+  currentRunQualityLineage: {
+    qa: string;
+    review: string;
+    recheckFixLoop: string;
+    latest: Array<{
+      role: string;
+      taskId: string;
+      status: string;
+      latestStatus: string;
+      latestHandoff: string | null;
+      unresolvedFindings: string[];
+      invalidRecheckCount: number;
+    }>;
+  } | null;
+  currentRunStandardEvidence: {
+    missing: string[];
+    records: Array<{
+      id: string;
+      standardPath: string;
+      exists: boolean;
+      sources: string[];
+    }>;
+  } | null;
+  currentRunRuntimeRequirements: {
+    status: string;
+    declaredLanguages: string[];
+    declarationFiles: string[];
+    observedVersions: string[];
+    blockedChecks: string[];
+    qaEvidence: {
+      recordsRuntimeVersion: boolean;
+      recordsTestCommand: boolean;
+      recordsTestOutput: boolean;
+    };
+  } | null;
+  currentRunNextOwner: {
+    owner: "runtime" | "orchestrator" | "agent" | "provider" | "user" | "project_code";
+    reason: string;
+    evidence: string[];
+  } | null;
   currentRunActions: {
     ready: number;
     waiting: number;
@@ -71,6 +154,218 @@ function readJson<T>(file: string): T {
   return JSON.parse(fs.readFileSync(file, "utf8")) as T;
 }
 
+function actionIdsForContract(contract: { id?: unknown; action_id?: unknown; role?: unknown; task_id?: unknown }): string[] {
+  const id = typeof contract.id === "string" ? contract.id : "";
+  const actionId = typeof contract.action_id === "string" ? contract.action_id : "";
+  const role = typeof contract.role === "string" ? contract.role : "";
+  const taskId = typeof contract.task_id === "string" ? contract.task_id : "";
+  return [
+    actionId,
+    id,
+    id ? `agent-${id}` : "",
+    role ? `agent-${role}` : "",
+    role && taskId ? `agent-${role}-${taskId}` : ""
+  ].filter((item) => item.length > 0);
+}
+
+function displayActionId(contract: { id?: unknown; action_id?: unknown; role?: unknown; task_id?: unknown }): string {
+  if (typeof contract.action_id === "string" && contract.action_id.trim()) return contract.action_id;
+  if (typeof contract.role === "string" && contract.role.trim() && typeof contract.task_id === "string" && contract.task_id.trim()) {
+    return `agent-${contract.role}-${contract.task_id}`;
+  }
+  if (typeof contract.id === "string" && contract.id.trim()) return contract.id;
+  return "unknown";
+}
+
+function dispatchStatus(runRoot: string): StatusResult["currentRunDispatch"] {
+  const orchestration = path.join(runRoot, "orchestration");
+  const dispatchFile = path.join(orchestration, "dispatch-contracts.json");
+  const parallelFile = path.join(orchestration, "parallel-execution.json");
+  if (!fs.existsSync(dispatchFile)) return null;
+  const dispatch = readJson<{ contracts?: Array<{ id?: unknown; action_id?: unknown; role?: unknown; task_id?: unknown; kind?: unknown; status?: unknown }> }>(dispatchFile);
+  const contracts = Array.isArray(dispatch.contracts) ? dispatch.contracts : [];
+  const parallel = fs.existsSync(parallelFile)
+    ? readJson<{ wave_history?: Array<{ status?: unknown; action_ids?: unknown }> }>(parallelFile)
+    : {};
+  const waves = Array.isArray(parallel.wave_history) ? parallel.wave_history : [];
+  const completedActionIds = new Set(waves
+    .filter((wave) => wave.status === "completed" && Array.isArray(wave.action_ids))
+    .flatMap((wave) => (wave.action_ids as unknown[]).filter((item): item is string => typeof item === "string")));
+  const missingCompletedWaveActionIds = contracts
+    .filter((contract) => contract.kind !== "runtime" && contract.status !== "blocked")
+    .filter((contract) => !actionIdsForContract(contract).some((id) => completedActionIds.has(id)))
+    .map((contract) => displayActionId(contract));
+  return {
+    contractCount: contracts.length,
+    waveCount: waves.length,
+    missingCompletedWaveActionIds
+  };
+}
+
+function providerReceiptStatus(cwd: string, runRoot: string, runId: string): StatusResult["currentRunProviderReceipts"] {
+  const orchestration = path.join(runRoot, "orchestration");
+  const dispatchFile = path.join(orchestration, "dispatch-contracts.json");
+  if (!fs.existsSync(dispatchFile)) return null;
+  const dispatch = readJson<{ contracts?: Array<{ id?: unknown; action_id?: unknown; role?: unknown; task_id?: unknown; kind?: unknown }> }>(dispatchFile);
+  const agentContracts = Array.isArray(dispatch.contracts)
+    ? dispatch.contracts.filter((contract) => contract.kind !== "runtime")
+    : [];
+  const receipts = providerReceipts(cwd, runId);
+  const validations = receipts.map((receipt) => validateProviderReceipt(cwd, receipt));
+  const validReceiptActionIds = validations.filter((validation) => validation.valid).map((validation) => validation.action_id);
+  const allReceiptActionIds = validations.map((validation) => validation.action_id);
+  const matchesReceipt = (contract: { id?: unknown; action_id?: unknown; role?: unknown; task_id?: unknown }, actionIds: string[]): boolean => {
+    const aliases = new Set(actionIdsForContract(contract));
+    return actionIds.some((id) => aliases.has(id));
+  };
+  const missingProviderReceiptActionIds = agentContracts
+    .filter((contract) => !matchesReceipt(contract, validReceiptActionIds))
+    .map((contract) => displayActionId(contract));
+  const invalidProviderReceiptActionIds = agentContracts
+    .filter((contract) => matchesReceipt(contract, allReceiptActionIds))
+    .filter((contract) => !matchesReceipt(contract, validReceiptActionIds))
+    .map((contract) => displayActionId(contract));
+  return {
+    receiptCount: receipts.length,
+    validReceiptCount: validations.filter((validation) => validation.valid).length,
+    missingProviderReceiptActionIds,
+    invalidProviderReceiptActionIds
+  };
+}
+
+function providerObservationStatus(cwd: string, runRoot: string): StatusResult["currentRunProviderObservations"] {
+  const observations = providerObservations(cwd, runRoot);
+  return {
+    present: observations.length > 0,
+    observationCount: observations.length,
+    observedAgentNames: Array.from(new Set(observations.flatMap((item) => item.observed_agent_names))),
+    observedClosedCount: observations.reduce((total, item) => total + (item.observed_closed_count || 0), 0),
+    screenshots: observations.map((item) => item.screenshot_path).filter((item): item is string => typeof item === "string" && item.length > 0),
+    notes: observations.map((item) => item.user_note).filter((item): item is string => typeof item === "string" && item.length > 0),
+    proofBoundary: "diagnostic_only_not_true_harness_proof"
+  };
+}
+
+function agentNameMapStatus(runRoot: string): StatusResult["currentRunAgentNameMap"] {
+  const file = path.join(runRoot, "orchestration", "agent-name-map.json");
+  if (!fs.existsSync(file)) return { present: false, mappings: [] };
+  const parsed = readJson<{ mappings?: Array<Record<string, unknown>> }>(file);
+  const mappings = Array.isArray(parsed.mappings) ? parsed.mappings : [];
+  return {
+    present: true,
+    mappings: mappings.map((item) => ({
+      providerDisplayName: typeof item.provider_display_name === "string" ? item.provider_display_name : "unknown",
+      actionId: typeof item.action_id === "string" ? item.action_id : "unknown",
+      dispatchContractId: typeof item.dispatch_contract_id === "string" ? item.dispatch_contract_id : "unknown",
+      role: typeof item.role === "string" ? item.role : "unknown",
+      parallelGroup: typeof item.parallel_group === "string" ? item.parallel_group : "unknown",
+      handoffPath: typeof item.handoff_path === "string" ? item.handoff_path : typeof item.expected_output === "string" ? item.expected_output : null,
+      providerReceiptPath: typeof item.provider_receipt_path === "string" ? item.provider_receipt_path : null,
+      gateIds: Array.isArray(item.gate_ids) ? item.gate_ids.filter((entry): entry is string => typeof entry === "string") : []
+    }))
+  };
+}
+
+function qualityLineageStatus(cwd: string, runId: string): StatusResult["currentRunQualityLineage"] {
+  writeQualityLineage(cwd, runId);
+  const lineage = readQualityLineage(cwd, runId);
+  if (!lineage) return null;
+  return {
+    qa: lineage.summary.qa,
+    review: lineage.summary.review,
+    recheckFixLoop: lineage.summary.recheck_fix_loop,
+    latest: lineage.lineages.map((item) => ({
+      role: item.role,
+      taskId: item.task_id,
+      status: item.status,
+      latestStatus: item.latest_status,
+      latestHandoff: item.latest_handoff,
+      unresolvedFindings: item.unresolved_findings,
+      invalidRecheckCount: item.invalid_rechecks.length
+    }))
+  };
+}
+
+function standardEvidenceStatus(runRoot: string): StatusResult["currentRunStandardEvidence"] {
+  const file = path.join(runRoot, "orchestration", "standard-evidence.json");
+  if (!fs.existsSync(file)) return null;
+  const parsed = readJson<{ records?: Array<{ id?: unknown; standard_path?: unknown; exists?: unknown; sources?: unknown[] }> }>(file);
+  const records = Array.isArray(parsed.records)
+    ? parsed.records.map((record) => ({
+      id: typeof record.id === "string" ? record.id : "unknown",
+      standardPath: typeof record.standard_path === "string" ? record.standard_path : "unknown",
+      exists: record.exists === true,
+      sources: Array.isArray(record.sources) ? record.sources.filter((item): item is string => typeof item === "string") : []
+    }))
+    : [];
+  return {
+    missing: records.filter((record) => !record.exists).map((record) => record.standardPath),
+    records
+  };
+}
+
+function runtimeRequirementsStatus(cwd: string, runId: string): StatusResult["currentRunRuntimeRequirements"] {
+  const written = writeRuntimeRequirements(cwd, runId);
+  const result = written.result;
+  return {
+    status: result.status,
+    declaredLanguages: result.declared_runtime.languages,
+    declarationFiles: result.declared_runtime.files,
+    observedVersions: result.observed_runtime_versions.map((item) => `${item.runtime}:${item.status}:${item.version}`),
+    blockedChecks: result.checks.filter((item) => item.status === "blocked").map((item) => item.id),
+    qaEvidence: {
+      recordsRuntimeVersion: result.qa_evidence.records_runtime_version,
+      recordsTestCommand: result.qa_evidence.records_test_command,
+      recordsTestOutput: result.qa_evidence.records_test_output
+    }
+  };
+}
+
+function nextOwnerStatus(runRoot: string, runStatus: string | null, gates: Record<string, string> | null, dispatch: StatusResult["currentRunDispatch"], receipts: StatusResult["currentRunProviderReceipts"], freshness: StatusResult["currentRunTrueHarnessFreshness"], quality: StatusResult["currentRunQualityLineage"], standardEvidence: StatusResult["currentRunStandardEvidence"], runtimeRequirements: StatusResult["currentRunRuntimeRequirements"]): StatusResult["currentRunNextOwner"] {
+  const orchestration = path.join(runRoot, "orchestration");
+  const finalGates = path.join(orchestration, "final-gates.json");
+  if (runStatus === "completed" && (!gates || !gatesAreComplete(gates))) {
+    return { owner: "runtime", reason: "completed run has missing or blocked final gates", evidence: [finalGates] };
+  }
+  if (freshness?.status === "stale") {
+    return { owner: "runtime", reason: "true harness evidence is stale", evidence: freshness.staleSources };
+  }
+  if (dispatch && dispatch.missingCompletedWaveActionIds.length > 0) {
+    return { owner: "orchestrator", reason: "dispatch contracts are missing completed waves", evidence: dispatch.missingCompletedWaveActionIds };
+  }
+  if (receipts && receipts.missingProviderReceiptActionIds.length > 0) {
+    return { owner: "provider", reason: "provider-origin receipts are missing", evidence: receipts.missingProviderReceiptActionIds };
+  }
+  if (receipts && receipts.invalidProviderReceiptActionIds.length > 0) {
+    return { owner: "provider", reason: "provider-origin receipts are invalid", evidence: receipts.invalidProviderReceiptActionIds };
+  }
+  if (runtimeRequirements && runtimeRequirements.status !== "pass") {
+    return { owner: "project_code", reason: "runtime requirements or QA environment evidence are blocked", evidence: runtimeRequirements.blockedChecks };
+  }
+  if (quality && quality.qa !== "pass") {
+    return { owner: "agent", reason: "QA lineage is blocked", evidence: quality.latest.filter((item) => item.role === "qa").flatMap((item) => item.unresolvedFindings.length > 0 ? item.unresolvedFindings : [item.latestHandoff || item.taskId]) };
+  }
+  if (quality && quality.review !== "pass") {
+    return { owner: "agent", reason: "Review lineage is blocked", evidence: quality.latest.filter((item) => item.role === "reviewer").flatMap((item) => item.unresolvedFindings.length > 0 ? item.unresolvedFindings : [item.latestHandoff || item.taskId]) };
+  }
+  if (standardEvidence && standardEvidence.missing.length > 0) {
+    return { owner: "agent", reason: "standard evidence is missing", evidence: standardEvidence.missing };
+  }
+  if (gates) {
+    if (gates.commit === "blocked" || gates.committer === "blocked") return { owner: "user", reason: "commit evidence is blocked or missing", evidence: [path.join(runRoot, "evidence", "commits.md")] };
+    if (gates.push === "blocked") return { owner: "user", reason: "push outcome is blocked or missing", evidence: [path.join(runRoot, "evidence", "push.md")] };
+    if (gates.runtime_requirements === "blocked") return { owner: "project_code", reason: "runtime requirements gate is blocked", evidence: [path.join(orchestration, "runtime-requirements.json")] };
+    if (gates.acceptance_matrix === "blocked") return { owner: "agent", reason: "acceptance matrix has blocked required items", evidence: [path.join(orchestration, "acceptance-matrix.json")] };
+    if (gates.project_knowledge === "blocked") return { owner: "project_code", reason: "project knowledge is stale or incomplete", evidence: [path.join(runRoot, "..", "..", "project")] };
+    const blockedGate = Object.entries(gates).find(([key, value]) => key !== "status_consistency" && value === "blocked");
+    if (blockedGate) return { owner: "runtime", reason: `final gate ${blockedGate[0]} is blocked`, evidence: [blockedGate[0]] };
+  }
+  if (!fs.existsSync(finalGates)) {
+    return { owner: "runtime", reason: "run is not finalized", evidence: [finalGates] };
+  }
+  return { owner: "runtime", reason: "no blocking next action detected", evidence: [] };
+}
+
 function runConsistency(runRoot: string, runStatus: string | null, gates: Record<string, string> | null): StatusResult["currentRunConsistency"] {
   const orchestration = path.join(runRoot, "orchestration");
   const sessionFile = path.join(orchestration, "orchestrator-session.json");
@@ -100,6 +395,8 @@ function runConsistency(runRoot: string, runStatus: string | null, gates: Record
       return "inconsistent";
     }
   }
+  const dispatch = dispatchStatus(runRoot);
+  if (dispatch && dispatch.missingCompletedWaveActionIds.length > 0) return "inconsistent";
   return "consistent";
 }
 
@@ -112,6 +409,15 @@ export function status(cwd: string): StatusResult {
   let currentRunBranch: string | null = null;
   let currentRunGates: StatusResult["currentRunGates"] = null;
   let currentRunConsistency: StatusResult["currentRunConsistency"] = null;
+  let currentRunDispatch: StatusResult["currentRunDispatch"] = null;
+  let currentRunProviderReceipts: StatusResult["currentRunProviderReceipts"] = null;
+  let currentRunProviderObservations: StatusResult["currentRunProviderObservations"] = null;
+  let currentRunAgentNameMap: StatusResult["currentRunAgentNameMap"] = null;
+  let currentRunTrueHarnessFreshness: StatusResult["currentRunTrueHarnessFreshness"] = null;
+  let currentRunQualityLineage: StatusResult["currentRunQualityLineage"] = null;
+  let currentRunStandardEvidence: StatusResult["currentRunStandardEvidence"] = null;
+  let currentRunRuntimeRequirements: StatusResult["currentRunRuntimeRequirements"] = null;
+  let currentRunNextOwner: StatusResult["currentRunNextOwner"] = null;
   let currentRunActions: StatusResult["currentRunActions"] = null;
   let currentRunBlockers: StatusResult["currentRunBlockers"] = null;
   let currentRunLatestCheckpoint: StatusResult["currentRunLatestCheckpoint"] = null;
@@ -170,17 +476,46 @@ export function status(cwd: string): StatusResult {
     const runFile = path.join(workspace, "runs", currentRunId, "run.json");
     if (fs.existsSync(runFile)) {
       try {
+        const sessionFile = path.join(workspace, "runs", currentRunId, "orchestration", "orchestrator-session.json");
+        if (fs.existsSync(sessionFile)) ingestOrchestratorSession(cwd, currentRunId, { writeHarnessEvidence: false });
         const parsed = JSON.parse(fs.readFileSync(runFile, "utf8")) as { status?: unknown; execution_mode?: unknown; run_branch?: unknown };
         currentRunStatus = typeof parsed.status === "string" ? parsed.status : null;
         currentRunExecutionMode = typeof parsed.execution_mode === "string" ? parsed.execution_mode : null;
         currentRunBranch = typeof parsed.run_branch === "string" ? parsed.run_branch : null;
         const runRoot = path.join(workspace, "runs", currentRunId);
+        currentRunDispatch = dispatchStatus(runRoot);
+        currentRunProviderReceipts = providerReceiptStatus(cwd, runRoot, currentRunId);
+        currentRunProviderObservations = providerObservationStatus(cwd, runRoot);
+        currentRunAgentNameMap = agentNameMapStatus(runRoot);
+        currentRunQualityLineage = qualityLineageStatus(cwd, currentRunId);
+        currentRunStandardEvidence = standardEvidenceStatus(runRoot);
+        currentRunRuntimeRequirements = runtimeRequirementsStatus(cwd, currentRunId);
+        const trueHarness = path.join(runRoot, "orchestration", "true-harness-evidence.json");
+        if (fs.existsSync(trueHarness)) {
+          const staleSources = staleTrueHarnessEvidence(trueHarness);
+          currentRunTrueHarnessFreshness = {
+            status: staleSources.length > 0 ? "stale" : "fresh",
+            staleSources
+          };
+        } else {
+          currentRunTrueHarnessFreshness = {
+            status: "missing",
+            staleSources: []
+          };
+        }
         const finalGates = path.join(runRoot, "orchestration", "final-gates.json");
         if (fs.existsSync(finalGates)) {
           const gates = readJson<{ gates?: Record<string, unknown> }>(finalGates);
           currentRunGates = gates.gates
             ? Object.fromEntries(Object.entries(gates.gates).map(([key, value]) => [key, String(value)]))
             : null;
+          const finalGateValidation = validateRuntimeFinalGates(finalGates);
+          currentRunGates = {
+            ...(currentRunGates || {}),
+            status_consistency: finalGateValidation.passed
+              ? currentRunStatus === "completed" ? "consistent" : "final_gates_pass_run_not_completed"
+              : `invalid_final_gates: ${finalGateValidation.errors.join("; ")}`
+          };
           currentRunConsistency = runConsistency(runRoot, currentRunStatus, currentRunGates);
         } else {
           const trueHarness = path.join(runRoot, "orchestration", "true-harness-evidence.json");
@@ -198,8 +533,10 @@ export function status(cwd: string): StatusResult {
               : session.status === "completed"
                 ? "orchestrator_session_unadopted"
                 : "not_finalized",
-            qa: fs.existsSync(path.join(runRoot, "evidence", "test-results.md")) ? "present" : "missing",
-            review: fs.existsSync(path.join(runRoot, "evidence", "review.md")) ? "present" : "missing",
+            qa: currentRunQualityLineage?.qa || (fs.existsSync(path.join(runRoot, "evidence", "test-results.md")) ? "present" : "missing"),
+            review: currentRunQualityLineage?.review || (fs.existsSync(path.join(runRoot, "evidence", "review.md")) ? "present" : "missing"),
+            recheck_fix_loop: currentRunQualityLineage?.recheckFixLoop || "missing",
+            runtime_requirements: currentRunRuntimeRequirements?.status === "pass" ? "pass" : "blocked",
             committer: fs.existsSync(path.join(runRoot, "agents", "committer", "handoff.json")) ? "present" : "missing",
             push: fs.existsSync(path.join(runRoot, "evidence", "push.md")) ? "present" : "missing",
             archive: fs.existsSync(path.join(runRoot, "agents", "archive", "handoff.json")) ? "present" : "missing",
@@ -208,6 +545,7 @@ export function status(cwd: string): StatusResult {
           };
           currentRunConsistency = runConsistency(runRoot, currentRunStatus, currentRunGates);
         }
+        currentRunNextOwner = nextOwnerStatus(runRoot, currentRunStatus, currentRunGates, currentRunDispatch, currentRunProviderReceipts, currentRunTrueHarnessFreshness, currentRunQualityLineage, currentRunStandardEvidence, currentRunRuntimeRequirements);
         const queue = path.join(runRoot, "orchestration", "queue.json");
         if (fs.existsSync(queue)) {
           const parsedQueue = readJson<{ actions?: Array<{ status?: string; parallelGroup?: string }> }>(queue);
@@ -273,6 +611,15 @@ export function status(cwd: string): StatusResult {
     currentRunBranch,
     currentRunGates,
     currentRunConsistency,
+    currentRunDispatch,
+    currentRunProviderReceipts,
+    currentRunProviderObservations,
+    currentRunAgentNameMap,
+    currentRunTrueHarnessFreshness,
+    currentRunQualityLineage,
+    currentRunStandardEvidence,
+    currentRunRuntimeRequirements,
+    currentRunNextOwner,
     currentRunActions,
     currentRunBlockers,
     currentRunLatestCheckpoint,

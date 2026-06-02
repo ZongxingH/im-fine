@@ -1,10 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
+import { validateRuntimeFinalGates } from "./final-gates.js";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
 import { validateHandoff } from "./handoff-validator.js";
+import { writeQualityLineage } from "./quality-lineage.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
+import { writeRuntimeRequirements } from "./runtime-requirements.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 import { validateTrueHarnessEvidenceFiles, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { writeCapabilityTrace, writeRunTraceIndex } from "./trace.js";
@@ -62,6 +65,7 @@ interface RunMetadata {
   push_status?: string;
   push_user_action?: string;
   push_local_commit?: string;
+  commit_hash?: string;
   commit_hashes?: string[];
   commit_set?: string[];
   implementation_commit?: string;
@@ -193,6 +197,23 @@ function checkFile(id: string, file: string): ArchiveCheck {
   };
 }
 
+function qualityLineageCheck(cwd: string, runId: string, gate: "qa" | "review" | "recheck_fix_loop", file: string): ArchiveCheck {
+  const id = `quality.${gate}`;
+  if (!fs.existsSync(file)) return { id, status: "fail", detail: file };
+  const quality = readJson<{ summary?: Record<string, unknown>; lineages?: Array<{ role?: string; status?: string; unresolved_findings?: string[]; invalid_rechecks?: unknown[] }> }>(file);
+  const blocked = Array.isArray(quality.lineages)
+    ? quality.lineages.filter((item) => {
+      if (gate === "qa" && item.role !== "qa") return false;
+      if (gate === "review" && item.role !== "reviewer") return false;
+      return item.status !== "pass" || (Array.isArray(item.invalid_rechecks) && item.invalid_rechecks.length > 0);
+    })
+    : [];
+  const detail = blocked.length > 0
+    ? blocked.map((item) => `${item.role || "quality"} unresolved=${Array.isArray(item.unresolved_findings) ? item.unresolved_findings.join("|") : "unknown"}`).join(", ")
+    : file;
+  return { id, status: quality.summary?.[gate] === "pass" ? "pass" : "fail", detail };
+}
+
 function firstContentLine(file: string): string {
   return readTextIfExists(file)
     .split("\n")
@@ -224,17 +245,20 @@ function handoffEvidenceCheck(id: string, role: "qa" | "reviewer", file: string,
   };
 }
 
-function taskEvidenceChecks(cwd: string, runId: string, graph: TaskGraph | null): ArchiveCheck[] {
+function taskEvidenceChecks(cwd: string, runId: string, graph: TaskGraph | null, qualityLineageFile: string): ArchiveCheck[] {
   if (!graph) return [{ id: "tasks", status: "fail", detail: "missing task graph" }];
   const run = readJson<RunMetadata>(path.join(runDir(cwd, runId), "run.json"));
   const commitOutcomeKnown = Boolean(run.commit_hashes?.length || run.commit_blocked_reason);
+  const quality = fs.existsSync(qualityLineageFile)
+    ? readJson<{ lineages?: Array<{ role?: string; task_id?: string; status?: string; latest_handoff?: string | null }> }>(qualityLineageFile)
+    : {};
   const checks: ArchiveCheck[] = [];
   for (const task of graph.tasks) {
     const qaFile = qaStatusFile(cwd, runId, task.id);
     const reviewFile = reviewStatusFile(cwd, runId, task.id);
     const statusFile = taskStatusFile(cwd, runId, task.id);
-    const qa = fs.existsSync(qaFile) ? readJson<{ status?: string }>(qaFile) : {};
-    const review = fs.existsSync(reviewFile) ? readJson<{ status?: string }>(reviewFile) : {};
+    const qaLineage = Array.isArray(quality.lineages) ? quality.lineages.find((item) => item.role === "qa" && item.task_id === task.id) : undefined;
+    const reviewLineage = Array.isArray(quality.lineages) ? quality.lineages.find((item) => item.role === "reviewer" && item.task_id === task.id) : undefined;
     const taskStatus = fs.existsSync(statusFile) ? readJson<TaskStatus>(statusFile) : {};
 
     if (task.type === "docs") {
@@ -294,16 +318,16 @@ function taskEvidenceChecks(cwd: string, runId: string, graph: TaskGraph | null)
 
     checks.push({
       id: `task.${task.id}.qa`,
-      status: qa.status === "pass" ? "pass" : "fail",
-      detail: qaFile
+      status: qaLineage?.status === "pass" ? "pass" : "fail",
+      detail: qaLineage?.latest_handoff || qaFile
     });
-    checks.push(handoffEvidenceCheck(`task.${task.id}.qa_handoff`, "qa", qaHandoffFile(cwd, runId, task.id), runId, task.id));
+    checks.push(handoffEvidenceCheck(`task.${task.id}.qa_handoff`, "qa", qaLineage?.latest_handoff || qaHandoffFile(cwd, runId, task.id), runId, task.id));
     checks.push({
       id: `task.${task.id}.review`,
-      status: review.status === "approved" ? "pass" : "fail",
-      detail: reviewFile
+      status: reviewLineage?.status === "pass" ? "pass" : "fail",
+      detail: reviewLineage?.latest_handoff || reviewFile
     });
-    checks.push(handoffEvidenceCheck(`task.${task.id}.review_handoff`, "reviewer", reviewHandoffFile(cwd, runId, task.id), runId, task.id));
+    checks.push(handoffEvidenceCheck(`task.${task.id}.review_handoff`, "reviewer", reviewLineage?.latest_handoff || reviewHandoffFile(cwd, runId, task.id), runId, task.id));
     checks.push({
       id: `task.${task.id}.commit`,
       status: taskStatus.status === "committed" || taskStatus.status === "exempt" || commitOutcomeKnown ? "pass" : "fail",
@@ -345,9 +369,17 @@ function preArchiveHarnessCheck(file: string): ArchiveCheck {
 function runLevelGateChecks(cwd: string, runId: string): ArchiveCheck[] {
   const dir = runDir(cwd, runId);
   const committer = validateAgentHandoff({ id: "committer", role: "committer" }, dir, runId);
+  const runtimeRequirements = writeRuntimeRequirements(cwd, runId);
   return [
     checkFile("run-level.qa-evidence", path.join(dir, "evidence", "test-results.md")),
     checkFile("run-level.review-evidence", path.join(dir, "evidence", "review.md")),
+    {
+      id: "run-level.runtime-requirements",
+      status: runtimeRequirements.result.status === "pass" ? "pass" : "fail",
+      detail: runtimeRequirements.result.status === "pass"
+        ? runtimeRequirements.json
+        : runtimeRequirements.result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; ")
+    },
     {
       id: "run-level.committer-handoff",
       status: committer.passed ? "pass" : "fail",
@@ -381,13 +413,21 @@ function outcomeChecks(cwd: string, runId: string): ArchiveCheck[] {
   const commitEvidence = path.join(dir, "evidence", "commits.md");
   const pushEvidence = path.join(dir, "evidence", "push.md");
   const pushOutcomeKnown = run.push_status === "pushed" || Boolean(run.push_status?.startsWith("push_blocked_"));
-  const commitOutcomeKnown = Boolean(run.commit_hashes?.length || run.commit_blocked_reason);
+  const commitHashes = Array.from(new Set([
+    ...(Array.isArray(run.commit_hashes) ? run.commit_hashes : []),
+    ...(Array.isArray(run.commit_set) ? run.commit_set : []),
+    run.commit_hash,
+    run.final_head,
+    run.implementation_commit,
+    run.evidence_sync_commit,
+    run.archive_commit
+  ].filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
 
   return [
     {
       id: "commit-outcome",
-      status: commitOutcomeKnown && (fs.existsSync(commitEvidence) || Boolean(run.commit_blocked_reason)) ? "pass" : "fail",
-      detail: run.commit_hashes?.length ? commitEvidence : run.commit_blocked_reason || "missing commit hash or explicit commit blocker"
+      status: commitHashes.length > 0 && fs.existsSync(commitEvidence) ? "pass" : "fail",
+      detail: commitHashes.length > 0 ? commitEvidence : run.commit_blocked_reason || "missing commit hash"
     },
     {
       id: "push-outcome",
@@ -398,7 +438,17 @@ function outcomeChecks(cwd: string, runId: string): ArchiveCheck[] {
 }
 
 function updateRun(cwd: string, runId: string, status: ArchiveStatus, extra: Record<string, unknown>): void {
-  assertTransitionAccepted(transitionRunState(cwd, runId, status === "completed" ? "completed" : "blocked", extra), `archive run ${runId}`);
+  const finalGates = path.join(runDir(cwd, runId), "orchestration", "final-gates.json");
+  const finalGateValidation = validateRuntimeFinalGates(finalGates);
+  const nextStatus = status === "completed" && finalGateValidation.passed ? "completed" : "blocked";
+  const nextExtra = nextStatus === "completed"
+    ? extra
+    : {
+      ...extra,
+      archive_blocked_at: new Date().toISOString(),
+      blocked_reason: finalGateValidation.passed ? "archive blocked by final gates" : `runtime final gates invalid: ${finalGateValidation.errors.join("; ")}`
+    };
+  assertTransitionAccepted(transitionRunState(cwd, runId, nextStatus, nextExtra), `archive run ${runId}`);
 }
 
 function archiveBlockedItems(checks: ArchiveCheck[]): string[] {
@@ -448,8 +498,9 @@ function writeDerivedFinalGates(cwd: string, runId: string, status: ArchiveStatu
   const checkStatus = (id: string) => checks.find((check) => check.id === id)?.status === "pass";
   const allTaskChecksPassed = checks.filter((check) => check.id.startsWith("task.")).every((check) => check.status === "pass");
   const dispatchPassed = checkStatus("true-harness-evidence");
-  const qaPassed = checkStatus("test-results") && checks.filter((check) => check.id.endsWith(".qa") || check.id.endsWith(".qa_handoff") || check.id.endsWith(".qa_gate")).every((check) => check.status === "pass");
-  const reviewPassed = checkStatus("review") && checks.filter((check) => check.id.endsWith(".review") || check.id.endsWith(".review_handoff") || check.id.endsWith(".review_gate")).every((check) => check.status === "pass");
+  const qaPassed = checkStatus("test-results") && checkStatus("quality.qa") && checks.filter((check) => check.id.endsWith(".qa") || check.id.endsWith(".qa_handoff") || check.id.endsWith(".qa_gate")).every((check) => check.status === "pass");
+  const reviewPassed = checkStatus("review") && checkStatus("quality.review") && checks.filter((check) => check.id.endsWith(".review") || check.id.endsWith(".review_handoff") || check.id.endsWith(".review_gate")).every((check) => check.status === "pass");
+  const runtimeRequirementsPassed = checkStatus("run-level.runtime-requirements");
   const committerPassed = checkStatus("run-level.committer-handoff") && checkStatus("commit-outcome");
   const pushPassed = checkStatus("push-outcome");
   const archivePassed = checkStatus("run-level.archive-status") && checkStatus("run-level.archive-handoff") && status === "completed";
@@ -459,7 +510,8 @@ function writeDerivedFinalGates(cwd: string, runId: string, status: ArchiveStatu
     dispatch: dispatchPassed ? "pass" : "blocked",
     qa: qaPassed ? "pass" : "blocked",
     review: reviewPassed ? "pass" : "blocked",
-    recheck_fix_loop: allTaskChecksPassed && qaPassed && reviewPassed ? "pass" : "blocked",
+    recheck_fix_loop: allTaskChecksPassed && qaPassed && reviewPassed && checkStatus("quality.recheck_fix_loop") ? "pass" : "blocked",
+    runtime_requirements: runtimeRequirementsPassed ? "pass" : "blocked",
     committer: committerPassed ? "pass" : "blocked",
     push: pushPassed ? "pass" : "blocked",
     archive: archivePassed ? "pass" : "blocked",
@@ -565,6 +617,10 @@ ${taskLines(graph, cwd, runId).join("\n")}
 
 - test results: ${path.join(dir, "evidence", "test-results.md")}
 - QA status: ${qaStatusLines(graph, cwd, runId)}
+
+## Runtime Requirements
+
+- runtime requirements: ${path.join(dir, "orchestration", "runtime-requirements.json")}
 
 ## Review Evidence
 
@@ -710,6 +766,7 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString() }), `start archive for ${runId}`);
   recordArchiveIdentity(cwd, runId);
   const graph = readTaskGraph(cwd, runId);
+  const qualityLineage = writeQualityLineage(cwd, runId);
   const archiveDir = path.join(dir, "archive");
   const agentDir = path.join(dir, "agents", "archive");
   ensureDir(archiveDir);
@@ -721,10 +778,13 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
     checkFile("task-graph", path.join(dir, "planning", "task-graph.json")),
     checkFile("test-results", path.join(dir, "evidence", "test-results.md")),
     checkFile("review", path.join(dir, "evidence", "review.md")),
+    qualityLineageCheck(cwd, runId, "qa", qualityLineage),
+    qualityLineageCheck(cwd, runId, "review", qualityLineage),
+    qualityLineageCheck(cwd, runId, "recheck_fix_loop", qualityLineage),
     preArchiveHarnessCheck(preArchiveEvidence.json),
     ...runLevelGateChecks(cwd, runId),
     ...outcomeChecks(cwd, runId),
-    ...taskEvidenceChecks(cwd, runId, graph)
+    ...taskEvidenceChecks(cwd, runId, graph, qualityLineage)
   ];
 
   const archiveReport = path.join(archiveDir, "archive-report.md");
@@ -735,6 +795,7 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   let status: ArchiveStatus = preliminaryBlocked.length === 0 ? "completed" : "blocked";
   let blockedItems = preliminaryBlocked;
   let projectUpdateFiles: string[] = [];
+  const finalGates = path.join(dir, "orchestration", "final-gates.json");
 
   const writeArchiveAgent = (archiveStatus: ArchiveStatus, items: string[], updates: string[]): void => {
     writeText(path.join(agentDir, "input.md"), `# Archive Input
@@ -772,7 +833,10 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   };
 
   writeArchiveAgent(status, blockedItems, projectUpdateFiles);
-  const preliminaryReport = buildArchiveReport(cwd, runId, status, baseChecks, blockedItems, projectUpdateFiles);
+  const preliminaryReport = buildArchiveReport(cwd, runId, "blocked", baseChecks, [
+    ...blockedItems,
+    `runtime final gates pending: ${finalGates}`
+  ], projectUpdateFiles);
   writeText(archiveReport, preliminaryReport);
   writeText(userReport, preliminaryReport);
   recordArchiveWave(cwd, runId, options, status);
@@ -805,6 +869,11 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
 `);
 
   writeDerivedFinalGates(cwd, runId, status, checks, projectUpdateFiles);
+  const finalGateValidation = validateRuntimeFinalGates(finalGates);
+  if (!finalGateValidation.passed) {
+    status = "blocked";
+    blockedItems = Array.from(new Set([...blockedItems, ...finalGateValidation.errors]));
+  }
   if (status === "blocked" && options.archiveAction) {
     recordActionStatus(cwd, runId, options.archiveAction.id, "blocked", "archive finalize blocked by final gates", [archiveReport, userReport]);
   }

@@ -8,6 +8,10 @@ const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "dist", "cli", "imfine.js");
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-smoke-home-"));
 
+function relativeToProject(project, file) {
+  return path.relative(fs.realpathSync(project), path.resolve(file));
+}
+
 function run(args, cwd, extraEnv = {}) {
   return execFileSync(process.execPath, [cli, ...args], {
     cwd,
@@ -140,10 +144,29 @@ const dispatch = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestra
 assert.equal(dispatch.contracts.length, 2);
 assert.ok(dispatch.contracts.some((contract) => contract.kind === "runtime" && contract.action_id === "runtime-worktree-prepare"));
 const nameMap = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "agent-name-map.json"), "utf8"));
-assert.equal(nameMap.mappings[0].action_id, "agent-dev-T1");
-assert.equal(nameMap.mappings[0].role, "dev");
-assert.equal(nameMap.mappings[0].parallel_group, "delivery");
-assert.equal(dispatch.contracts.find((contract) => contract.kind === "agent").role, "dev");
+const agentContract = dispatch.contracts.find((contract) => contract.kind === "agent" && contract.action_id === "agent-dev-T1");
+const agentMapping = nameMap.mappings.find((mapping) => mapping.action_id === "agent-dev-T1");
+assert.ok(agentContract);
+assert.ok(agentMapping);
+assert.equal(agentMapping.dispatch_contract_id, agentContract.id);
+assert.equal(agentMapping.role, agentContract.role);
+assert.equal(agentMapping.parallel_group, agentContract.parallel_group);
+assert.equal(agentMapping.handoff_path, relativeToProject(project, agentContract.expected_handoff_path));
+assert.equal(agentMapping.provider_receipt_path, relativeToProject(project, agentContract.expected_provider_receipt_path));
+assert.ok(agentMapping.gate_ids.includes("dispatch"));
+assert.ok(agentMapping.gate_ids.includes("true_harness"));
+assert.equal(agentContract.role, "dev");
+
+const currentStatus = JSON.parse(run(["status", "--json"], project));
+assert.equal(currentStatus.currentRunAgentNameMap.present, true);
+assert.ok(currentStatus.currentRunAgentNameMap.mappings.some((mapping) => (
+  mapping.providerDisplayName === agentMapping.provider_display_name
+  && mapping.actionId === agentContract.action_id
+  && mapping.dispatchContractId === agentContract.id
+  && mapping.handoffPath === relativeToProject(project, agentContract.expected_handoff_path)
+  && mapping.providerReceiptPath === relativeToProject(project, agentContract.expected_provider_receipt_path)
+  && mapping.gateIds.includes("true_harness")
+)));
 
 const planArtifact = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "parallel-plan.json"), "utf8"));
 assert.equal(planArtifact.artifact_type, "planning");
@@ -165,6 +188,7 @@ fs.writeFileSync(path.join(malformed.runDir, "orchestration", "orchestrator-sess
   next_actions: [
     {
       id: "agent-dev-T1",
+      kind: "tool",
       status: "ready",
       role: "dev",
       reason: "missing kind and required arrays",
@@ -177,7 +201,7 @@ fs.writeFileSync(path.join(malformed.runDir, "orchestration", "orchestrator-sess
 const malformedResume = JSON.parse(run(["orchestrate", malformed.runId, "--json"], malformedProject, { IMFINE_INTERNAL: "1" }));
 assert.equal(malformedResume.status, "blocked");
 const validation = JSON.parse(fs.readFileSync(path.join(malformed.runDir, "orchestration", "session-validation.json"), "utf8"));
-assert.ok(validation.errors.some((error) => error.includes("has no matching agent_run")));
+assert.ok(validation.errors.some((error) => error.includes("kind must be runtime or agent")));
 
 const { project: dependencyProject } = makeGitProject("imfine-bad-dep-");
 const dependency = JSON.parse(run(["run", "Bad dependency", "--plan-only", "--json"], dependencyProject));
@@ -198,8 +222,10 @@ mismatchSession.agent_runs = [];
 fs.writeFileSync(path.join(mismatch.runDir, "orchestration", "orchestrator-session.json"), `${JSON.stringify(mismatchSession, null, 2)}\n`);
 const mismatchResume = JSON.parse(run(["orchestrate", mismatch.runId, "--json"], mismatchProject, { IMFINE_INTERNAL: "1" }));
 assert.equal(mismatchResume.status, "blocked");
-const mismatchValidation = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "session-validation.json"), "utf8"));
-assert.ok(mismatchValidation.errors.some((error) => error.includes("has no matching agent_run")));
+const mismatchDispatch = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
+assert.ok(mismatchDispatch.contracts.some((contract) => contract.action_id === "agent-dev-T1"));
+const mismatchExecution = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "parallel-execution.json"), "utf8"));
+assert.ok(mismatchExecution.wave_history.some((wave) => wave.status === "waiting_for_agent_output" && wave.action_ids.includes("agent-dev-T1")));
 
 const { project: handoffProject } = makeGitProject("imfine-invalid-handoff-");
 const handoff = JSON.parse(run(["run", "Invalid handoff", "--plan-only", "--json"], handoffProject));
