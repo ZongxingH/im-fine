@@ -330,7 +330,7 @@ try {
   const value = status(cwd);
   assert.equal(value.currentRunBlockers.status, "blocked");
   assert.equal(value.currentRunBlockers.items, 1);
-  assert.equal(value.currentRunBlockers.diagnosticDoc, "docs/harness-evidence.md#provider-capability");
+  assert.equal(value.currentRunBlockers.diagnosticDoc, "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md#14-runtime-和-agent-边界");
 } finally {
   if (previousProvider === undefined) delete process.env.IMFINE_PROVIDER;
   else process.env.IMFINE_PROVIDER = previousProvider;

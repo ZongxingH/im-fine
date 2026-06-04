@@ -217,6 +217,8 @@ Claude:
         project-context.md
         impact-analysis.md
         risk-analysis.md
+        harness-debug-overview.md
+        harness-debug-detail.json
       orchestration/
         context.json
         orchestrator-input.md
@@ -246,6 +248,12 @@ Claude:
         pre-archive-harness-evidence.md
         auto-timeline.md
         final-gates.json
+        harness-components.json
+        run-trace.jsonl
+        gate-trace.jsonl
+        runtime-requirements.json
+        runtime-requirements.md
+        sandbox-verification.json
         method-provenance.json
         trace-index.json
         true-harness-evidence.json
@@ -282,6 +290,19 @@ Claude:
         final-summary.md
   reports/
     <run-id>.md
+  harness-experiments/
+    <experiment-id>/
+      input/
+        baseline-commit.txt
+        source-failures.json
+        replay-fixtures.json
+      evolve/
+        changed-components.json
+        changed-files.json
+        patch.diff
+      result/
+        verification.json
+        change-evaluation.json
 ```
 
 这套工作空间承担四类职责：
@@ -303,6 +324,12 @@ Claude:
 - `agent-acceptance-matrix.json` 是 Product Planner / Architect / QA / Reviewer 等 Agent 写入的验收矩阵来源
 - `acceptance-matrix.json` 是 runtime 对 Agent-authored acceptance matrix 的 schema、required item、accepted deviation 和 evidence 文件存在性校验结果；runtime 不再通过需求关键词推导产品形态
 - `pre-archive-harness-evidence.*` 在 archive 前校验 orchestration、dispatch、handoff、QA、Review、Commit、Push 证据
+- `harness-components.json` 记录本次 run 使用的 harness component registry snapshot
+- `run-trace.jsonl` 记录 ingest、evidence 写入、gate evaluation、status、archive 和 finalization runtime event
+- `gate-trace.jsonl` 记录 gate-specific event，blocked gate 必须能在这里找到原因
+- `runtime-requirements.*` 记录项目 runtime 声明、实际 runtime version、QA 命令与输出证据
+- `sandbox-verification.json` 记录本地 sandbox adapter 的 runtime version、安装命令、测试命令和 exit code
+- `analysis/harness-debug-overview.md` 与 `analysis/harness-debug-detail.json` 汇总 blocked run 的 gate、trace、evidence 和建议动作；每个 claim 必须引用 artifact 或 trace
 - `method-provenance.json` 显式记录 OpenSpec / Superpowers / BMAD / imfine-specific contracts 的方法来源和 skill evidence contract
 - `trace-index.json` 建立 requirement、analysis、task、handoff、QA/Review/Commit evidence 与 archived capability 的结构化关联
 - `.imfine/project/project-knowledge-freshness.json` 记录 project knowledge 是否还存在 init 阶段 stale marker
@@ -1132,7 +1159,211 @@ method provenance 显式记录：
 
 project knowledge freshness 会扫描 `initialized from limited evidence`、`not detected`、`unknown`、`.gitignore only`、`no source evidence`、`no test evidence` 等 init 阶段 stale marker。archive / reconcile / doctor 会把 stale marker 作为 project knowledge 风险或阻断来源。
 
-## 18. 当前实现摘要
+## 18. Harness 可观测、演进与实验
+
+当前实现已经把 harness 本身纳入可观测、可归因、可验证和可演进的工程对象。
+
+### 18.1 Harness Component Registry
+
+机器可校验 registry 位于 `src/core/harness-components.ts`，人工可读版本已并入本文档；每次 `reconcileRun()` 会写出：
+
+- `.imfine/runs/<run-id>/orchestration/harness-components.json`
+
+当前 component id 包括：
+
+- `runtime.planning-materialization`
+- `runtime.ingest-orchestrator-session`
+- `runtime.dispatch-contracts`
+- `provider.origin-receipts`
+- `runtime.true-harness-evidence`
+- `runtime.handoff-validation`
+- `runtime.quality-lineage`
+- `runtime.final-gates`
+- `runtime.acceptance-matrix`
+- `runtime.commit-push-policy`
+- `runtime.status-dashboard`
+- `runtime.standard-evidence`
+- `runtime.provider-observations`
+- `runtime.agent-name-map`
+- `runtime.runtime-requirements`
+- `runtime.project-knowledge`
+- `test.replay-coverage`
+- `runtime.harness-evolution`
+- `runtime.harness-experiments`
+- `runtime.harness-config`
+- `runtime.sandbox-verification`
+
+H-001 到 H-016 是历史反复出现问题的回归编号，不是需求编号。它们的价值是把“曾经错过的问题”绑定到可验证组件和 replay 测试；如果只保留 `H-001 -> runtime.xxx` 这种索引就没有语义，必须同时保留问题含义、阻断规则和测试入口。映射清单统一保存在 `src/core/harness-components.ts`，本文档保留人工可读版本，并由 `test/replay-coverage.mjs`、`test/harness-components.mjs` 和 `test/harness-evolution.mjs` 校验。
+
+| 编号 | 问题含义 | 阻断规则 | 覆盖组件 | 回放测试 |
+| --- | --- | --- | --- | --- |
+| `H-001` | orchestrator session 不能单独让 run 完成 | 没有 runtime ingest 和 gates 时，run 不能进入 completed | `runtime.ingest-orchestrator-session`、`runtime.status-dashboard` | `test/demo-replay.mjs` |
+| `H-002` | 缺失 completed wave 必须按 action id 暴露 | 缺失 completed wave 时必须报告具体 action id | `runtime.dispatch-contracts` | `test/demo-replay.mjs`、`test/smoke.mjs` |
+| `H-003` | 缺失或无效 provider-origin receipt 不能通过 true harness | provider-origin receipt 缺失或无效时，true harness gate 不能通过 | `provider.origin-receipts`、`runtime.true-harness-evidence` | `test/implementation-optimization.mjs` |
+| `H-004` | stale source artifact 会使 true harness evidence 失效 | provider output 或 standard evidence 变旧时，true harness evidence 必须失效 | `runtime.true-harness-evidence` | `test/implementation-optimization.mjs` |
+| `H-005` | handoff 必须有效并链接到证据 | handoff schema 无效、缺证据链接或只有 Markdown 报告时不能通过 | `runtime.handoff-validation`、`runtime.standard-evidence` | `test/demo-replay.mjs`、`test/implementation-optimization.mjs` |
+| `H-006` | recheck pass 必须有明确 lineage 才能关闭 blocker | QA/Review recheck 没有 lineage 时不能关闭 blocker | `runtime.quality-lineage` | `test/reconcile.mjs`、`test/implementation-optimization.mjs` |
+| `H-007` | 只有 runtime 生成且完整的 final gates 才能允许 completed | 缺失、伪造或不完整 final gates 时不能完成 | `runtime.final-gates` | `test/implementation-optimization.mjs`、`test/reconcile.mjs` |
+| `H-008` | Agent-authored acceptance matrix 是完成判定输入 | 缺失验收矩阵或存在 blocked item 时不能完成 | `runtime.acceptance-matrix` | `test/reconcile.mjs`、`test/demo-replay.mjs` |
+| `H-009` | 完成态必须有 commit hash 证据并显式暴露 push blocker | 缺 commit hash 或 push 条件不满足时不能报告完成 | `runtime.commit-push-policy` | `test/reconcile.mjs` |
+| `H-010` | status 必须从 runtime artifacts 派生 gate 状态 | status 不能只看文件存在，必须基于 runtime artifacts 推导 gate matrix | `runtime.status-dashboard` | `test/implementation-optimization.mjs` |
+| `H-011` | standard evidence manifest 必须记录缺失路径和 handoff 来源 | evidence manifest 缺失路径或来源不完整时必须暴露 | `runtime.standard-evidence` | `test/reconcile.mjs`、`test/implementation-optimization.mjs` |
+| `H-012` | provider UI observation 只能诊断不能替代 receipt | UI observation 不能满足 provider receipt gate | `runtime.provider-observations` | `test/implementation-optimization.mjs` |
+| `H-013` | provider display name 必须映射到 action id 与证据链 | display name 必须能追到 action id、dispatch contract、handoff、receipt 和 gates | `runtime.agent-name-map`、`runtime.dispatch-contracts` | `test/smoke.mjs` |
+| `H-014` | 缺失 runtime 声明或 QA 环境输出会阻断完成 | runtime declaration 或 QA environment output 缺失时不能完成 | `runtime.runtime-requirements` | `test/implementation-optimization.mjs`、`test/reconcile.mjs`、`test/harness-acceptance.mjs` |
+| `H-015` | 已关闭问题必须保留 replay coverage | 每个已关闭历史问题必须在 `npm test` 中有 replay coverage | `test.replay-coverage` | `test/replay-coverage.mjs` |
+| `H-016` | 非平凡 harness 修改必须记录演进证据 | harness 修改必须链接 source failure、affected component、verification、observed result 和 regression risk | `runtime.harness-evolution`、`runtime.harness-experiments`、`runtime.harness-config`、`runtime.sandbox-verification` | `test/harness-evolution.mjs` |
+
+### 18.2 Runtime Trace JSONL
+
+runtime trace 由 `src/core/trace-events.ts` 统一写入：
+
+- `.imfine/runs/<run-id>/orchestration/run-trace.jsonl`
+- `.imfine/runs/<run-id>/orchestration/gate-trace.jsonl`
+
+trace event 记录：
+
+- `event_id`
+- `parent_event_id`
+- `run_id`
+- `timestamp`
+- `source`
+- `component_id`
+- `action_id`
+- `event_type`
+- `status`
+- `reason`
+- `input_artifacts`
+- `output_artifacts`
+
+已接入的写入点包括：
+
+- `ingestOrchestratorSession`
+- `writeQualityLineage`
+- `writeRuntimeRequirements`
+- `writeTrueHarnessEvidence`
+- `writePreArchiveHarnessEvidence`
+- `finalizeRun`
+- `archiveRun`
+- `status`
+
+blocked gate 必须有 `gate_evaluated` trace event。`staleTrueHarnessEvidence()` 在返回 stale source 时会附带最近 trace source、component、action 和 event id，让 stale 证据能追溯到导致变化的 runtime source。
+
+### 18.3 Harness Debugger Report
+
+blocked run 会生成：
+
+- `.imfine/runs/<run-id>/analysis/harness-debug-overview.md`
+- `.imfine/runs/<run-id>/analysis/harness-debug-detail.json`
+
+debugger report 汇总：
+
+- final gates
+- true harness evidence freshness
+- quality lineage
+- runtime requirements
+- provider receipts
+- handoff files
+- recent blocker trace
+
+每个 claim 都必须带 `artifact_refs` 或 `trace_refs`。`/imfine status` 会显示 debugger report 路径和 primary blocker。
+
+### 18.4 Runtime Requirements 与 Sandbox Verification
+
+`runtime-requirements.json` 记录项目 runtime 声明、检测到的语言、实际 runtime version、QA evidence 是否记录运行版本、测试命令和测试输出。
+
+本地 sandbox adapter 位于 `src/core/sandbox-runner.ts`，结果写入：
+
+- `.imfine/runs/<run-id>/orchestration/sandbox-verification.json`
+
+sandbox adapter 会：
+
+1. 创建临时目录。
+2. 复制当前项目，排除 `.git`、`node_modules`、`dist`、非当前 run 的 `.imfine/runs` 和 `.imfine/harness-experiments`。
+3. 执行 runtime version commands、install commands 和 test commands。
+4. 记录 stdout、stderr、exit code 和 sandbox path。
+5. 将结果作为 archive gate 输入。
+
+如果 sandbox verification 失败，archive 的 `run-level.sandbox-verification` check 失败并阻断归档。`true-harness-evidence` freshness source 已包含 `sandbox_verification`。如果 QA evidence 声称通过但 sandbox output 失败，`status` 会显示 `environment / verification mismatch between QA evidence and sandbox output`。
+
+### 18.5 Harness Evolution Records
+
+非平凡 harness 修改的记录规则统一收敛在本文档，`docs/` 下不再维护分散的 evolution 记录文件。
+
+每条记录必须包含：
+
+- `record_id`
+- `experiment_id`
+- `config_id`
+- `source_failures`
+- `affected_components`
+- `affected_source_files`
+- `predicted_impact`
+- `verification.commands`
+- `verification.observed_result`
+- `predicted_outcomes`
+- `observed_outcomes`
+- `falsified_predictions`
+- `rollback_required`
+- `regression_risks`
+
+`predicted_outcomes` 必须绑定 fixture 和 component id。每条 prediction 必须有对应 observed outcome。若 `falsified_predictions` 非空，record 不能是 `verified`，且必须 `rollback_required=true`。这些规则由 `test/harness-evolution.mjs` 和 `test/harness-evolution-outcomes.mjs` 校验。
+
+### 18.6 Harness Experiment Workspace
+
+harness experiment workspace 位于：
+
+- `.imfine/harness-experiments/<experiment-id>/`
+
+内部结构：
+
+```text
+input/
+  baseline-commit.txt
+  source-failures.json
+  replay-fixtures.json
+evolve/
+  changed-components.json
+  changed-files.json
+  patch.diff
+result/
+  verification.json
+  change-evaluation.json
+```
+
+内部 API：
+
+- `createHarnessExperiment(cwd, issueIds)`
+- `recordHarnessExperimentPatch(cwd, experimentId)`
+- `finalizeHarnessExperiment(cwd, experimentId, verification)`
+
+experiment 记录 baseline commit、source failures、replay fixtures、changed components、changed files、patch、verification commands 和 verification result。新增文件必须进入 `changed-files.json` 和 `patch.diff`。
+
+### 18.7 Harness Config Overlay
+
+harness config 位于：
+
+```text
+configs/harness/base.json
+configs/harness/experiments/strict-runtime-requirements.json
+configs/harness/experiments/provider-receipt-debug.json
+```
+
+读取器位于 `src/core/harness-config.ts`：
+
+- `loadHarnessConfig(cwd, configId)`
+- `listHarnessConfigIds(cwd)`
+
+experiment config 可以通过 `extends` 继承 base config，并覆盖：
+
+- `enabled_gates`
+- `trace.enabled`
+- `trace.include_artifact_hash`
+- `verification.commands`
+
+每条 evolution record 必须记录使用的 `config_id`。
+
+## 19. 当前实现摘要
 
 当前实现的关键事实是：
 
@@ -1173,16 +1404,23 @@ project knowledge freshness 会扫描 `initialized from limited evidence`、`not
 - fix loop 状态已经进入 run 状态机，用于恢复、失败追踪和 archive 前审计
 - true harness evidence 按显式声明、provider receipt、真实 dispatch / wave / handoff、skill evidence contract 事实判断
 - true harness JSON 和 Markdown 会通过同一模型生成并接受 consistency 校验，矛盾时 archive/reconcile/doctor 会阻断或报告
+- harness component registry 已进入 run-local snapshot，并且 H-001 到 H-016 都有 component id 映射
+- runtime trace JSONL 已接入 ingest、evidence、gate、status、archive 和 finalization；blocked gate 与 stale evidence 能回溯 trace source
+- harness debugger report 已在 blocked reconcile/status 中生成，claim 必须带 artifact 或 trace 引用
+- harness evolution record 已要求 predicted outcomes、observed outcomes、experiment id 和 config id
+- harness experiment workspace 已记录 baseline commit、changed files、patch、verification result 和 change evaluation
+- harness config overlay 已支持 base config 与 experiment config
+- sandbox verification result 已进入 archive gate、status mismatch 和 true harness freshness source
 - orchestrator session schema、handoff、dispatch contract、parallel execution、archive gate、completed gate 已经形成闭环
 - commit/archive identity 已统一到 `commit_set`、`implementation_commit`、`archive_commit`、`final_head`、`pushed_head`，doctor/reconcile 可检测 drift
 - run 防重策略已经存在：同一 active current run 与同一 source 默认复用，需要新 run 时显式 `--new`
 - internal runtime command 已经通过环境变量 guard 与用户公开入口隔离
 - final gates 由 runtime 从标准 evidence 派生，不作为独立事实来源；completed run 缺 final gates 或 final gates 不完整会显示 inconsistent
-- `docs/runtime-boundary.md`、`docs/orchestrator-dispatch-protocol.md`、`docs/harness-evidence.md` 已沉淀 runtime/Agent 边界、调度协议和证据说明
+- runtime/Agent 边界、调度协议、证据说明、组件注册、演进记录、实验配置和 sandbox verification 已合并进本文档；`docs/` 下不再保留对应小文档，后续以本文档为唯一文档基准
 - test coverage 已覆盖 role registry 一致性、TaskGraph 负例与语义 warning、provider supported/unsupported/unknown、resolved_by_receipts、provider-origin receipt、provider output snapshot、true harness 缺 receipt/wave/handoff/evidence/pre-archive 负例、status/gate matrix 状态输出、agent registry execution units、blocker matrix、project knowledge freshness、reconcile/finalize、agent complete、resume 幂等、Agent-authored acceptance matrix 对照 fixture 和真实双 demo replay
 - `test/demo-replay.mjs` 直接回放 `/Users/zongxinghuang/MyWorks/work-ifly/research/ai/imfine-demo` 和 `/Users/zongxinghuang/MyWorks/work-ifly/research/ai/imfine-demo1`：早期 demo 不能因 `run.json.completed` 被误判为 true-harness completed；当前 demo1 不能因 git commit 存在被误判为 runtime completed
 
-## 19. 已确认实现决策
+## 20. 已确认实现决策
 
 - `orchestrator-session.json` 是唯一编排真相源
 - `decision_source` 必须是 `orchestrator_agent`
@@ -1200,50 +1438,13 @@ project knowledge freshness 会扫描 `initialized from limited evidence`、`not
 - task 状态机支持 `completed`，当前交付链路中 commit 后的任务事实主要以 `committed`、commit hash 和 run archive evidence 表达
 - archive 终态是 `completed | blocked`
 - session summary 不写入 `.imfine` 文档
-- status / resume 默认不写 runtime 状态；需要修复或最终收敛时走明确的 reconcile/finalize
-- `IMFINE_IMPLEMENTATION_OPTIMIZATION_TASKS.md` 中的 runtime contract、true harness evidence、OpenSpec traceability、Superpowers skill contract、observability、recovery robustness 和 test coverage 任务已按当前实现整合进本文档
-- `HARNESS_LANDING_ISSUES.md` 中 T01-T19 已按当前实现完成，并作为本方案的落地校准来源
+- `resume` 是只读快照；`status` 不推进 run state，但会刷新 runtime requirements、component snapshot、trace 和 debugger 诊断产物；需要修复或最终收敛时走明确的 reconcile/finalize
 - 基于 `imfine-demo` 与 `imfine-demo1` 对比得到的 12 项 runtime / harness 修复已按当前实现整合进本文档；临时复盘文档不再作为独立来源保留
-- 原 harness engineering backlog 中仍有效的工程要求已合并进本文档，后续不再作为独立任务源保留
+- harness backlog 与 AHE 借鉴文档中的有效工程要求已合并进本文档；对应文档已移除，后续不再作为独立任务源保留
 
-## 20. 参考来源
+## 21. 参考来源
 
 - OpenSpec：规格、delta、archive、capability 沉淀方法
 - Superpowers：clarify、plan、execute、review、debug、archive 工作纪律
 - BMAD：多角色 agent 体系与项目上下文工程
-- 当前仓库代码实现：
-  - `src/core/cli.ts`
-  - `src/core/run.ts`
-  - `src/core/orchestrator.ts`
-  - `src/core/auto-orchestrator.ts`
-  - `src/core/agent-complete.ts`
-  - `src/core/reconcile.ts`
-  - `src/core/plan.ts`
-  - `src/core/dispatch.ts`
-  - `src/core/archive.ts`
-  - `src/core/true-harness-evidence.ts`
-  - `src/core/role-registry.ts`
-  - `src/core/skill-registry.ts`
-  - `src/core/provider-evidence.ts`
-  - `src/core/provider-output.ts`
-  - `src/core/acceptance-matrix.ts`
-  - `src/core/blocker-summary.ts`
-  - `src/core/trace.ts`
-  - `src/core/state-machine.ts`
-  - `src/core/quality.ts`
-  - `src/core/worktree.ts`
-  - `src/core/gitflow.ts`
-  - `src/core/doctor.ts`
-  - `src/core/session-summary.ts`
-  - `library/agents/qa.md`
-  - `library/agents/technical-writer.md`
-  - `library/skills/tdd.md`
-  - `library/templates/orchestrator-session.schema.json`
-  - `docs/runtime-boundary.md`
-  - `docs/orchestrator-dispatch-protocol.md`
-  - `docs/harness-evidence.md`
-  - `test/harness-acceptance.mjs`
-  - `test/implementation-optimization.mjs`
-  - `test/plan-validation.mjs`
-  - `test/reconcile.mjs`
-  - `test/demo-replay.mjs`
+- AHE：component registry、replay coverage、evolution record、experiment workspace、config overlay、runtime trace、debugger report、sandbox verification 等 harness 工程化方法

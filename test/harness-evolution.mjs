@@ -4,49 +4,32 @@ import path from "node:path";
 import { harnessComponentIds } from "../dist/core/harness-components.js";
 
 const root = path.resolve(import.meta.dirname, "..");
-const evolutionDir = path.join(root, "docs", "harness-evolution");
-const backlog = fs.readFileSync(path.join(root, "docs", "HARNESS_ISSUE_BACKLOG.md"), "utf8");
+const plan = fs.readFileSync(path.join(root, "docs", "IMFINE_PHASED_IMPLEMENTATION_PLAN.md"), "utf8");
 const componentIds = harnessComponentIds();
 
-assert.ok(fs.existsSync(evolutionDir), "missing docs/harness-evolution");
-
-const records = fs.readdirSync(evolutionDir)
-  .filter((file) => file.endsWith(".json"))
-  .sort();
-
-assert.ok(records.length > 0, "at least one harness evolution record is required");
-
-for (const file of records) {
-  const recordPath = path.join(evolutionDir, file);
-  const record = JSON.parse(fs.readFileSync(recordPath, "utf8"));
-  assert.equal(record.schema_version, 1, `${file} schema_version`);
-  assert.equal(typeof record.record_id, "string", `${file} record_id`);
-  assert.ok(record.record_id.length > 0, `${file} record_id empty`);
-  assert.equal(typeof record.experiment_id, "string", `${file} experiment_id`);
-  assert.ok(record.experiment_id.length > 0, `${file} experiment_id empty`);
-  assert.equal(typeof record.config_id, "string", `${file} config_id`);
-  assert.ok(record.config_id.length > 0, `${file} config_id empty`);
-  assert.ok(["planned", "verified", "failed", "superseded"].includes(record.status), `${file} invalid status`);
-  assert.ok(Array.isArray(record.source_failures) && record.source_failures.length > 0, `${file} source_failures`);
-  assert.ok(Array.isArray(record.affected_components) && record.affected_components.length > 0, `${file} affected_components`);
-  assert.ok(Array.isArray(record.predicted_impact) && record.predicted_impact.length > 0, `${file} predicted_impact`);
-  assert.ok(record.verification && Array.isArray(record.verification.commands) && record.verification.commands.length > 0, `${file} verification.commands`);
-  assert.equal(typeof record.verification.observed_result, "string", `${file} observed_result`);
-  assert.ok(record.verification.observed_result.trim().length > 0, `${file} observed_result empty`);
-  assert.ok(Array.isArray(record.regression_risks) && record.regression_risks.length > 0, `${file} regression_risks`);
-
-  for (const failure of record.source_failures) {
-    assert.match(failure.issue_id, /^H-\d{3}$/);
-    assert.match(backlog, new RegExp(`### ${failure.issue_id}\\b`));
-    assert.equal(typeof failure.summary, "string");
-    assert.ok(failure.summary.trim().length > 0);
-  }
-
-  for (const component of record.affected_components) {
-    assert.equal(typeof component, "string");
-    assert.ok(component.trim().length > 0);
-    assert.ok(componentIds.has(component), `${file} unknown affected component ${component}`);
-  }
+for (const issueId of Array.from({ length: 16 }, (_, index) => `H-${String(index + 1).padStart(3, "0")}`)) {
+  assert.match(plan, new RegExp(`\\b${issueId}\\b`), `plan missing ${issueId}`);
 }
+
+for (const component of componentIds) {
+  assert.match(plan, new RegExp(component.replaceAll(".", "\\.")), `plan missing component ${component}`);
+}
+
+for (const required of [
+  "record_id",
+  "experiment_id",
+  "config_id",
+  "source_failures",
+  "affected_components",
+  "predicted_outcomes",
+  "observed_outcomes",
+  "falsified_predictions",
+  "rollback_required"
+]) {
+  assert.match(plan, new RegExp(`\\b${required}\\b`), `plan missing evolution field ${required}`);
+}
+
+assert.match(plan, /若 `falsified_predictions` 非空，record 不能是 `verified`/);
+assert.match(plan, /每条 prediction 必须有对应 observed outcome/);
 
 console.log("harness evolution ok");

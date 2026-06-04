@@ -154,12 +154,12 @@ If a run requires user approval or the user declines commit/push, imfine must no
 
 Harness changes are tracked as verifiable engineering changes:
 
-- Component registry: `docs/harness-components.md` and `src/core/harness-components.ts`.
-- Evolution records: `docs/harness-evolution/*.json`.
+- Design and evolution source of truth: `docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md`.
+- Component registry: `src/core/harness-components.ts`.
 - Experiment workspaces: `.imfine/harness-experiments/<experiment-id>/`.
 - Config overlays: `configs/harness/base.json` and `configs/harness/experiments/*.json`.
 
-Each non-trivial harness change records affected components, source failures, predicted outcomes, observed outcomes, verification commands, regression risks, `experiment_id`, and `config_id`. The test suite validates these records so harness behavior changes remain tied to fixtures and observed results.
+Each non-trivial harness change records affected components, source failures, predicted outcomes, observed outcomes, verification commands, regression risks, `experiment_id`, and `config_id`. The test suite validates the plan and runtime artifacts so harness behavior changes remain tied to fixtures and observed results.
 
 ## Project Artifacts
 

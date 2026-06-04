@@ -217,8 +217,8 @@ export const HARNESS_COMPONENTS: HarnessComponent[] = [
     name: "Harness Evolution Record",
     type: "evolution",
     owner_layer: "runtime",
-    source_files: ["test/harness-evolution.mjs", "test/harness-evolution-outcomes.mjs", "docs/harness-evolution/*.json"],
-    artifacts: ["docs/harness-evolution/*.json"],
+    source_files: ["test/harness-evolution.mjs", "test/harness-evolution-outcomes.mjs", "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md"],
+    artifacts: ["docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md"],
     depends_on: ["test.replay-coverage", "runtime.harness-experiments"],
     failure_modes: ["missing_evolution_record", "unverified_harness_change", "unmapped_affected_component"]
   },
