@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "config_id": "strict-runtime-requirements",
+  "extends": "../base.json",
+  "enabled_gates": [
+    "planning",
+    "dispatch",
+    "quality_lineage",
+    "runtime_requirements",
+    "final_gates"
+  ],
+  "trace": {
+    "enabled": true,
+    "include_artifact_hash": true
+  },
+  "verification": {
+    "commands": [
+      "npm test",
+      "node test/reconcile.mjs",
+      "node test/implementation-optimization.mjs"
+    ]
+  }
+}

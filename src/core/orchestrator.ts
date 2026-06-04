@@ -10,6 +10,7 @@ import { writeBlockerSummary } from "./blocker-summary.js";
 import { readProviderCapabilitySnapshot, writeProviderCapabilitySnapshot, writeProviderDispatchReceipt } from "./provider-evidence.js";
 import { isRuntimeRole, normalizeRuntimeRole } from "./role-registry.js";
 import { validateAgentSkills } from "./skill-registry.js";
+import { appendRuntimeTraceEvent } from "./trace-events.js";
 
 export type OrchestrationActionKind = "runtime" | "agent";
 export type OrchestrationActionStatus = "ready" | "waiting" | "blocked" | "done";
@@ -606,7 +607,7 @@ function waveStatusForContract(contract: DispatchContract): ParallelExecutionWav
   return "waiting_for_agent_output";
 }
 
-function materializeWaveHistory(runId: string, existingExecution: { wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] } | null, dispatchContracts: DispatchContract[]): {
+function materializeWaveHistory(existingExecution: { wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] } | null, dispatchContracts: DispatchContract[]): {
   executed_parallel_groups: string[];
   blocked_parallel_groups: string[];
   wave_history: unknown[];
@@ -735,7 +736,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     timeline: path.join(orchestrationDir, "auto-timeline.md")
   };
   const initialDispatchContracts = exists(files.session) && result.nextActions.length > 0
-    ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
+    ? buildDispatchContracts(runId, runDirPath, files.session)
     : [];
   const adoptedAgentRuns = adoptValidatedHandoffs(result, initialDispatchContracts, runDirPath, runId);
   const dispatchContracts = completeContractsWithAdoptedHandoffs(initialDispatchContracts, adoptedAgentRuns);
@@ -755,7 +756,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
   }
   const actionable = result.nextActions.filter((action) => action.status !== "done");
   const existingExecution = optionalJson<{ wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] }>(files.parallelExecution);
-  const execution = materializeWaveHistory(runId, existingExecution, dispatchContracts);
+  const execution = materializeWaveHistory(existingExecution, dispatchContracts);
 
   writeText(files.state, `${JSON.stringify({
     schema_version: 1,
@@ -820,6 +821,25 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     execution_units: [...nativeAgents, ...runtimeGates]
   }, null, 2)}\n`);
   writeOrchestratorRuntimeConsistency(files.consistency, runId, { ...result, agentRuns: adoptedAgentRuns }, dispatchContracts);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.orchestrator",
+    componentId: "runtime.ingest-orchestrator-session",
+    actionId: "runtime.ingest_orchestrator_session",
+    eventType: "ingest",
+    status: result.status === "blocked" ? "blocked" : "recorded",
+    reason: `orchestrator status=${result.status}; actions=${result.nextActions.length}; agents=${adoptedAgentRuns.length}`,
+    inputArtifacts: [files.session],
+    outputArtifacts: [
+      files.state,
+      files.queue,
+      files.agentRuns,
+      files.dispatchContracts,
+      files.parallelPlan,
+      files.parallelExecution,
+      files.consistency,
+      files.timeline
+    ]
+  });
   if (options.writeHarnessEvidence !== false) writeTrueHarnessEvidence(cwd, runId);
   return { ...result, agentRuns: adoptedAgentRuns, dispatchContracts, files };
 }
@@ -895,7 +915,7 @@ function readOnlySnapshot(cwd: string, runId: string, mode: OrchestratorResult["
   const nextActions = Array.isArray(session?.next_actions) ? session.next_actions : [];
   const sessionAgents = Array.isArray(session?.agent_runs) ? session.agent_runs : [];
   const virtualDispatchContracts = fs.existsSync(files.session) && nextActions.length > 0 && sessionAgents.length > 0
-    ? buildDispatchContracts(cwd, runId, runDirPath, files.session)
+    ? buildDispatchContracts(runId, runDirPath, files.session)
     : [];
   const currentStatus = readRunStatus(cwd, runId);
   const sessionStatus = typeof session?.status === "string" && isRunState(session.status) ? session.status : currentStatus;
@@ -989,7 +1009,6 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
     };
   }
 
-  const metadata = currentMetadata;
   const currentStatus = currentNormalizedStatus;
   const sessionStatus = normalizeRunState(session.status);
   const status = effectiveStatus(currentStatus, sessionStatus);

@@ -3,7 +3,7 @@ import { recordProviderOriginAgentCompletion } from "./agent-complete.js";
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
 import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
-import { formatArchive, formatAutoOrchestrator, formatCommit, formatDeliveryRun, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
+import { formatArchive, formatAutoOrchestrator, formatCommit, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
 import { commitRun, commitTask, pushRun, type CommitMode } from "./gitflow.js";
 import { initProject } from "./init.js";
 import { install } from "./install.js";

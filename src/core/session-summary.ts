@@ -65,7 +65,7 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
 
-function roleSummary(result: OrchestratorResult, agent: AgentRun): { summary: string; details: string[] } {
+function roleSummary(agent: AgentRun): { summary: string; details: string[] } {
   const handoff = readHandoff(agent.handoffFile);
   if (handoff?.summary) {
     const details: string[] = [];
@@ -104,7 +104,7 @@ export function summarizeOrchestratorSession(cwd: string, result: OrchestratorRe
     ]
   };
   const agents = result.agentRuns.map((agent) => {
-    const role = roleSummary(result, agent);
+    const role = roleSummary(agent);
     return {
       agentId: agent.id,
       role: agent.role,

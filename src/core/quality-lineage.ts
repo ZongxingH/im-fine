@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
+import { appendRuntimeTraceEvent } from "./trace-events.js";
 
 type QualityRole = "qa" | "reviewer";
 
@@ -231,6 +232,16 @@ export function writeQualityLineage(cwd: string, runId: string): string {
   const file = path.join(dir, "orchestration", "quality-lineage.json");
   ensureDir(path.dirname(file));
   writeText(file, `${JSON.stringify(payload, null, 2)}\n`);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.quality-lineage",
+    componentId: "runtime.quality-lineage",
+    actionId: "runtime.write_quality_lineage",
+    eventType: "artifact_written",
+    status: payload.summary.qa === "pass" && payload.summary.review === "pass" && payload.summary.recheck_fix_loop === "pass" ? "pass" : "blocked",
+    reason: `qa=${payload.summary.qa}; review=${payload.summary.review}; recheck=${payload.summary.recheck_fix_loop}`,
+    inputArtifacts: actions.map((action) => action.handoff),
+    outputArtifacts: [file]
+  });
   return file;
 }
 

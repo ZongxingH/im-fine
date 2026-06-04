@@ -2,12 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { blockerSummary } from "./blocker-summary.js";
 import { validateRuntimeFinalGates } from "./final-gates.js";
+import { writeHarnessComponents } from "./harness-components.js";
+import { writeHarnessDebuggerReport } from "./harness-debugger.js";
 import { ingestOrchestratorSession } from "./orchestrator.js";
 import { providerObservations } from "./provider-observation.js";
 import { providerReceipts, validateProviderReceipt } from "./provider-evidence.js";
 import { readQualityLineage, writeQualityLineage } from "./quality-lineage.js";
 import { writeRuntimeRequirements } from "./runtime-requirements.js";
+import { readSandboxVerification } from "./sandbox-runner.js";
 import { staleTrueHarnessEvidence } from "./true-harness-evidence.js";
+import { appendRuntimeTraceEvent, latestBlockerTrace } from "./trace-events.js";
 
 export interface StatusResult {
   cwd: string;
@@ -90,6 +94,31 @@ export interface StatusResult {
       recordsTestCommand: boolean;
       recordsTestOutput: boolean;
     };
+  } | null;
+  currentRunSandboxVerification: {
+    present: boolean;
+    status: string;
+    sandboxDir: string | null;
+    commandCount: number;
+    failedCommands: string[];
+    environmentMismatch: boolean;
+  } | null;
+  currentRunHarnessComponents: {
+    file: string;
+    componentCount: number;
+    issueCoverageCount: number;
+  } | null;
+  currentRunRecentBlockerTrace: Array<{
+    eventId: string;
+    componentId: string;
+    actionId: string;
+    reason: string;
+    outputArtifacts: string[];
+  }>;
+  currentRunHarnessDebugger: {
+    overview: string;
+    detail: string;
+    primaryBlocker: string | null;
   } | null;
   currentRunNextOwner: {
     owner: "runtime" | "orchestrator" | "agent" | "provider" | "user" | "project_code";
@@ -321,6 +350,42 @@ function runtimeRequirementsStatus(cwd: string, runId: string): StatusResult["cu
   };
 }
 
+function sandboxVerificationStatus(cwd: string, runId: string, runRoot: string): StatusResult["currentRunSandboxVerification"] {
+  const result = readSandboxVerification(cwd, runId);
+  if (!result) return {
+    present: false,
+    status: "missing",
+    sandboxDir: null,
+    commandCount: 0,
+    failedCommands: [],
+    environmentMismatch: false
+  };
+  const commands = [...result.runtime_versions, ...result.install_commands, ...result.test_commands];
+  const failedCommands = commands.filter((item) => item.exit_code !== 0).map((item) => item.command);
+  const qaText = fs.existsSync(path.join(runRoot, "evidence", "test-results.md"))
+    ? fs.readFileSync(path.join(runRoot, "evidence", "test-results.md"), "utf8")
+    : "";
+  const qaClaimsPass = /\b(pass|passed|ok|success|通过)\b/i.test(qaText);
+  return {
+    present: true,
+    status: result.status,
+    sandboxDir: result.sandbox_dir,
+    commandCount: commands.length,
+    failedCommands,
+    environmentMismatch: result.status === "blocked" && qaClaimsPass
+  };
+}
+
+function harnessComponentsStatus(cwd: string, runId: string): StatusResult["currentRunHarnessComponents"] {
+  const file = writeHarnessComponents(cwd, runId);
+  const parsed = readJson<{ components?: unknown[]; issue_coverage?: unknown[] }>(file);
+  return {
+    file,
+    componentCount: Array.isArray(parsed.components) ? parsed.components.length : 0,
+    issueCoverageCount: Array.isArray(parsed.issue_coverage) ? parsed.issue_coverage.length : 0
+  };
+}
+
 function nextOwnerStatus(runRoot: string, runStatus: string | null, gates: Record<string, string> | null, dispatch: StatusResult["currentRunDispatch"], receipts: StatusResult["currentRunProviderReceipts"], freshness: StatusResult["currentRunTrueHarnessFreshness"], quality: StatusResult["currentRunQualityLineage"], standardEvidence: StatusResult["currentRunStandardEvidence"], runtimeRequirements: StatusResult["currentRunRuntimeRequirements"]): StatusResult["currentRunNextOwner"] {
   const orchestration = path.join(runRoot, "orchestration");
   const finalGates = path.join(orchestration, "final-gates.json");
@@ -417,6 +482,10 @@ export function status(cwd: string): StatusResult {
   let currentRunQualityLineage: StatusResult["currentRunQualityLineage"] = null;
   let currentRunStandardEvidence: StatusResult["currentRunStandardEvidence"] = null;
   let currentRunRuntimeRequirements: StatusResult["currentRunRuntimeRequirements"] = null;
+  let currentRunSandboxVerification: StatusResult["currentRunSandboxVerification"] = null;
+  let currentRunHarnessComponents: StatusResult["currentRunHarnessComponents"] = null;
+  let currentRunRecentBlockerTrace: StatusResult["currentRunRecentBlockerTrace"] = [];
+  let currentRunHarnessDebugger: StatusResult["currentRunHarnessDebugger"] = null;
   let currentRunNextOwner: StatusResult["currentRunNextOwner"] = null;
   let currentRunActions: StatusResult["currentRunActions"] = null;
   let currentRunBlockers: StatusResult["currentRunBlockers"] = null;
@@ -490,6 +559,8 @@ export function status(cwd: string): StatusResult {
         currentRunQualityLineage = qualityLineageStatus(cwd, currentRunId);
         currentRunStandardEvidence = standardEvidenceStatus(runRoot);
         currentRunRuntimeRequirements = runtimeRequirementsStatus(cwd, currentRunId);
+        currentRunSandboxVerification = sandboxVerificationStatus(cwd, currentRunId, runRoot);
+        currentRunHarnessComponents = harnessComponentsStatus(cwd, currentRunId);
         const trueHarness = path.join(runRoot, "orchestration", "true-harness-evidence.json");
         if (fs.existsSync(trueHarness)) {
           const staleSources = staleTrueHarnessEvidence(trueHarness);
@@ -546,6 +617,40 @@ export function status(cwd: string): StatusResult {
           currentRunConsistency = runConsistency(runRoot, currentRunStatus, currentRunGates);
         }
         currentRunNextOwner = nextOwnerStatus(runRoot, currentRunStatus, currentRunGates, currentRunDispatch, currentRunProviderReceipts, currentRunTrueHarnessFreshness, currentRunQualityLineage, currentRunStandardEvidence, currentRunRuntimeRequirements);
+        const sandboxStatus = currentRunSandboxVerification;
+        if (sandboxStatus?.environmentMismatch) {
+          currentRunNextOwner = {
+            owner: "project_code",
+            reason: "environment / verification mismatch between QA evidence and sandbox output",
+            evidence: sandboxStatus.failedCommands
+          };
+        }
+        currentRunRecentBlockerTrace = latestBlockerTrace(cwd, currentRunId, 3).map((event) => ({
+          eventId: event.event_id,
+          componentId: event.component_id,
+          actionId: event.action_id,
+          reason: event.reason,
+          outputArtifacts: event.output_artifacts
+        }));
+        const debuggerReport = writeHarnessDebuggerReport(cwd, currentRunId);
+        currentRunHarnessDebugger = {
+          overview: debuggerReport.overview,
+          detail: debuggerReport.detail,
+          primaryBlocker: debuggerReport.primaryBlocker
+        };
+        appendRuntimeTraceEvent(cwd, currentRunId, {
+          source: "runtime.status",
+          componentId: "runtime.status-dashboard",
+          actionId: "runtime.status",
+          eventType: "status_checked",
+          status: currentRunConsistency === "inconsistent" || currentRunNextOwner?.reason !== "no blocking next action detected" ? "blocked" : "recorded",
+          reason: currentRunNextOwner?.reason || "status checked",
+          inputArtifacts: [
+            path.join(runRoot, "orchestration", "final-gates.json"),
+            path.join(runRoot, "orchestration", "true-harness-evidence.json"),
+            path.join(runRoot, "orchestration", "runtime-requirements.json")
+          ]
+        });
         const queue = path.join(runRoot, "orchestration", "queue.json");
         if (fs.existsSync(queue)) {
           const parsedQueue = readJson<{ actions?: Array<{ status?: string; parallelGroup?: string }> }>(queue);
@@ -619,6 +724,10 @@ export function status(cwd: string): StatusResult {
     currentRunQualityLineage,
     currentRunStandardEvidence,
     currentRunRuntimeRequirements,
+    currentRunSandboxVerification,
+    currentRunHarnessComponents,
+    currentRunRecentBlockerTrace,
+    currentRunHarnessDebugger,
     currentRunNextOwner,
     currentRunActions,
     currentRunBlockers,

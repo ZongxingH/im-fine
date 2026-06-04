@@ -8,9 +8,11 @@ import { writeQualityLineage } from "./quality-lineage.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
 import { writeRuntimeRequirements } from "./runtime-requirements.js";
+import { readSandboxVerification } from "./sandbox-runner.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 import { validateTrueHarnessEvidenceFiles, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { writeCapabilityTrace, writeRunTraceIndex } from "./trace.js";
+import { appendRuntimeTraceEvent, appendRuntimeTraceEvents, runtimeTraceFiles } from "./trace-events.js";
 import { runCommand } from "./shell.js";
 import { recordActionStatus } from "./reliability.js";
 
@@ -197,7 +199,7 @@ function checkFile(id: string, file: string): ArchiveCheck {
   };
 }
 
-function qualityLineageCheck(cwd: string, runId: string, gate: "qa" | "review" | "recheck_fix_loop", file: string): ArchiveCheck {
+function qualityLineageCheck(gate: "qa" | "review" | "recheck_fix_loop", file: string): ArchiveCheck {
   const id = `quality.${gate}`;
   if (!fs.existsSync(file)) return { id, status: "fail", detail: file };
   const quality = readJson<{ summary?: Record<string, unknown>; lineages?: Array<{ role?: string; status?: string; unresolved_findings?: string[]; invalid_rechecks?: unknown[] }> }>(file);
@@ -370,6 +372,7 @@ function runLevelGateChecks(cwd: string, runId: string): ArchiveCheck[] {
   const dir = runDir(cwd, runId);
   const committer = validateAgentHandoff({ id: "committer", role: "committer" }, dir, runId);
   const runtimeRequirements = writeRuntimeRequirements(cwd, runId);
+  const sandbox = readSandboxVerification(cwd, runId);
   return [
     checkFile("run-level.qa-evidence", path.join(dir, "evidence", "test-results.md")),
     checkFile("run-level.review-evidence", path.join(dir, "evidence", "review.md")),
@@ -384,6 +387,11 @@ function runLevelGateChecks(cwd: string, runId: string): ArchiveCheck[] {
       id: "run-level.committer-handoff",
       status: committer.passed ? "pass" : "fail",
       detail: committer.passed ? committer.file || "committer handoff" : `${committer.file || path.join(dir, "agents", "committer", "handoff.json")}: ${committer.errors.join("; ")}`
+    },
+    {
+      id: "run-level.sandbox-verification",
+      status: !sandbox || sandbox.status === "pass" ? "pass" : "fail",
+      detail: sandbox ? path.join(dir, "orchestration", "sandbox-verification.json") : "sandbox verification not recorded"
     }
   ];
 }
@@ -455,6 +463,15 @@ function archiveBlockedItems(checks: ArchiveCheck[]): string[] {
   return checks
     .filter((check) => check.status === "fail")
     .map((check) => `${check.id}: ${check.detail}`);
+}
+
+function componentForArchiveCheck(checkId: string): string {
+  if (checkId.includes("runtime-requirements")) return "runtime.runtime-requirements";
+  if (checkId.includes("quality") || checkId.includes("qa") || checkId.includes("review")) return "runtime.quality-lineage";
+  if (checkId.includes("true-harness") || checkId.includes("pre-archive")) return "runtime.true-harness-evidence";
+  if (checkId.includes("commit") || checkId.includes("push")) return "runtime.commit-push-policy";
+  if (checkId.includes("project")) return "runtime.project-knowledge";
+  return "runtime.final-gates";
 }
 
 function writeArchiveBlockerMatrix(cwd: string, runId: string, checks: ArchiveCheck[]): string {
@@ -763,7 +780,25 @@ function writeProjectKnowledgeFreshness(cwd: string, runId: string): string {
 export function archiveRun(cwd: string, runId: string, options: ArchiveRunOptions = {}): ArchiveResult {
   const dir = runDir(cwd, runId);
   const preArchiveEvidence = writePreArchiveHarnessEvidence(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.archive",
+    componentId: "runtime.true-harness-evidence",
+    actionId: "runtime.pre_archive_harness_evidence",
+    eventType: "artifact_written",
+    status: "recorded",
+    reason: "pre-archive harness evidence written",
+    outputArtifacts: [preArchiveEvidence.json, preArchiveEvidence.markdown]
+  });
   assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString() }), `start archive for ${runId}`);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.archive",
+    componentId: "runtime.final-gates",
+    actionId: "runtime.archive_start",
+    eventType: "archive",
+    status: "running",
+    reason: "archive started",
+    inputArtifacts: [preArchiveEvidence.json]
+  });
   recordArchiveIdentity(cwd, runId);
   const graph = readTaskGraph(cwd, runId);
   const qualityLineage = writeQualityLineage(cwd, runId);
@@ -778,9 +813,9 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
     checkFile("task-graph", path.join(dir, "planning", "task-graph.json")),
     checkFile("test-results", path.join(dir, "evidence", "test-results.md")),
     checkFile("review", path.join(dir, "evidence", "review.md")),
-    qualityLineageCheck(cwd, runId, "qa", qualityLineage),
-    qualityLineageCheck(cwd, runId, "review", qualityLineage),
-    qualityLineageCheck(cwd, runId, "recheck_fix_loop", qualityLineage),
+    qualityLineageCheck("qa", qualityLineage),
+    qualityLineageCheck("review", qualityLineage),
+    qualityLineageCheck("recheck_fix_loop", qualityLineage),
     preArchiveHarnessCheck(preArchiveEvidence.json),
     ...runLevelGateChecks(cwd, runId),
     ...outcomeChecks(cwd, runId),
@@ -846,6 +881,16 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   writeTrueHarnessEvidence(cwd, runId);
 
   const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), trueHarnessCheck(cwd, runId)];
+  appendRuntimeTraceEvents(cwd, runId, checks.map((check) => ({
+    source: "runtime.archive",
+    componentId: componentForArchiveCheck(check.id),
+    actionId: `archive.${check.id}`,
+    eventType: "gate_evaluated",
+    status: check.status === "pass" ? "pass" : "blocked",
+    reason: check.detail,
+    inputArtifacts: [check.detail],
+    outputArtifacts: [finalGates]
+  })));
   const blockerMatrix = writeArchiveBlockerMatrix(cwd, runId, checks);
   blockedItems = archiveBlockedItems(checks);
   status = blockedItems.length === 0 ? "completed" : "blocked";
@@ -879,6 +924,17 @@ ${projectUpdateFiles.length > 0 ? projectUpdateFiles.map((file) => `- ${file}`).
   }
   writeRunTraceIndex(cwd, runId);
   writeTrueHarnessEvidence(cwd, runId);
+  const traceFiles = runtimeTraceFiles(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.archive",
+    componentId: "runtime.final-gates",
+    actionId: "runtime.archive_finalize",
+    eventType: "archive",
+    status,
+    reason: status === "completed" ? "archive completed" : "archive blocked",
+    inputArtifacts: [finalGates, blockerMatrix],
+    outputArtifacts: [archiveReport, userReport, traceFiles.runTrace, traceFiles.gateTrace]
+  });
   updateRun(cwd, runId, status, {
     archived_at: status === "completed" ? new Date().toISOString() : undefined,
     archive_blocked_at: status === "blocked" ? new Date().toISOString() : undefined,

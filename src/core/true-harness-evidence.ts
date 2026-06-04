@@ -4,9 +4,10 @@ import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
 import { readQualityLineage, writeQualityLineage } from "./quality-lineage.js";
-import { providerObservationFiles, providerObservations, type ProviderObservationRecord } from "./provider-observation.js";
+import { providerObservations } from "./provider-observation.js";
 import { providerReceipts, receiptProvesNativeSubagent, resolveProviderCapabilityFromReceipts, validateProviderReceipt } from "./provider-evidence.js";
 import { skillEvidenceRequirements } from "./skill-registry.js";
+import { appendRuntimeTraceEvent, latestTraceSourceForArtifact } from "./trace-events.js";
 
 interface RunMetadata {
   run_id: string;
@@ -127,11 +128,13 @@ function sourceArtifacts(cwd: string, runDirPath: string): SourceArtifactRecord[
     ["parallel_execution", path.join(orchestration, "parallel-execution.json")],
     ["provider_capability", path.join(orchestration, "provider-capability.json")],
     ["provider_capability_resolution", path.join(orchestration, "provider-capability-resolution.json")],
+    ["harness_components", path.join(orchestration, "harness-components.json")],
     ["quality_lineage", path.join(orchestration, "quality-lineage.json")],
     ["method_provenance", path.join(orchestration, "method-provenance.json")],
     ["agent_acceptance_matrix", path.join(orchestration, "agent-acceptance-matrix.json")],
     ["acceptance_matrix", path.join(orchestration, "acceptance-matrix.json")],
     ["runtime_requirements", path.join(orchestration, "runtime-requirements.json")],
+    ["sandbox_verification", path.join(orchestration, "sandbox-verification.json")],
     ["final_gates", path.join(orchestration, "final-gates.json")],
     ["qa_evidence", path.join(runDirPath, "evidence", "test-results.md")],
     ["review_evidence", path.join(runDirPath, "evidence", "review.md")],
@@ -172,28 +175,34 @@ export function staleTrueHarnessEvidence(jsonFile: string): string[] {
   if (!Array.isArray(payload.source_artifacts)) return ["missing source_artifacts"];
   const runDirPath = path.dirname(path.dirname(jsonFile));
   const cwd = path.dirname(path.dirname(path.dirname(runDirPath)));
+  const runId = path.basename(runDirPath);
+  const withTrace = (source: SourceArtifactRecord, reason: string): string => {
+    const traced = latestTraceSourceForArtifact(cwd, runId, source.id, path.resolve(cwd, source.file));
+    if (!traced) return `${source.id}: ${reason}`;
+    return `${source.id}: ${reason}; trace_source=${traced.source}; component=${traced.componentId}; action=${traced.actionId}; event=${traced.eventId}`;
+  };
   const stale: string[] = [];
   const recordedIds = new Set(payload.source_artifacts.map((source) => source.id));
   const currentSources = sourceArtifacts(cwd, runDirPath);
   for (const source of currentSources) {
     if (source.exists && !recordedIds.has(source.id)) {
-      stale.push(`${source.id}: created after evidence generation`);
+      stale.push(withTrace(source, "created after evidence generation"));
     }
   }
   for (const source of payload.source_artifacts) {
     const file = path.isAbsolute(source.file) ? source.file : path.resolve(cwd, source.file);
     if (!fs.existsSync(file)) {
-      if (source.exists) stale.push(`${source.id}: missing after evidence generation`);
+      if (source.exists) stale.push(withTrace(source, "missing after evidence generation"));
       continue;
     }
     if (!source.exists) {
-      stale.push(`${source.id}: created after evidence generation`);
+      stale.push(withTrace(source, "created after evidence generation"));
       continue;
     }
     const stat = fs.statSync(file);
     const currentHash = sha256File(file);
     if (source.sha256 !== currentHash || (typeof source.mtime_ms === "number" && stat.mtimeMs > source.mtime_ms + 1)) {
-      stale.push(`${source.id}: changed after evidence generation`);
+      stale.push(withTrace(source, "changed after evidence generation"));
     }
   }
   return stale;
@@ -716,6 +725,16 @@ ${payload.handoff_evidence_chain.length > 0 ? payload.handoff_evidence_chain.map
 - replan used: ${payload.fix_loop_usage.replan_used ? "yes" : "no"}
 - design rework used: ${payload.fix_loop_usage.design_rework_used ? "yes" : "no"}
 `);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.true-harness-evidence",
+    componentId: "runtime.true-harness-evidence",
+    actionId: "runtime.write_true_harness_evidence",
+    eventType: "artifact_written",
+    status: payload.true_harness_passed ? "pass" : "blocked",
+    reason: payload.true_harness_passed ? "true harness evidence passed" : "true harness evidence blocked",
+    inputArtifacts: payload.source_artifacts.map((source) => source.file),
+    outputArtifacts: [jsonFile, markdownFile, methodProvenanceFile]
+  });
 
   return {
     json: jsonFile,
@@ -784,5 +803,15 @@ export function writePreArchiveHarnessEvidence(cwd: string, runId: string): True
 - missing provider receipt contracts: ${missingReceipts.length > 0 ? missingReceipts.join(", ") : "none"}
 - missing standard evidence: ${missingStandardEvidence.length > 0 ? missingStandardEvidence.join(", ") : "none"}
 `);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.true-harness-evidence",
+    componentId: "runtime.true-harness-evidence",
+    actionId: "runtime.write_pre_archive_harness_evidence",
+    eventType: "artifact_written",
+    status: status ? "pass" : "blocked",
+    reason: status ? "pre-archive harness evidence passed" : "pre-archive harness evidence blocked",
+    inputArtifacts: [full.json],
+    outputArtifacts: [file, markdown]
+  });
   return { json: file, markdown, methodProvenance: full.methodProvenance };
 }

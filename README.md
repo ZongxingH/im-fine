@@ -114,6 +114,20 @@ The current session acts as Orchestrator. It is responsible for planning, dispat
 
 Status reads the current `.imfine` workspace and reports the active run, gates, blockers, final consistency, and relevant evidence paths.
 
+## Runtime Evidence And Diagnostics
+
+Every run is evidence-first. In addition to agent handoffs and final reports, imfine now records harness-level diagnostics under each run:
+
+- `orchestration/harness-components.json`: the harness component registry snapshot for the run.
+- `orchestration/run-trace.jsonl`: runtime event stream for ingest, evidence writing, gate evaluation, status checks, archive, and finalization.
+- `orchestration/gate-trace.jsonl`: gate-specific trace events, including blocked gate reasons.
+- `analysis/harness-debug-overview.md`: readable blocked-run diagnosis.
+- `analysis/harness-debug-detail.json`: machine-readable debugger claims with artifact or trace references.
+- `orchestration/runtime-requirements.json`: declared runtime, observed runtime versions, and QA evidence checks.
+- `orchestration/sandbox-verification.json`: local sandbox verification result when sandbox verification is run.
+
+`/imfine status` surfaces recent blocker trace, debugger report paths, sandbox verification status, and the next owner. If QA evidence says a run passed but sandbox verification fails, status reports an environment / verification mismatch instead of treating the run as completed.
+
 ## Runtime Boundary
 
 The installed runtime lives at `~/.imfine/runtime`, but runtime commands are backend actions, not the normal user workflow. Public usage should stay on:
@@ -136,12 +150,24 @@ Default commit policy is recorded in each run:
 
 If a run requires user approval or the user declines commit/push, imfine must not report `completed`; it remains `awaiting_user_approval`, `ready_for_commit`, or `blocked` with evidence.
 
+## Harness Evolution
+
+Harness changes are tracked as verifiable engineering changes:
+
+- Component registry: `docs/harness-components.md` and `src/core/harness-components.ts`.
+- Evolution records: `docs/harness-evolution/*.json`.
+- Experiment workspaces: `.imfine/harness-experiments/<experiment-id>/`.
+- Config overlays: `configs/harness/base.json` and `configs/harness/experiments/*.json`.
+
+Each non-trivial harness change records affected components, source failures, predicted outcomes, observed outcomes, verification commands, regression risks, `experiment_id`, and `config_id`. The test suite validates these records so harness behavior changes remain tied to fixtures and observed results.
+
 ## Project Artifacts
 
 imfine writes run and project evidence under `.imfine/`, including:
 
 - `.imfine/project/**`: project knowledge and capability traces.
-- `.imfine/runs/<run-id>/**`: request, analysis, planning, agent handoffs, provider receipts, evidence, gates, and archive artifacts.
+- `.imfine/runs/<run-id>/**`: request, analysis, planning, agent handoffs, provider receipts, evidence, gates, traces, debugger reports, sandbox verification, and archive artifacts.
+- `.imfine/harness-experiments/<experiment-id>/**`: harness experiment input, patch, verification, and change evaluation.
 - `.imfine/reports/<run-id>.md`: final run report.
 
 The design baseline is [IMFINE_PHASED_IMPLEMENTATION_PLAN.md](./docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md).

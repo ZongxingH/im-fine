@@ -232,7 +232,7 @@ assert.ok(result.errors.some((error) => error.includes("no matching orchestrator
       parallelGroup: "delivery"
     }]
   }, null, 2) + "\n");
-  const contracts = buildDispatchContracts(cwd, runId, runDir, sessionFile);
+  const contracts = buildDispatchContracts(runId, runDir, sessionFile);
   assert.equal(contracts[0].handoff_schema, "library/templates/handoff.schema.json");
   assert.ok(contracts[0].role_required_evidence.includes("agents/*/patch.diff"));
 }
@@ -776,6 +776,9 @@ for (const provider of ["codex", "claude"]) {
   assert.ok(value.currentRunRuntimeRequirements.blockedChecks.includes("qa_records_runtime_version"));
   assert.equal(value.currentRunGates.runtime_requirements, "blocked");
   assert.equal(value.currentRunNextOwner.owner, "project_code");
+  assert.equal(value.currentRunHarnessComponents.issueCoverageCount, 16);
+  assert.ok(value.currentRunHarnessComponents.componentCount >= 16);
+  assert.ok(fs.existsSync(value.currentRunHarnessComponents.file));
 }
 
 {

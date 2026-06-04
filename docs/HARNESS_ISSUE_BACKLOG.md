@@ -347,7 +347,7 @@ Archive 或 Committer Agent 可以写 handoff 或报告，但 `orchestration/fin
   - 必须是合法 JSON。
   - `generated_by` 必须是 `imfine-runtime`。
   - required gates：`planning`、`dispatch`、`qa`、`review`、`recheck_fix_loop`、`committer`、`push`、`archive`、`true_harness`、`project_knowledge` 必须全部为 `pass`。
-- `archiveRun()` 已收紧完成边界：
+- `archiveRun()` 已强化完成边界：
   - archive agent handoff / archive report 只作为 archive finalize 的输入和输出，不再等同于 finalization。
   - archive 预备阶段即使基础检查暂时全 pass，也只写 `Blocked Archive Report`，并标注 runtime final gates pending，避免 final gates 生成前出现 `Final Archive Report`。
   - 写出 runtime `final-gates.json` 后会立刻用统一校验复核；校验不通过时强制保持 blocked。
@@ -451,7 +451,7 @@ Runtime 无法区分完整交付、合理 demo substitute 和未接受 deviation
   - 策略不允许 runtime commit 时进入 `awaiting_user_approval`，并写 `evidence/commits.md`。
   - 新项目无 HEAD 时按策略创建 initial baseline commit 或阻断等待用户批准。
   - push 无 remote 时写 `push_blocked_no_remote`、`push_user_action`、`push_local_commit`，并输出明确用户动作。
-- `reconcileCommits()` 已收紧 commit evidence：
+- `reconcileCommits()` 已强化 commit evidence：
   - 非 git 仓库会写 `blocked_no_git_repository`，记录 `commit_blocked_reason=git repository is not initialized`，并让 commit / committer gate blocked。
   - git 仓库无任何 commit hash 时会写 `blocked_no_commit`，记录 `commit_blocked_reason=missing commit hash`，并让 commit / committer gate blocked。
   - 旧的 `evidence/commits.md` 文件不能单独满足 commit gate；必须有真实 commit hash 或明确 blocker。
@@ -592,7 +592,7 @@ QA、Review、commit、push 和 archive evidence 可能散落在 handoff、agent
   - `writeProviderObservation()` 统一写入 `orchestration/provider-observations/*.json`。
   - observation 记录 `timestamp`、`observed_agent_names`、`observed_closed_count`、`screenshot_path`、`user_note`。
   - 每条 observation 写入 `proof_boundary=diagnostic_only_not_true_harness_proof`。
-  - 兼容旧字段：`agent_names`、`closed_count`、`screenshot`、`note`、`observed_at`。
+  - 保留旧字段读取：`agent_names`、`closed_count`、`screenshot`、`note`、`observed_at`。
 - `true-harness-evidence.json` 已复用统一 reader：
   - 输出 `provider_observations.present`、`observed_native_agents`、`observation_count`、完整 observations 列表和 proof boundary。
   - observations 仅进入诊断区，不参与 provider receipt gate。

@@ -22,16 +22,6 @@ function stringField(input: JsonObject, field: string, errors: string[]): string
   return value;
 }
 
-function optionalStringField(input: JsonObject, field: string, errors: string[]): string | undefined {
-  const value = input[field];
-  if (value === undefined) return undefined;
-  if (typeof value !== "string" || value.trim().length === 0) {
-    errors.push(`invalid string field: ${field}`);
-    return undefined;
-  }
-  return value;
-}
-
 function arrayField(input: JsonObject, field: string, errors: string[]): unknown[] | undefined {
   const value = input[field];
   if (!Array.isArray(value)) {

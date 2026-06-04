@@ -101,6 +101,18 @@ export function formatStatus(result: StatusResult): string {
   const runtimeRequirements = result.currentRunRuntimeRequirements
     ? `status=${result.currentRunRuntimeRequirements.status}, declared=${result.currentRunRuntimeRequirements.declaredLanguages.join(",") || "none"}, files=${result.currentRunRuntimeRequirements.declarationFiles.join(",") || "none"}, blocked=${result.currentRunRuntimeRequirements.blockedChecks.join(",") || "none"}`
     : "none";
+  const sandboxVerification = result.currentRunSandboxVerification
+    ? `present=${result.currentRunSandboxVerification.present ? "yes" : "no"}, status=${result.currentRunSandboxVerification.status}, commands=${result.currentRunSandboxVerification.commandCount}, failed=${result.currentRunSandboxVerification.failedCommands.join(",") || "none"}, mismatch=${result.currentRunSandboxVerification.environmentMismatch ? "yes" : "no"}`
+    : "none";
+  const harnessComponents = result.currentRunHarnessComponents
+    ? `components=${result.currentRunHarnessComponents.componentCount}, issue_coverage=${result.currentRunHarnessComponents.issueCoverageCount}, file=${result.currentRunHarnessComponents.file}`
+    : "none";
+  const blockerTrace = result.currentRunRecentBlockerTrace.length > 0
+    ? result.currentRunRecentBlockerTrace.map((item) => `${item.actionId}/${item.componentId}: ${item.reason}`).join(" | ")
+    : "none";
+  const debuggerReport = result.currentRunHarnessDebugger
+    ? `overview=${result.currentRunHarnessDebugger.overview}, detail=${result.currentRunHarnessDebugger.detail}, primary=${result.currentRunHarnessDebugger.primaryBlocker || "none"}`
+    : "none";
   const nextOwner = result.currentRunNextOwner
     ? `${result.currentRunNextOwner.owner}: ${result.currentRunNextOwner.reason}; evidence=${result.currentRunNextOwner.evidence.join(",") || "none"}`
     : "none";
@@ -128,6 +140,10 @@ export function formatStatus(result: StatusResult): string {
     `current run quality lineage: ${quality}`,
     `current run standard evidence: ${standardEvidence}`,
     `current run runtime requirements: ${runtimeRequirements}`,
+    `current run sandbox verification: ${sandboxVerification}`,
+    `current run harness components: ${harnessComponents}`,
+    `current run blocker trace: ${blockerTrace}`,
+    `current run harness debugger: ${debuggerReport}`,
     `current run next owner: ${nextOwner}`,
     `current run actions: ${actions}`,
     `current run blockers: ${blockers}`,

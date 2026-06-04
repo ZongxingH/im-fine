@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { runCommand } from "./shell.js";
+import { appendRuntimeTraceEvent } from "./trace-events.js";
 
 export interface RuntimeRequirementCheck {
   id: string;
@@ -268,5 +269,17 @@ ${result.observed_runtime_versions.length > 0 ? result.observed_runtime_versions
 
 ${result.checks.map((item) => `- ${item.status}: ${item.id} (${item.detail})`).join("\n")}
 `);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.runtime-requirements",
+    componentId: "runtime.runtime-requirements",
+    actionId: "runtime.write_runtime_requirements",
+    eventType: "artifact_written",
+    status: result.status,
+    reason: result.status === "pass"
+      ? "runtime requirements passed"
+      : result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; "),
+    inputArtifacts: [path.join(dir, "run.json"), path.join(dir, "evidence", "test-results.md"), ...result.declared_runtime.files],
+    outputArtifacts: [json, markdown]
+  });
   return { json, markdown, result };
 }

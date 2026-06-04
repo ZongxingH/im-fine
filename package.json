@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "npm run build",
     "prepare": "npm run build",
-    "test": "npm run build && node test/smoke.mjs && node test/harness-acceptance.mjs && node test/plan-validation.mjs && node test/reliability.mjs && node test/implementation-optimization.mjs && node test/reconcile.mjs && node test/demo-replay.mjs && node test/replay-coverage.mjs && node test/harness-evolution.mjs",
+    "test": "npm run build && node test/smoke.mjs && node test/harness-acceptance.mjs && node test/plan-validation.mjs && node test/reliability.mjs && node test/implementation-optimization.mjs && node test/reconcile.mjs && node test/demo-replay.mjs && node test/replay-coverage.mjs && node test/harness-components.mjs && node test/runtime-trace.mjs && node test/harness-debugger.mjs && node test/harness-evolution.mjs && node test/harness-evolution-outcomes.mjs && node test/harness-experiments.mjs && node test/harness-config.mjs && node test/sandbox-runner.mjs",
     "start": "node dist/cli/imfine.js"
   },
   "engines": {

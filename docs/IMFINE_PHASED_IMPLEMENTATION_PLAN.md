@@ -659,7 +659,7 @@ runtime 只消费这些边界，不推导新的并行波次。
 runtime 当前会在 `parallel-execution.json` 中记录显式 batch 语义：
 
 - `batch_strategy=parallel_group` 表示同一 parallel group 的 ready agent batch
-- `batch_strategy=run_level_compatible` 表示 run-level agent 与 task-level ready batch 的兼容合批
+- `batch_strategy=run_level_mixed` 表示 run-level agent 与 task-level ready batch 的共同合批
 - `batch_levels` 明确记录该 wave 包含 `run_level`、`task_level` 中的哪类 action
 
 这样 run-level agent 不再只依赖 `!taskId` 这种隐式规则被混入 batch，而是有可审计的 batch strategy 和 batch level。

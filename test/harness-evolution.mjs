@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { harnessComponentIds } from "../dist/core/harness-components.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const evolutionDir = path.join(root, "docs", "harness-evolution");
 const backlog = fs.readFileSync(path.join(root, "docs", "HARNESS_ISSUE_BACKLOG.md"), "utf8");
+const componentIds = harnessComponentIds();
 
 assert.ok(fs.existsSync(evolutionDir), "missing docs/harness-evolution");
 
@@ -20,6 +22,10 @@ for (const file of records) {
   assert.equal(record.schema_version, 1, `${file} schema_version`);
   assert.equal(typeof record.record_id, "string", `${file} record_id`);
   assert.ok(record.record_id.length > 0, `${file} record_id empty`);
+  assert.equal(typeof record.experiment_id, "string", `${file} experiment_id`);
+  assert.ok(record.experiment_id.length > 0, `${file} experiment_id empty`);
+  assert.equal(typeof record.config_id, "string", `${file} config_id`);
+  assert.ok(record.config_id.length > 0, `${file} config_id empty`);
   assert.ok(["planned", "verified", "failed", "superseded"].includes(record.status), `${file} invalid status`);
   assert.ok(Array.isArray(record.source_failures) && record.source_failures.length > 0, `${file} source_failures`);
   assert.ok(Array.isArray(record.affected_components) && record.affected_components.length > 0, `${file} affected_components`);
@@ -39,6 +45,7 @@ for (const file of records) {
   for (const component of record.affected_components) {
     assert.equal(typeof component, "string");
     assert.ok(component.trim().length > 0);
+    assert.ok(componentIds.has(component), `${file} unknown affected component ${component}`);
   }
 }
 

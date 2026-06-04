@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "config_id": "base",
+  "enabled_gates": [
+    "planning",
+    "dispatch",
+    "provider_receipts",
+    "quality_lineage",
+    "runtime_requirements",
+    "final_gates",
+    "commit_push",
+    "project_knowledge"
+  ],
+  "trace": {
+    "enabled": true,
+    "include_artifact_hash": false
+  },
+  "verification": {
+    "commands": [
+      "npm test"
+    ]
+  }
+}

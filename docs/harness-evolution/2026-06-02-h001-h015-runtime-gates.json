@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
   "record_id": "2026-06-02-h001-h015-runtime-gates",
+  "experiment_id": "exp-20260602-h001-h015-runtime-gates",
+  "config_id": "base",
   "status": "verified",
   "created_at": "2026-06-02T00:00:00.000+08:00",
   "source_failures": [
@@ -66,6 +68,26 @@
     }
   ],
   "affected_components": [
+    "runtime.planning-materialization",
+    "runtime.ingest-orchestrator-session",
+    "runtime.dispatch-contracts",
+    "provider.origin-receipts",
+    "runtime.true-harness-evidence",
+    "runtime.handoff-validation",
+    "runtime.quality-lineage",
+    "runtime.final-gates",
+    "runtime.acceptance-matrix",
+    "runtime.commit-push-policy",
+    "runtime.status-dashboard",
+    "runtime.standard-evidence",
+    "runtime.provider-observations",
+    "runtime.agent-name-map",
+    "runtime.runtime-requirements",
+    "runtime.project-knowledge",
+    "test.replay-coverage",
+    "runtime.harness-evolution"
+  ],
+  "affected_source_files": [
     "src/core/orchestrator.ts",
     "src/core/dispatch.ts",
     "src/core/provider-evidence.ts",
@@ -100,10 +122,64 @@
     "observed_result": "通过。输出包含 smoke ok、harness acceptance ok、plan validation ok、reliability ok、implementation optimization ok、reconcile ok、demo replay ok、replay coverage ok。",
     "verified_at": "2026-06-02T00:00:00.000+08:00"
   },
+  "predicted_outcomes": [
+    {
+      "fixture": "demo-replay.stale-true-harness-evidence",
+      "before": "stale_source_not_traced",
+      "expected_after": "blocked_stale_true_harness_evidence",
+      "component_id": "runtime.true-harness-evidence"
+    },
+    {
+      "fixture": "reconcile.runtime-requirements-blocked",
+      "before": "completed_without_runtime_declaration",
+      "expected_after": "blocked_runtime_requirements",
+      "component_id": "runtime.runtime-requirements"
+    },
+    {
+      "fixture": "implementation-optimization.provider-receipt-required",
+      "before": "provider_observation_could_be_misread_as_receipt",
+      "expected_after": "blocked_missing_provider_origin_receipt",
+      "component_id": "provider.origin-receipts"
+    },
+    {
+      "fixture": "harness-evolution.record-validation",
+      "before": "harness_change_without_structured_evolution_record",
+      "expected_after": "verified_evolution_record_required",
+      "component_id": "runtime.harness-evolution"
+    }
+  ],
+  "observed_outcomes": [
+    {
+      "fixture": "demo-replay.stale-true-harness-evidence",
+      "actual_after": "blocked_stale_true_harness_evidence",
+      "matched_prediction": true,
+      "component_id": "runtime.true-harness-evidence"
+    },
+    {
+      "fixture": "reconcile.runtime-requirements-blocked",
+      "actual_after": "blocked_runtime_requirements",
+      "matched_prediction": true,
+      "component_id": "runtime.runtime-requirements"
+    },
+    {
+      "fixture": "implementation-optimization.provider-receipt-required",
+      "actual_after": "blocked_missing_provider_origin_receipt",
+      "matched_prediction": true,
+      "component_id": "provider.origin-receipts"
+    },
+    {
+      "fixture": "harness-evolution.record-validation",
+      "actual_after": "verified_evolution_record_required",
+      "matched_prediction": true,
+      "component_id": "runtime.harness-evolution"
+    }
+  ],
+  "falsified_predictions": [],
+  "rollback_required": false,
   "regression_risks": [
     "final gates required 列表扩展后，旧 fixture 若没有同步补齐 evidence 会被正确阻断。",
     "status 会生成 runtime-requirements.json，可能让 true harness evidence 在新增 source 后变 stale；这是预期行为，需要通过重新生成 evidence 闭合。",
-    "provider receipt 校验收紧后，runtime-only 或 synthetic receipt 不再能证明 true harness。",
+    "provider receipt 校验进入强制证据链后，runtime-only 或 synthetic receipt 不再能证明 true harness。",
     "环境版本检测依赖本机 runtime 命令，命令不可用时应显示 environment blocker。"
   ],
   "follow_up": [

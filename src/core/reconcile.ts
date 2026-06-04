@@ -2,15 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { validateRuntimeFinalGates } from "./final-gates.js";
 import { ensureDir, writeText } from "./fs.js";
+import { writeHarnessComponents } from "./harness-components.js";
 import { ingestOrchestratorSession } from "./orchestrator.js";
 import { writeQualityLineage } from "./quality-lineage.js";
 import { writeRuntimeRequirements } from "./runtime-requirements.js";
+import { writeHarnessDebuggerReport } from "./harness-debugger.js";
 import { staleTrueHarnessEvidence, validateTrueHarnessEvidenceFiles, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { runCommand } from "./shell.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
+import { appendRuntimeTraceEvent, appendRuntimeTraceEvents, runtimeTraceFiles } from "./trace-events.js";
 
 export interface ReconcileGate {
   id: string;
+  component_id: string;
   status: "pass" | "blocked";
   detail: string;
 }
@@ -509,17 +513,30 @@ export function writeAcceptanceMatrix(cwd: string, runId: string): string {
   return file;
 }
 
-function gate(id: string, passed: boolean, detail: string): ReconcileGate {
-  return { id, status: passed ? "pass" : "blocked", detail };
+function gate(id: string, componentId: string, passed: boolean, detail: string): ReconcileGate {
+  return { id, component_id: componentId, status: passed ? "pass" : "blocked", detail };
 }
 
-function fileGate(dir: string, id: string, relative: string): ReconcileGate {
+function gateTraceInput(gateItem: ReconcileGate, finalGates: string) {
+  return {
+    source: "runtime.reconcile",
+    componentId: gateItem.component_id,
+    actionId: `gate.${gateItem.id}`,
+    eventType: "gate_evaluated" as const,
+    status: gateItem.status,
+    reason: gateItem.detail,
+    inputArtifacts: [gateItem.detail],
+    outputArtifacts: [finalGates]
+  };
+}
+
+function fileGate(dir: string, id: string, componentId: string, relative: string): ReconcileGate {
   const file = path.join(dir, relative);
-  return gate(id, fs.existsSync(file), file);
+  return gate(id, componentId, fs.existsSync(file), file);
 }
 
-function qualityLineageGate(dir: string, id: "qa" | "review" | "recheck_fix_loop", qualityLineageFile: string): ReconcileGate {
-  if (!fs.existsSync(qualityLineageFile)) return gate(id, false, qualityLineageFile);
+function qualityLineageGate(id: "qa" | "review" | "recheck_fix_loop", qualityLineageFile: string): ReconcileGate {
+  if (!fs.existsSync(qualityLineageFile)) return gate(id, "runtime.quality-lineage", false, qualityLineageFile);
   const quality = readJson<{ summary?: Record<string, unknown>; lineages?: Array<{ role?: string; status?: string; unresolved_findings?: string[]; invalid_rechecks?: unknown[] }> }>(qualityLineageFile);
   const status = quality.summary?.[id];
   const blocked = Array.isArray(quality.lineages)
@@ -532,14 +549,14 @@ function qualityLineageGate(dir: string, id: "qa" | "review" | "recheck_fix_loop
   const detail = blocked.length > 0
     ? blocked.map((item) => `${item.role || "quality"} unresolved=${Array.isArray(item.unresolved_findings) ? item.unresolved_findings.join("|") : "unknown"}`).join(", ")
     : qualityLineageFile;
-  return gate(id, status === "pass", detail);
+  return gate(id, "runtime.quality-lineage", status === "pass", detail);
 }
 
 function acceptanceGate(file: string): ReconcileGate {
-  if (!fs.existsSync(file)) return gate("acceptance_matrix", false, file);
+  if (!fs.existsSync(file)) return gate("acceptance_matrix", "runtime.acceptance-matrix", false, file);
   const matrix = readJson<{ items?: Array<{ status?: string; id?: string; classification?: string; accepted_by_review?: boolean }> }>(file);
   const blocked = Array.isArray(matrix.items) ? matrix.items.filter((item) => item.status === "blocked") : [];
-  return gate("acceptance_matrix", blocked.length === 0, blocked.length ? blocked.map((item) => item.id).join(", ") : file);
+  return gate("acceptance_matrix", "runtime.acceptance-matrix", blocked.length === 0, blocked.length ? blocked.map((item) => item.id).join(", ") : file);
 }
 
 interface StructuredBlocker {
@@ -785,9 +802,9 @@ function archiveGate(dir: string): ReconcileGate {
     path.join(dir, "agents", "archive", "handoff.json")
   ];
   const missing = required.filter((file) => !fs.existsSync(file));
-  if (missing.length > 0) return gate("archive", false, missing.join(", "));
+  if (missing.length > 0) return gate("archive", "runtime.final-gates", false, missing.join(", "));
   const status = readJson<{ status?: unknown }>(path.join(dir, "agents", "archive", "status.json"));
-  return gate("archive", status.status === "completed", status.status === "completed" ? required.join(", ") : `archive status=${String(status.status)}`);
+  return gate("archive", "runtime.final-gates", status.status === "completed", status.status === "completed" ? required.join(", ") : `archive status=${String(status.status)}`);
 }
 
 function projectKnowledgeGate(cwd: string): ReconcileGate {
@@ -818,8 +835,8 @@ function projectKnowledgeGate(cwd: string): ReconcileGate {
     missing: missing.map((file) => path.join(projectDir, file)),
     stale
   }, null, 2)}\n`);
-  if (missing.length > 0) return gate("project_knowledge", false, missing.map((file) => path.join(projectDir, file)).join(", "));
-  return gate("project_knowledge", stale.length === 0, stale.length > 0 ? stale.map((item) => `${item.file}:${item.marker}`).join(", ") : freshness);
+  if (missing.length > 0) return gate("project_knowledge", "runtime.project-knowledge", false, missing.map((file) => path.join(projectDir, file)).join(", "));
+  return gate("project_knowledge", "runtime.project-knowledge", stale.length === 0, stale.length > 0 ? stale.map((item) => `${item.file}:${item.marker}`).join(", ") : freshness);
 }
 
 function orchestratorRuntimeConsistencyGate(dir: string, runStatus: string | undefined, harnessFile: string): ReconcileGate {
@@ -851,21 +868,85 @@ function orchestratorRuntimeConsistencyGate(dir: string, runStatus: string | und
       if (!Array.isArray(parallel.wave_history) || parallel.wave_history.length === 0) blockers.push("dispatch_contracts_without_wave_history");
     }
   }
-  return gate("orchestrator_runtime_consistency", blockers.length === 0, blockers.length > 0 ? blockers.join(", ") : "runtime/session states consistent");
+  return gate("orchestrator_runtime_consistency", "runtime.ingest-orchestrator-session", blockers.length === 0, blockers.length > 0 ? blockers.join(", ") : "runtime/session states consistent");
 }
 
 export function finalizeRun(cwd: string, runId: string): ReconcileResult {
   const dir = runDir(cwd, runId);
   ingestOrchestratorSession(cwd, runId, { writeHarnessEvidence: false });
+  const orchestrationDir = path.join(dir, "orchestration");
+  const sessionFile = path.join(orchestrationDir, "orchestrator-session.json");
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.ingest-orchestrator-session",
+    actionId: "runtime.ingest_orchestrator_session",
+    eventType: "ingest",
+    status: "recorded",
+    reason: fs.existsSync(sessionFile) ? "orchestrator session ingested" : "orchestrator session missing",
+    inputArtifacts: [sessionFile],
+    outputArtifacts: [
+      path.join(orchestrationDir, "agent-runs.json"),
+      path.join(orchestrationDir, "dispatch-contracts.json"),
+      path.join(orchestrationDir, "parallel-execution.json")
+    ]
+  });
+  const harnessComponents = writeHarnessComponents(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.harness-evolution",
+    actionId: "runtime.write_harness_components",
+    eventType: "artifact_written",
+    status: "recorded",
+    reason: "harness component manifest written",
+    outputArtifacts: [harnessComponents]
+  });
   collectStandardEvidence(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.standard-evidence",
+    actionId: "runtime.collect_standard_evidence",
+    eventType: "artifact_written",
+    status: "recorded",
+    reason: "standard evidence manifest written",
+    outputArtifacts: [path.join(orchestrationDir, "standard-evidence.json")]
+  });
   const qualityLineage = writeQualityLineage(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.quality-lineage",
+    actionId: "runtime.write_quality_lineage",
+    eventType: "artifact_written",
+    status: "recorded",
+    reason: "quality lineage written",
+    outputArtifacts: [qualityLineage]
+  });
   const structuredBlockers = collectStructuredBlockers(cwd, runId);
   const commitEvidence = reconcileCommits(cwd, runId);
   const pushEvidence = reconcilePush(cwd, runId);
   const commitCheck = validCommitEvidence(cwd, runId);
   const acceptance = writeAcceptanceMatrix(cwd, runId);
   const runtimeRequirements = writeRuntimeRequirements(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.runtime-requirements",
+    actionId: "runtime.write_runtime_requirements",
+    eventType: "artifact_written",
+    status: runtimeRequirements.result.status === "pass" ? "pass" : "blocked",
+    reason: runtimeRequirements.result.status === "pass"
+      ? "runtime requirements passed"
+      : runtimeRequirements.result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; "),
+    outputArtifacts: [runtimeRequirements.json, runtimeRequirements.markdown]
+  });
   const harnessFiles = writeTrueHarnessEvidence(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.true-harness-evidence",
+    actionId: "runtime.write_true_harness_evidence",
+    eventType: "artifact_written",
+    status: "recorded",
+    reason: "true harness evidence written before final gate evaluation",
+    outputArtifacts: [harnessFiles.json, harnessFiles.markdown]
+  });
   const harness = harnessFiles.json;
   const harnessPayload = readJson<{ true_harness_passed?: boolean }>(harness);
   const harnessConsistency = validateTrueHarnessEvidenceFiles(harnessFiles.json, harnessFiles.markdown);
@@ -878,19 +959,19 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     ? fs.readdirSync(path.join(dir, "tasks")).filter((item) => item.startsWith("FIX-"))
     : [];
   const gates: ReconcileGate[] = [
-    gate("planning", planningPassed, "analysis/project-context.md, orchestration/context.json, planning/task-graph.json"),
-    gate("dispatch", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
-    qualityLineageGate(dir, "qa", qualityLineage),
-    qualityLineageGate(dir, "review", qualityLineage),
-    gate("recheck_fix_loop", taskGraphExists && qualityLineageGate(dir, "recheck_fix_loop", qualityLineage).status === "pass", !taskGraphExists ? "missing planning/task-graph.json" : qualityLineageGate(dir, "recheck_fix_loop", qualityLineage).status === "pass" ? qualityLineage : fixTasks.join(", ") || qualityLineage),
-    gate("runtime_requirements", runtimeRequirements.result.status === "pass", runtimeRequirements.result.status === "pass" ? runtimeRequirements.json : runtimeRequirements.result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; ")),
-    fileGate(dir, "risk_review", "evidence/risk-review.md"),
-    gate("commit", Boolean(commitEvidence) && commitCheck.passed, commitCheck.detail),
-    gate("committer", Boolean(commitEvidence) && commitCheck.passed, commitCheck.detail),
-    gate("push", Boolean(pushEvidence), pushEvidence),
+    gate("planning", "runtime.planning-materialization", planningPassed, "analysis/project-context.md, orchestration/context.json, planning/task-graph.json"),
+    gate("dispatch", "runtime.dispatch-contracts", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
+    qualityLineageGate("qa", qualityLineage),
+    qualityLineageGate("review", qualityLineage),
+    gate("recheck_fix_loop", "runtime.quality-lineage", taskGraphExists && qualityLineageGate("recheck_fix_loop", qualityLineage).status === "pass", !taskGraphExists ? "missing planning/task-graph.json" : qualityLineageGate("recheck_fix_loop", qualityLineage).status === "pass" ? qualityLineage : fixTasks.join(", ") || qualityLineage),
+    gate("runtime_requirements", "runtime.runtime-requirements", runtimeRequirements.result.status === "pass", runtimeRequirements.result.status === "pass" ? runtimeRequirements.json : runtimeRequirements.result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; ")),
+    fileGate(dir, "risk_review", "runtime.standard-evidence", "evidence/risk-review.md"),
+    gate("commit", "runtime.commit-push-policy", Boolean(commitEvidence) && commitCheck.passed, commitCheck.detail),
+    gate("committer", "runtime.commit-push-policy", Boolean(commitEvidence) && commitCheck.passed, commitCheck.detail),
+    gate("push", "runtime.commit-push-policy", Boolean(pushEvidence), pushEvidence),
     archiveGate(dir),
     acceptanceGate(acceptance),
-    gate("true_harness", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
+    gate("true_harness", "runtime.true-harness-evidence", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
     orchestratorRuntimeConsistencyGate(dir, runMetadata.status, harness),
     projectKnowledgeGate(cwd)
   ];
@@ -907,7 +988,18 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     gates: Object.fromEntries(gates.map((item) => [item.id, item.status])),
     checks: gates
   }, null, 2)}\n`);
+  appendRuntimeTraceEvents(cwd, runId, gates.map((gateItem) => gateTraceInput(gateItem, finalGates)));
   writeTrueHarnessEvidence(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.true-harness-evidence",
+    actionId: "runtime.refresh_true_harness_evidence",
+    eventType: "artifact_written",
+    status: "recorded",
+    reason: "true harness evidence refreshed after final gates",
+    inputArtifacts: [finalGates],
+    outputArtifacts: [harness]
+  });
   const finalGateValidation = validateRuntimeFinalGates(finalGates);
   if (status === "completed" && finalGateValidation.passed) {
     assertTransitionAccepted(transitionRunState(cwd, runId, "archiving", { archiving_at: new Date().toISOString(), final_gates: finalGates }), `finalize archive ${runId}`);
@@ -923,11 +1015,23 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
       });
     }
   }
+  const traceFiles = runtimeTraceFiles(cwd, runId);
+  appendRuntimeTraceEvent(cwd, runId, {
+    source: "runtime.reconcile",
+    componentId: "runtime.final-gates",
+    actionId: "runtime.reconcile_finalize",
+    eventType: "finalization",
+    status,
+    reason: status === "completed" ? "all runtime final gates passed" : "one or more runtime final gates blocked",
+    inputArtifacts: [finalGates, harness, qualityLineage, runtimeRequirements.json],
+    outputArtifacts: [finalReport, blockerMatrix, traceFiles.runTrace, traceFiles.gateTrace]
+  });
+  const debuggerReport = status === "blocked" ? writeHarnessDebuggerReport(cwd, runId) : null;
   return {
     runId,
     status,
     gates,
-    files: [finalGates, acceptance, runtimeRequirements.json, runtimeRequirements.markdown, harness, qualityLineage, commitEvidence, pushEvidence, finalReport, blockerMatrix, ...fixTaskFiles].filter((file): file is string => Boolean(file))
+    files: [finalGates, acceptance, runtimeRequirements.json, runtimeRequirements.markdown, harnessComponents, harness, qualityLineage, commitEvidence, pushEvidence, finalReport, blockerMatrix, debuggerReport?.overview, debuggerReport?.detail, traceFiles.runTrace, traceFiles.gateTrace, ...fixTaskFiles].filter((file): file is string => Boolean(file))
   };
 }
 

@@ -49,7 +49,7 @@ function readSessionSnapshot(file: string): OrchestratorSessionSnapshot {
   return JSON.parse(fs.readFileSync(file, "utf8")) as OrchestratorSessionSnapshot;
 }
 
-export function buildDispatchContracts(cwd: string, runId: string, runDir: string, orchestratorSessionFile: string): DispatchContract[] {
+export function buildDispatchContracts(runId: string, runDir: string, orchestratorSessionFile: string): DispatchContract[] {
   const session = readSessionSnapshot(orchestratorSessionFile);
   const actions = Array.isArray(session.next_actions) ? session.next_actions : [];
   const agentRuns = Array.isArray(session.agent_runs) ? session.agent_runs : [];
