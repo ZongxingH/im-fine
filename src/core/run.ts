@@ -380,6 +380,9 @@ You must:
 - use the current session's native subagent capability to dispatch independent agents
 - keep QA, Review, Committer, and Archive as separate roles
 - mark the run blocked if the current provider session cannot launch independent subagents
+- keep the current session as Orchestrator-only: do not directly edit role-owned artifacts such as planning/**, design/**, backend/**, frontend/**, tests/**, README.md, evidence/test-results.md, evidence/review.md, acceptance-matrix.json, final-gates.json, or non-orchestrator handoff files
+- convert QA or Reviewer findings into remediation dispatches; do not patch source code or tests from the Orchestrator session
+- record any required-scope deviation through agent-authored acceptance evidence before final gates
 
 Runtime will only materialize what you write in that file and will only perform deterministic backend actions.
 
@@ -394,6 +397,48 @@ Default commit policy: runtime may create local implementation commits after Com
     waiting_roles: [],
     last_completed_role: "runtime",
     updated_at: new Date().toISOString()
+  }, null, 2)}\n`, artifacts);
+  writeArtifact(path.join(runDir, "orchestration", "role-purity-policy.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    generated_by: "imfine-runtime",
+    status: "active",
+    orchestrator_write_allowlist: [
+      `.imfine/runs/${runId}/orchestration/**`,
+      `.imfine/runs/${runId}/agents/orchestrator/**`
+    ],
+    orchestrator_write_denylist: [
+      "planning/**",
+      "design/**",
+      "backend/**",
+      "frontend/**",
+      "src/**",
+      "tests/**",
+      "test/**",
+      "README.md",
+      "evidence/test-results.md",
+      "evidence/review.md",
+      "orchestration/acceptance-matrix.json",
+      "orchestration/final-gates.json",
+      "agents/<non-orchestrator>/**"
+    ],
+    required_rework_flow: [
+      "reviewer_or_qa_finding",
+      "orchestrator_remediation_dispatch",
+      "dev_fix_agent",
+      "qa_recheck_agent",
+      "reviewer_recheck_agent",
+      "fresh_final_gates"
+    ],
+    completion_required_flags: [
+      "spawned_agents",
+      "provider_receipts_closed",
+      "required_handoffs_present",
+      "orchestrator_role_purity",
+      "qa_reviewer_archive_gates_closed",
+      "deviations_closed",
+      "rework_dispatch_closed"
+    ]
   }, null, 2)}\n`, artifacts);
   assertTransitionAccepted(transitionRunState(cwd, runId, "designed", { designed_at: new Date().toISOString() }), `run ${runId} designed`);
 

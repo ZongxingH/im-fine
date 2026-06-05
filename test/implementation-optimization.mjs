@@ -372,10 +372,13 @@ for (const provider of ["codex", "claude"]) {
     outputPath: path.join(fixture.runDir, "agents", "T1", "handoff.json")
   });
   const positive = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
-  assert.equal(positive.true_harness_passed, true);
+  assert.equal(positive.true_harness_passed, false);
   assert.equal(positive.provider_execution_receipts.receipts[0].provider_agent_id, `${provider}-agent-real-T1`);
   assert.match(positive.provider_execution_receipts.receipts[0].output_path, /orchestration\/provider-outputs\/agent-dev-T1\.json$/);
   assert.deepEqual(positive.provider_execution_receipts.receipts[0].invalid_reasons, []);
+  assert.equal(positive.provider_execution_receipts.all_contracts_have_provider_receipt, true);
+  assert.equal(positive.role_purity.provider_receipts_closed, true);
+  assert.equal(positive.role_purity.qa_reviewer_archive_gates_closed, false);
   assert.ok(fs.existsSync(path.join(fixture.runDir, "orchestration", "method-provenance.json")));
   const provenance = JSON.parse(fs.readFileSync(path.join(fixture.runDir, "orchestration", "method-provenance.json"), "utf8"));
   assert.ok(provenance.sources.openspec_inspired.some((item) => item.artifact === "archive"));
@@ -387,8 +390,11 @@ for (const provider of ["codex", "claude"]) {
   const { cwd, runId } = fixture;
   writeHarnessFixture(fixture, { provider });
   const value = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
-  assert.equal(value.true_harness_passed, true);
+  assert.equal(value.true_harness_passed, false);
   assert.equal(value.provider_execution_receipts.valid_receipt_count, 1);
+  assert.equal(value.provider_execution_receipts.all_contracts_have_provider_receipt, true);
+  assert.equal(value.role_purity.provider_receipts_closed, true);
+  assert.equal(value.role_purity.qa_reviewer_archive_gates_closed, false);
   assert.equal(value.provider_execution_receipts.receipts[0].valid_native_subagent_proof, true);
   assert.equal(value.provider_execution_receipts.receipts[0].provider_agent_id, `${provider}-agent-real-T1`);
   assert.match(value.provider_execution_receipts.receipts[0].output_path, /orchestration\/provider-outputs\/agent-dev-T1\.json$/);
@@ -517,7 +523,9 @@ for (const provider of ["codex", "claude"]) {
   const value = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(value.provider_capability.subagent_supported, "supported");
   assert.equal(value.provider_capability.resolved_by_receipts, true);
-  assert.equal(value.true_harness_passed, true);
+  assert.equal(value.true_harness_passed, false);
+  assert.equal(value.role_purity.provider_receipts_closed, true);
+  assert.equal(value.role_purity.qa_reviewer_archive_gates_closed, false);
 }
 
 {

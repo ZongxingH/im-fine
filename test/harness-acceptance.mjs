@@ -230,6 +230,31 @@ function writeOrchestratorSession(runDir, runId) {
   }, null, 2)}\n`);
 }
 
+function writeAgentAcceptanceMatrix(runDir, runId) {
+  writeJson(path.join(runDir, "orchestration", "agent-acceptance-matrix.json"), {
+    schema_version: 1,
+    run_id: runId,
+    required_coverage_declared_complete: true,
+    items: [
+      {
+        id: "requested_change.implemented",
+        category: "implementation",
+        requirement_level: "required",
+        classification: "required",
+        status: "pass",
+        detail: "Requested change implemented and verified by QA/Reviewer handoffs.",
+        expected: "source and test update",
+        observed: "src/index.js and test/index.test.js updated",
+        accepted_by_review: true,
+        evidence: [
+          path.join(runDir, "agents", "qa-T1", "handoff.json"),
+          path.join(runDir, "agents", "reviewer-T1", "handoff.json")
+        ]
+      }
+    ]
+  });
+}
+
 function readWorktreePath(runDir, taskId) {
   const index = JSON.parse(fs.readFileSync(path.join(runDir, "worktrees", "index.json"), "utf8"));
   return index.tasks.find((task) => task.task_id === taskId).path;
@@ -371,6 +396,7 @@ const { project } = makeGitProject(`imfine-harness-${provider}-`);
 const created = JSON.parse(run(["run", "Implement the requested change", "--plan-only", "--json"], project));
 writeTaskGraph(created.runDir, created.runId);
 writeOrchestratorSession(created.runDir, created.runId);
+writeAgentAcceptanceMatrix(created.runDir, created.runId);
 
 let auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
 assert.equal(auto.status, "waiting_for_agent_output");

@@ -6,6 +6,7 @@ import { writeHarnessComponents } from "./harness-components.js";
 import { ingestOrchestratorSession } from "./orchestrator.js";
 import { writeQualityLineage } from "./quality-lineage.js";
 import { writeRuntimeRequirements } from "./runtime-requirements.js";
+import { readRolePurityAudit, writeRolePurityAudit } from "./role-purity.js";
 import { writeHarnessDebuggerReport } from "./harness-debugger.js";
 import { staleTrueHarnessEvidence, validateTrueHarnessEvidenceFiles, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { runCommand } from "./shell.js";
@@ -559,6 +560,23 @@ function acceptanceGate(file: string): ReconcileGate {
   return gate("acceptance_matrix", "runtime.acceptance-matrix", blocked.length === 0, blocked.length ? blocked.map((item) => item.id).join(", ") : file);
 }
 
+function rolePurityGate(cwd: string, runId: string): ReconcileGate {
+  let audit = readRolePurityAudit(cwd, runId);
+  const file = path.join(runDir(cwd, runId), "orchestration", "role-purity-audit.json");
+  if (!audit) {
+    writeRolePurityAudit(cwd, runId);
+    audit = readRolePurityAudit(cwd, runId);
+  }
+  if (!audit) throw new Error(`Missing role purity audit after write: ${file}`);
+  const violations = Array.isArray(audit.violations) ? audit.violations : [];
+  return gate(
+    "role_purity",
+    "runtime.role-purity",
+    audit.status === "pass",
+    audit.status === "pass" ? file : violations.map((item) => `${item.id || "violation"}: ${item.reason || "blocked"}`).join("; ") || file
+  );
+}
+
 interface StructuredBlocker {
   id: string;
   source: string;
@@ -937,6 +955,7 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
       : runtimeRequirements.result.checks.filter((item) => item.status === "blocked").map((item) => `${item.id}: ${item.detail}`).join("; "),
     outputArtifacts: [runtimeRequirements.json, runtimeRequirements.markdown]
   });
+  writeRolePurityAudit(cwd, runId);
   const harnessFiles = writeTrueHarnessEvidence(cwd, runId);
   appendRuntimeTraceEvent(cwd, runId, {
     source: "runtime.reconcile",
@@ -972,6 +991,7 @@ export function finalizeRun(cwd: string, runId: string): ReconcileResult {
     archiveGate(dir),
     acceptanceGate(acceptance),
     gate("true_harness", "runtime.true-harness-evidence", harnessPayload.true_harness_passed === true && harnessConsistency.passed, harnessConsistency.passed ? harness : harnessConsistency.errors.join("; ")),
+    rolePurityGate(cwd, runId),
     orchestratorRuntimeConsistencyGate(dir, runMetadata.status, harness),
     projectKnowledgeGate(cwd)
   ];

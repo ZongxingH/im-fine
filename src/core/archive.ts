@@ -9,6 +9,7 @@ import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph } from "./plan.js";
 import { writeRuntimeRequirements } from "./runtime-requirements.js";
 import { readSandboxVerification } from "./sandbox-runner.js";
+import { readRolePurityAudit, writeRolePurityAudit } from "./role-purity.js";
 import { assertTransitionAccepted, transitionRunState } from "./state-machine.js";
 import { validateTrueHarnessEvidenceFiles, writePreArchiveHarnessEvidence, writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { writeCapabilityTrace, writeRunTraceIndex } from "./trace.js";
@@ -368,6 +369,24 @@ function preArchiveHarnessCheck(file: string): ArchiveCheck {
   };
 }
 
+function rolePurityCheck(cwd: string, runId: string): ArchiveCheck {
+  let audit = readRolePurityAudit(cwd, runId);
+  const file = path.join(runDir(cwd, runId), "orchestration", "role-purity-audit.json");
+  if (!audit) {
+    writeRolePurityAudit(cwd, runId);
+    audit = readRolePurityAudit(cwd, runId);
+  }
+  if (!audit) throw new Error(`Missing role purity audit after write: ${file}`);
+  const violations = Array.isArray(audit.violations) ? audit.violations : [];
+  return {
+    id: "role-purity",
+    status: audit.status === "pass" ? "pass" : "fail",
+    detail: audit.status === "pass"
+      ? file
+      : violations.map((item) => `${item.id || "violation"}: ${item.reason || "blocked"}`).join("; ") || file
+  };
+}
+
 function runLevelGateChecks(cwd: string, runId: string): ArchiveCheck[] {
   const dir = runDir(cwd, runId);
   const committer = validateAgentHandoff({ id: "committer", role: "committer" }, dir, runId);
@@ -515,6 +534,7 @@ function writeDerivedFinalGates(cwd: string, runId: string, status: ArchiveStatu
   const checkStatus = (id: string) => checks.find((check) => check.id === id)?.status === "pass";
   const allTaskChecksPassed = checks.filter((check) => check.id.startsWith("task.")).every((check) => check.status === "pass");
   const dispatchPassed = checkStatus("true-harness-evidence");
+  const rolePurityPassed = checkStatus("role-purity");
   const qaPassed = checkStatus("test-results") && checkStatus("quality.qa") && checks.filter((check) => check.id.endsWith(".qa") || check.id.endsWith(".qa_handoff") || check.id.endsWith(".qa_gate")).every((check) => check.status === "pass");
   const reviewPassed = checkStatus("review") && checkStatus("quality.review") && checks.filter((check) => check.id.endsWith(".review") || check.id.endsWith(".review_handoff") || check.id.endsWith(".review_gate")).every((check) => check.status === "pass");
   const runtimeRequirementsPassed = checkStatus("run-level.runtime-requirements");
@@ -533,6 +553,7 @@ function writeDerivedFinalGates(cwd: string, runId: string, status: ArchiveStatu
     push: pushPassed ? "pass" : "blocked",
     archive: archivePassed ? "pass" : "blocked",
     true_harness: checkStatus("true-harness-evidence") ? "pass" : "blocked",
+    role_purity: rolePurityPassed ? "pass" : "blocked",
     project_knowledge: projectKnowledgePassed ? "pass" : "blocked"
   };
   writeText(file, `${JSON.stringify({
@@ -878,9 +899,10 @@ export function archiveRun(cwd: string, runId: string, options: ArchiveRunOption
   if (status === "completed" && options.archiveAction) {
     recordActionStatus(cwd, runId, options.archiveAction.id, "completed", "archive finalize evidence prepared", [archiveReport, userReport]);
   }
+  writeRolePurityAudit(cwd, runId);
   writeTrueHarnessEvidence(cwd, runId);
 
-  const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), trueHarnessCheck(cwd, runId)];
+  const checks = [...baseChecks, ...runLevelArchiveGateChecks(cwd, runId), rolePurityCheck(cwd, runId), trueHarnessCheck(cwd, runId)];
   appendRuntimeTraceEvents(cwd, runId, checks.map((check) => ({
     source: "runtime.archive",
     componentId: componentForArchiveCheck(check.id),

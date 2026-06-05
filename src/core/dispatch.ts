@@ -24,6 +24,12 @@ export interface DispatchContract {
   handoff_schema: string;
   role_required_evidence: string[];
   allowed_transitions: string[];
+  close_preconditions: string[];
+  role_purity_policy: {
+    orchestrator_may_author_outputs: false;
+    required_author_role: string;
+    provider_origin_receipt_required: boolean;
+  };
   parallel_group: string;
   ready_reason?: string;
   blocked_reason?: string;
@@ -92,6 +98,17 @@ export function buildDispatchContracts(runId: string, runDir: string, orchestrat
       handoff_schema: handoffSchemaForRole(agent.role),
       role_required_evidence: evidenceRequirementsForRole(agent.role),
       allowed_transitions: allowedTransitionsForRole(agent.role),
+      close_preconditions: [
+        "expected handoff exists and validates",
+        "provider-origin receipt exists and validates",
+        "outputs are authored inside declared write_scope",
+        "QA/Reviewer findings use rework dispatch before final gates"
+      ],
+      role_purity_policy: {
+        orchestrator_may_author_outputs: false,
+        required_author_role: agent.role,
+        provider_origin_receipt_required: true
+      },
       parallel_group: agent.parallelGroup,
       ready_reason: action?.status === "ready" ? action.reason : undefined,
       blocked_reason: action?.status === "blocked" ? action.reason : undefined
@@ -120,6 +137,14 @@ export function buildDispatchContracts(runId: string, runDir: string, orchestrat
       handoff_schema: "runtime-action-ledger",
       role_required_evidence: action.outputs,
       allowed_transitions: [],
+      close_preconditions: [
+        "runtime action ledger records completed status"
+      ],
+      role_purity_policy: {
+        orchestrator_may_author_outputs: false,
+        required_author_role: "runtime",
+        provider_origin_receipt_required: false
+      },
       parallel_group: action.parallelGroup,
       ready_reason: action.status === "ready" ? action.reason : undefined,
       blocked_reason: action.status === "blocked" ? action.reason : undefined
@@ -151,6 +176,17 @@ export function buildDispatchContracts(runId: string, runDir: string, orchestrat
         handoff_schema: handoffSchemaForRole(action.role),
         role_required_evidence: evidenceRequirementsForRole(action.role),
         allowed_transitions: allowedTransitionsForRole(action.role),
+        close_preconditions: [
+          "expected handoff exists and validates",
+          "provider-origin receipt exists and validates",
+          "outputs are authored inside declared write_scope",
+          "QA/Reviewer findings use rework dispatch before final gates"
+        ],
+        role_purity_policy: {
+          orchestrator_may_author_outputs: false,
+          required_author_role: action.role,
+          provider_origin_receipt_required: true
+        },
         parallel_group: action.parallelGroup,
         ready_reason: action.status === "ready" ? action.reason : undefined,
         blocked_reason: action.status === "blocked" ? action.reason : undefined

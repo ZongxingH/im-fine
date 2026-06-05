@@ -17,6 +17,7 @@ const REQUIRED_FINAL_GATES = [
   "push",
   "archive",
   "true_harness",
+  "role_purity",
   "project_knowledge"
 ];
 

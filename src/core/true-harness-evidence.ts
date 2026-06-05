@@ -6,6 +6,7 @@ import { validateAgentHandoff } from "./handoff-evidence.js";
 import { readQualityLineage, writeQualityLineage } from "./quality-lineage.js";
 import { providerObservations } from "./provider-observation.js";
 import { providerReceipts, receiptProvesNativeSubagent, resolveProviderCapabilityFromReceipts, validateProviderReceipt } from "./provider-evidence.js";
+import { writeRolePurityAudit } from "./role-purity.js";
 import { skillEvidenceRequirements } from "./skill-registry.js";
 import { appendRuntimeTraceEvent, latestTraceSourceForArtifact } from "./trace-events.js";
 
@@ -135,6 +136,7 @@ function sourceArtifacts(cwd: string, runDirPath: string): SourceArtifactRecord[
     ["acceptance_matrix", path.join(orchestration, "acceptance-matrix.json")],
     ["runtime_requirements", path.join(orchestration, "runtime-requirements.json")],
     ["sandbox_verification", path.join(orchestration, "sandbox-verification.json")],
+    ["role_purity_audit", path.join(orchestration, "role-purity-audit.json")],
     ["final_gates", path.join(orchestration, "final-gates.json")],
     ["qa_evidence", path.join(runDirPath, "evidence", "test-results.md")],
     ["review_evidence", path.join(runDirPath, "evidence", "review.md")],
@@ -360,6 +362,19 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
   const handoffs = collectHandoffs(runDirPath, cwd);
   const qualityLineageFile = writeQualityLineage(cwd, runId);
   const qualityLineage = readQualityLineage(cwd, runId);
+  const rolePurityFile = writeRolePurityAudit(cwd, runId);
+  const rolePurity = readJson<{
+    status?: string;
+    orchestrator_role_purity?: string;
+    spawned_agents?: boolean;
+    provider_receipts_closed?: boolean;
+    required_handoffs_present?: boolean;
+    qa_reviewer_archive_gates_closed?: boolean;
+    deviations_closed?: boolean;
+    rework_dispatch_closed?: boolean;
+    agent_close_safe?: boolean;
+    violations?: unknown[];
+  }>(rolePurityFile);
   const handoffEvidenceFiles = handoffs.flatMap((handoff) => handoff.evidence);
   const taskStatusValues = taskStatuses(runDirPath);
   const graphTaskIds = taskIds(runDirPath);
@@ -462,7 +477,8 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
     && allRuntimeContractsCompleted
     && hasHandoffChain
     && allContractHandoffsPassed
-    && allSkillEvidencePassed;
+    && allSkillEvidencePassed
+    && rolePurity.status === "pass";
 
   const payload = {
     schema_version: 1,
@@ -516,6 +532,20 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
         integrity_output_sha256: receipt.integrity?.output_sha256 || null,
         invalid_reasons: validationByAction.get(receipt.action_id)?.reasons || []
       }))
+    },
+    role_purity: {
+      file: rel(cwd, rolePurityFile),
+      status: rolePurity.status || "blocked",
+      spawned_agents: rolePurity.spawned_agents === true,
+      provider_receipts_closed: rolePurity.provider_receipts_closed === true,
+      required_handoffs_present: rolePurity.required_handoffs_present === true,
+      orchestrator_role_purity: rolePurity.orchestrator_role_purity || "fail",
+      qa_reviewer_archive_gates_closed: rolePurity.qa_reviewer_archive_gates_closed === true,
+      deviations_closed: rolePurity.deviations_closed === true,
+      rework_dispatch_closed: rolePurity.rework_dispatch_closed === true,
+      agent_close_safe: rolePurity.agent_close_safe === true,
+      violation_count: Array.isArray(rolePurity.violations) ? rolePurity.violations.length : 0,
+      violations: Array.isArray(rolePurity.violations) ? rolePurity.violations : []
     },
     provider_observations: {
       present: observations.length > 0,
@@ -675,6 +705,20 @@ export function writeTrueHarnessEvidence(cwd: string, runId: string): TrueHarnes
 - observed native agents: ${payload.provider_observations.observed_native_agents.length > 0 ? payload.provider_observations.observed_native_agents.join(", ") : "none"}
 - verified native agent receipts: ${payload.provider_execution_receipts.valid_receipt_count}
 - provider observations boundary: ${payload.provider_observations.proof_boundary}
+
+## Role Purity
+
+- file: ${payload.role_purity.file}
+- status: ${payload.role_purity.status}
+- spawned agents: ${payload.role_purity.spawned_agents ? "yes" : "no"}
+- provider receipts closed: ${payload.role_purity.provider_receipts_closed ? "yes" : "no"}
+- required handoffs present: ${payload.role_purity.required_handoffs_present ? "yes" : "no"}
+- orchestrator role purity: ${payload.role_purity.orchestrator_role_purity}
+- QA/Reviewer/Archive gates closed: ${payload.role_purity.qa_reviewer_archive_gates_closed ? "yes" : "no"}
+- deviations closed: ${payload.role_purity.deviations_closed ? "yes" : "no"}
+- rework dispatch closed: ${payload.role_purity.rework_dispatch_closed ? "yes" : "no"}
+- agent close safe: ${payload.role_purity.agent_close_safe ? "yes" : "no"}
+- violation count: ${payload.role_purity.violation_count}
 
 ## Skill Evidence Contracts
 
