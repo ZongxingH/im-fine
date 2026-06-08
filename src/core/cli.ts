@@ -3,7 +3,7 @@ import { recordProviderOriginAgentCompletion } from "./agent-complete.js";
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
 import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
-import { formatArchive, formatAutoOrchestrator, formatCommit, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReview, formatStatus, formatVerification, formatWorktreePrepare } from "./format.js";
+import { formatArchive, formatAutoOrchestrator, formatCommit, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReportDemoSummary, formatReview, formatStatus, formatVerification, formatWorktreePrepare, type StatusFormatView } from "./format.js";
 import { commitRun, commitTask, pushRun, type CommitMode } from "./gitflow.js";
 import { initProject } from "./init.js";
 import { install } from "./install.js";
@@ -26,10 +26,12 @@ Usage:
   npx github:<owner>/<repo> install [--target codex|claude|all] [--lang zh|en] [--dry-run] [--json]
   ${program} init [--cwd path] [--json]
   ${program} run <requirement text|requirement-file> [--plan-only] [--new] [--max-iterations n] [--cwd path] [--json]
-  ${program} status [--cwd path] [--json]
+  ${program} status [--cwd path] [--story|--debug] [--json]
+  ${program} report <run-id> [--demo-summary|--debug] [--cwd path] [--json]
   ${program} help
 
-Public slash-command surface is intentionally limited to init, run, and status.
+Public slash-command surface is intentionally limited to init, run, and status; report --demo-summary is a read-only runtime demo view.
+Default text output is a demo-oriented harness summary. Use --debug or --json for full runtime paths and deterministic evidence details.
 All planning materialization, orchestration, QA, review, commit, push, archive, recovery, and agent-dispatch commands remain internal runtime actions.
 Outside init-time environment inspection and deterministic runtime materialization, delivery work is expected to be handled by the current session's Orchestrator launching independent native subagents with model-led multi-role multi-agent + skill execution.
 Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables Chinese /imfine entries for both Codex and Claude.
@@ -58,6 +60,12 @@ function parseMaxIterations(value: string | undefined): number {
   const parsed = Number.parseInt(value, 10);
   if (Number.isNaN(parsed) || parsed <= 0) throw new Error("Invalid --max-iterations. Expected a positive integer.");
   return parsed;
+}
+
+function statusView(args: ReturnType<typeof parseArgs>): StatusFormatView {
+  if (readBooleanFlag(args, "debug") || readBooleanFlag(args, "verbose")) return "debug";
+  if (readBooleanFlag(args, "story") || readBooleanFlag(args, "demoSummary")) return "story";
+  return "summary";
 }
 
 function print(value: unknown, json: boolean, textFormatter: () => string): void {
@@ -152,7 +160,8 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       return;
     }
 
-    if (isInternalCommand(command) && !internalInvocationAllowed()) {
+    const readonlyDemoReport = command === "report" && readBooleanFlag(args, "demoSummary") && !readBooleanFlag(args, "debug");
+    if (isInternalCommand(command) && !readonlyDemoReport && !internalInvocationAllowed()) {
       throw new Error(`${command} is an internal runtime action. Use /imfine init, /imfine run, or /imfine status from the public workflow.`);
     }
 
@@ -334,7 +343,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
 
     if (command === "status") {
       const result = status(cwd);
-      print(result, json, () => formatStatus(result));
+      print(result, json, () => formatStatus(result, statusView(args)));
       return;
     }
 
@@ -342,7 +351,9 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       const runId = args.positional[1];
       if (!runId) throw new Error("Missing <run-id>.");
       const result = readReport(cwd, runId);
-      print(result, json, () => formatReport(result));
+      print(result, json, () => readBooleanFlag(args, "demoSummary") && !readBooleanFlag(args, "debug")
+        ? formatReportDemoSummary(result, status(cwd, runId))
+        : formatReport(result));
       return;
     }
 

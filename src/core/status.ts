@@ -465,10 +465,10 @@ function runConsistency(runRoot: string, runStatus: string | null, gates: Record
   return "consistent";
 }
 
-export function status(cwd: string): StatusResult {
+export function status(cwd: string, selectedRunId?: string): StatusResult {
   const workspace = path.join(cwd, ".imfine");
   const currentFile = path.join(workspace, "state", "current.json");
-  let currentRunId: string | null = null;
+  let currentRunId: string | null = selectedRunId || null;
   let currentRunStatus: string | null = null;
   let currentRunExecutionMode: string | null = null;
   let currentRunBranch: string | null = null;
@@ -491,7 +491,7 @@ export function status(cwd: string): StatusResult {
   let currentRunBlockers: StatusResult["currentRunBlockers"] = null;
   let currentRunLatestCheckpoint: StatusResult["currentRunLatestCheckpoint"] = null;
 
-  if (fs.existsSync(currentFile)) {
+  if (!selectedRunId && fs.existsSync(currentFile)) {
     try {
       const parsed = JSON.parse(fs.readFileSync(currentFile, "utf8")) as { current_run_id?: unknown };
       currentRunId = typeof parsed.current_run_id === "string" ? parsed.current_run_id : null;

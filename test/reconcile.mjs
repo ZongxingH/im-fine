@@ -439,6 +439,12 @@ function writeQualityHandoff(runDir, agentId, payload) {
   assert.ok(blockerTasks.length >= 3);
   const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
   assert.match(finalReport, /^# Blocked Archive Report/);
+  assert.match(finalReport, /## Evidence Origin/);
+  assert.match(finalReport, /Agent-authored:/);
+  assert.match(finalReport, /Runtime-derived:/);
+  assert.match(finalReport, /## Gate Phase/);
+  assert.match(finalReport, /\[gate:role-purity\] role purity:/);
+  assert.match(finalReport, /\[gate:final-gates\] final gates:/);
   assert.match(finalReport, /## Required/);
   assert.match(finalReport, /## Demo Substitute/);
   assert.match(finalReport, /QA\/Review accepted=no/);
@@ -774,6 +780,9 @@ function writeQualityHandoff(runDir, agentId, payload) {
   assert.equal(gates.orchestrator_runtime_consistency, "pass");
   const finalReport = fs.readFileSync(path.join(runDir, "archive", "final-report.md"), "utf8");
   assert.match(finalReport, /^# Final Archive Report/);
+  assert.match(finalReport, /## Evidence Origin/);
+  assert.match(finalReport, /## Gate Phase/);
+  assert.match(finalReport, /\[gate:final-gates\] final gates: pass/);
   const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
   assert.equal(freshness.status, "fresh");
 }

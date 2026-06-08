@@ -780,6 +780,29 @@ function writeBlockerMatrix(cwd: string, runId: string, gates: ReconcileGate[], 
   return file;
 }
 
+function agentHandoffEvidence(dir: string): string[] {
+  const agentsDir = path.join(dir, "agents");
+  if (!fs.existsSync(agentsDir)) return [];
+  return fs.readdirSync(agentsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(agentsDir, entry.name, "handoff.json"))
+    .filter((file) => fs.existsSync(file))
+    .sort();
+}
+
+function gatePhaseReportLines(gates: ReconcileGate[]): string {
+  const byId = new Map(gates.map((gateItem) => [gateItem.id, gateItem.status]));
+  const phase = [
+    { id: "planning", label: "planning", status: byId.get("planning") },
+    { id: "dispatch", label: "dispatch", status: byId.get("dispatch") },
+    { id: "quality-lineage", label: "quality lineage", status: ["qa", "review", "recheck_fix_loop"].every((id) => byId.get(id) === "pass") ? "pass" : "blocked" },
+    { id: "role-purity", label: "role purity", status: byId.get("role_purity") },
+    { id: "true-harness", label: "true harness evidence", status: byId.get("true_harness") },
+    { id: "final-gates", label: "final gates", status: gates.every((gateItem) => gateItem.status === "pass") ? "pass" : "blocked" }
+  ];
+  return phase.map((item, index) => `${index + 1}. [gate:${item.id}] ${item.label}: ${item.status || "not ready"}`).join("\n");
+}
+
 function writeFinalReport(cwd: string, runId: string, status: ReconcileResult["status"], gates: ReconcileGate[], acceptanceFile: string, structuredBlockers: StructuredBlocker[], blockerMatrix: string): string {
   const dir = runDir(cwd, runId);
   const reportDir = path.join(dir, "archive");
@@ -804,12 +827,13 @@ function writeFinalReport(cwd: string, runId: string, status: ReconcileResult["s
   const negotiable = items.filter((item) => item.requirement_level === "negotiable");
   const substitutions = items.filter((item) => item.classification === "demo-substitute");
   const deviations = items.filter((item) => item.classification === "deviation" || item.status === "blocked");
+  const handoffs = agentHandoffEvidence(dir);
   const renderItems = (values: AcceptanceItem[]) => values.length > 0
     ? values.map((item) => `- ${item.id}: ${item.status}; classification=${item.classification}; expected=${item.expected}; observed=${item.observed}; QA/Review accepted=${item.accepted_by_review ? "yes" : "no"}`).join("\n")
     : "- none";
   const title = status === "completed" ? "Final Archive Report" : "Blocked Archive Report";
   const runtimeRequirements = path.join(dir, "orchestration", "runtime-requirements.json");
-  writeText(report, `# ${title}\n\n- run: ${runId}\n- status: ${status}\n- blocker matrix: ${blockerMatrix}\n\n## Runtime Requirements\n\n- runtime requirements: ${fs.existsSync(runtimeRequirements) ? runtimeRequirements : "missing"}\n\n## Commit Trace\n\n- commit hashes: ${commitHashes.length > 0 ? commitHashes.join(", ") : "missing"}\n- final head: ${run.final_head || "missing"}\n- push status: ${run.push_status || "missing"}\n\n## Gates\n\n${gates.map((item) => `- ${item.id}: ${item.status} (${item.detail})`).join("\n")}\n\n## Required\n\n${renderItems(required)}\n\n## Negotiable\n\n${renderItems(negotiable)}\n\n## Demo Substitute\n\n${renderItems(substitutions)}\n\n## Deviation\n\n${renderItems(deviations)}\n\n## QA Review Acceptance\n\n${items.length > 0 ? items.map((item) => `- ${item.id}: ${item.accepted_by_review ? "accepted" : "not accepted"}`).join("\n") : "- none"}\n\n## Structured Blockers\n\n${structuredBlockers.length > 0 ? structuredBlockers.map((blocker) => `- ${blocker.id}: owner=${blocker.owner}; evidence=${blocker.required_evidence.join(", ")}; close=${blocker.review_close_action}; summary=${blocker.summary}`).join("\n") : "- none"}\n`);
+  writeText(report, `# ${title}\n\n- run: ${runId}\n- status: ${status}\n- blocker matrix: ${blockerMatrix}\n\n## Evidence Origin\n\nAgent-authored:\n${handoffs.length > 0 ? handoffs.map((file) => `- ${file}`).join("\n") : "- none"}\n\nRuntime-derived:\n- ${path.join(dir, "orchestration", "dispatch-contracts.json")}\n- ${path.join(dir, "orchestration", "provider-receipts")}\n- ${path.join(dir, "orchestration", "true-harness-evidence.json")}\n- ${path.join(dir, "orchestration", "final-gates.json")}\n- ${runtimeRequirements}\n\n## Gate Phase\n\n${gatePhaseReportLines(gates)}\n\n## Runtime Requirements\n\n- runtime requirements: ${fs.existsSync(runtimeRequirements) ? runtimeRequirements : "missing"}\n\n## Commit Trace\n\n- commit hashes: ${commitHashes.length > 0 ? commitHashes.join(", ") : "missing"}\n- final head: ${run.final_head || "missing"}\n- push status: ${run.push_status || "missing"}\n\n## Gates\n\n${gates.map((item) => `- [gate:${item.id}] ${item.id}: ${item.status} (${item.detail})`).join("\n")}\n\n## Required\n\n${renderItems(required)}\n\n## Negotiable\n\n${renderItems(negotiable)}\n\n## Demo Substitute\n\n${renderItems(substitutions)}\n\n## Deviation\n\n${renderItems(deviations)}\n\n## QA Review Acceptance\n\n${items.length > 0 ? items.map((item) => `- ${item.id}: ${item.accepted_by_review ? "accepted" : "not accepted"}`).join("\n") : "- none"}\n\n## Structured Blockers\n\n${structuredBlockers.length > 0 ? structuredBlockers.map((blocker) => `- ${blocker.id}: owner=${blocker.owner}; evidence=${blocker.required_evidence.join(", ")}; close=${blocker.review_close_action}; summary=${blocker.summary}`).join("\n") : "- none"}\n`);
   return report;
 }
 

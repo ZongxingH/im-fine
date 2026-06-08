@@ -13,6 +13,8 @@ import type { SessionSummarizedAutoOrchestratorResult, SessionSummarizedOrchestr
 import type { ReportResult, StatusResult } from "./status.js";
 import type { PatchCollectResult, PatchValidationResult, WorktreePrepareResult } from "./worktree.js";
 
+export type StatusFormatView = "summary" | "story" | "debug";
+
 export function formatDoctor(report: DoctorReport): string {
   const lines = [
     `imfine doctor: ${report.cwd}`,
@@ -70,7 +72,168 @@ export function formatInstall(result: InstallResult): string {
   return `${lines.join("\n")}\n`;
 }
 
-export function formatStatus(result: StatusResult): string {
+function compactGateLines(result: StatusResult): string[] {
+  const gates = result.currentRunGates || {};
+  const receipts = result.currentRunProviderReceipts;
+  const dispatch = result.currentRunDispatch;
+  const handoffCount = result.currentRunAgentNameMap?.mappings.filter((item) => item.handoffPath).length || 0;
+  const receiptLine = receipts
+    ? `${receipts.validReceiptCount}/${Math.max(receipts.validReceiptCount + receipts.missingProviderReceiptActionIds.length, receipts.receiptCount)}`
+    : "none";
+  return [
+    `- [gate:planning] planning: ${gates.planning || "not ready"}`,
+    `- [gate:dispatch] dispatch: ${gates.dispatch || (dispatch ? dispatch.missingCompletedWaveActionIds.length === 0 ? "pass" : "blocked" : "not ready")}`,
+    `- [gate:provider-receipts] provider receipts: ${receiptLine}`,
+    `- [gate:handoffs] handoffs: ${handoffCount}`,
+    `- [gate:role-purity] role purity: ${gates.role_purity || "not ready"}`,
+    `- [gate:qa] QA: ${gates.qa || result.currentRunQualityLineage?.qa || "not ready"}`,
+    `- [gate:review] review: ${gates.review || result.currentRunQualityLineage?.review || "not ready"}`,
+    `- [gate:archive] archive: ${gates.archive || "not ready"}`,
+    `- [gate:true-harness] true harness: ${gates.true_harness || result.currentRunTrueHarnessFreshness?.status || "not ready"}`
+  ];
+}
+
+function gatePhaseLines(result: StatusResult): string[] {
+  const gates = result.currentRunGates || null;
+  const standardEvidence = result.currentRunStandardEvidence
+    ? result.currentRunStandardEvidence.missing.length === 0 ? "pass" : "blocked"
+    : "not ready";
+  const qualityLineage = result.currentRunQualityLineage
+    ? [result.currentRunQualityLineage.qa, result.currentRunQualityLineage.review, result.currentRunQualityLineage.recheckFixLoop].every((status) => status === "pass") ? "pass" : "blocked"
+    : "not ready";
+  const finalGates = gates
+    ? Object.values(gates).every((status) => status === "pass") ? "pass" : "blocked"
+    : "not ready";
+  return [
+    `1. [runtime] collect standard evidence: ${standardEvidence}`,
+    `2. [runtime] quality lineage: ${qualityLineage}`,
+    `3. [gate:role-purity] role purity: ${gates?.role_purity || "not ready"}`,
+    `4. [gate:true-harness] true harness evidence: ${gates?.true_harness || result.currentRunTrueHarnessFreshness?.status || "not ready"}`,
+    `5. [gate:final-gates] final gates: ${finalGates}`
+  ];
+}
+
+function agentAuthoredEvidence(result: StatusResult): string[] {
+  const fromMap = result.currentRunAgentNameMap?.mappings
+    .map((item) => item.handoffPath)
+    .filter((item): item is string => Boolean(item)) || [];
+  const quality = result.currentRunQualityLineage?.latest
+    .map((item) => item.latestHandoff)
+    .filter((item): item is string => Boolean(item)) || [];
+  return Array.from(new Set([...fromMap, ...quality])).sort();
+}
+
+function runtimeDerivedEvidence(result: StatusResult): string[] {
+  const entries = [
+    result.currentRunDispatch
+      ? `dispatch contracts: ${result.currentRunDispatch.missingCompletedWaveActionIds.length === 0 ? "pass" : "blocked"}`
+      : "",
+    result.currentRunProviderReceipts
+      ? `provider receipts: ${result.currentRunProviderReceipts.validReceiptCount}/${Math.max(result.currentRunProviderReceipts.validReceiptCount + result.currentRunProviderReceipts.missingProviderReceiptActionIds.length, result.currentRunProviderReceipts.receiptCount)}`
+      : "",
+    result.currentRunTrueHarnessFreshness ? `true harness evidence: ${result.currentRunTrueHarnessFreshness.status}` : "",
+    result.currentRunGates
+      ? `final gates: ${Object.values(result.currentRunGates).every((status) => status === "pass") ? "pass" : "blocked"}`
+      : "",
+    result.currentRunRuntimeRequirements ? `runtime requirements: ${result.currentRunRuntimeRequirements.status}` : "",
+    result.currentRunSandboxVerification?.present ? `sandbox verification: ${result.currentRunSandboxVerification.status}` : "",
+    result.currentRunHarnessComponents ? `harness components: ${result.currentRunHarnessComponents.componentCount}` : ""
+  ].filter((item) => item.length > 0);
+  return Array.from(new Set(entries));
+}
+
+function blockingReason(result: StatusResult): string {
+  if (result.currentRunNextOwner && result.currentRunNextOwner.reason !== "no blocking next action detected") {
+    return `${result.currentRunNextOwner.owner}: ${result.currentRunNextOwner.reason}`;
+  }
+  if (result.currentRunBlockers && result.currentRunBlockers.status !== "clear") {
+    return `${result.currentRunBlockers.items} blocker(s); ${result.currentRunBlockers.nextAction || "see blocker summary"}`;
+  }
+  return "none";
+}
+
+function nextAction(result: StatusResult): string {
+  if (result.currentRunNextOwner && result.currentRunNextOwner.reason !== "no blocking next action detected") {
+    return `${result.currentRunNextOwner.owner} next action: ${result.currentRunNextOwner.reason}`;
+  }
+  if (result.currentRunActions) {
+    if (result.currentRunActions.ready > 0) return `orchestrator dispatches ${result.currentRunActions.ready} ready action(s)`;
+    if (result.currentRunActions.waiting > 0) return "waiting for provider-origin agent handoff";
+    if (result.currentRunActions.blocked > 0) return "blocked actions need replan or remediation dispatch";
+  }
+  return result.currentRunStatus === "completed" ? "archive complete" : "none";
+}
+
+function formatStatusSummary(result: StatusResult): string {
+  const agentEvidence = agentAuthoredEvidence(result);
+  const runtimeEvidence = runtimeDerivedEvidence(result);
+  return [
+    "[runtime] context materialized",
+    `Run: ${result.currentRunId || "none"}`,
+    `State: ${result.currentRunStatus || "none"}`,
+    `Execution: ${result.currentRunExecutionMode || "none"}`,
+    "",
+    "Evidence Origin",
+    "Agent-authored:",
+    ...(agentEvidence.length > 0 ? agentEvidence.map((item) => `- ${item}`) : ["- none"]),
+    "",
+    "Runtime-derived:",
+    ...(runtimeEvidence.length > 0 ? runtimeEvidence.map((item) => `- ${item}`) : ["- none"]),
+    "",
+    "Gate phase:",
+    ...gatePhaseLines(result),
+    "",
+    "Gates:",
+    ...compactGateLines(result),
+    "",
+    "Blocked:",
+    `- ${blockingReason(result)}`,
+    "",
+    "Next:",
+    `- ${nextAction(result)}`,
+    ""
+  ].join("\n");
+}
+
+function formatStatusStory(result: StatusResult): string {
+  const actions = result.currentRunActions;
+  const receipts = result.currentRunProviderReceipts;
+  const currentWave = actions
+    ? [
+      `- ready: ${actions.ready}`,
+      `- waiting: ${actions.waiting}`,
+      `- blocked: ${actions.blocked}`,
+      `- groups: ${actions.currentParallelGroups.join(",") || "none"}`
+    ]
+    : ["- none"];
+  return [
+    `Run: ${result.currentRunId || "none"}`,
+    `State: ${result.currentRunStatus || "none"}`,
+    "",
+    "Current wave:",
+    ...currentWave,
+    "",
+    "Evidence:",
+    `- provider receipts: ${receipts ? `${receipts.validReceiptCount}/${Math.max(receipts.validReceiptCount + receipts.missingProviderReceiptActionIds.length, receipts.receiptCount)}` : "none"}`,
+    `- handoffs: ${agentAuthoredEvidence(result).length}`,
+    `- role purity: ${result.currentRunGates?.role_purity || "not ready"}`,
+    "",
+    "Gate phase:",
+    ...gatePhaseLines(result),
+    "",
+    "Gates:",
+    ...compactGateLines(result),
+    "",
+    "Blocked:",
+    `- ${blockingReason(result)}`,
+    "",
+    "Next:",
+    `- ${nextAction(result)}`,
+    ""
+  ].join("\n");
+}
+
+function formatStatusDebug(result: StatusResult): string {
   const gates = result.currentRunGates
     ? Object.entries(result.currentRunGates).map(([key, value]) => `${key}=${value}`).join(", ")
     : "none";
@@ -154,6 +317,12 @@ export function formatStatus(result: StatusResult): string {
   ].join("\n");
 }
 
+export function formatStatus(result: StatusResult, view: StatusFormatView = "summary"): string {
+  if (view === "debug") return formatStatusDebug(result);
+  if (view === "story") return formatStatusStory(result);
+  return formatStatusSummary(result);
+}
+
 export function formatReport(result: ReportResult): string {
   if (!result.exists) {
     return `report not found: ${result.file}\n`;
@@ -161,17 +330,41 @@ export function formatReport(result: ReportResult): string {
   return result.content || "";
 }
 
+export function formatReportDemoSummary(result: ReportResult, statusResult: StatusResult): string {
+  if (!result.exists) return `report not found: ${result.file}\n`;
+  const title = (result.content || "").split("\n").find((line) => line.startsWith("# "))?.replace(/^#\s+/, "") || "Report";
+  return [
+    `[runtime] report summarized for demo`,
+    `Run: ${result.runId}`,
+    `Report: ${title}`,
+    "",
+    "Evidence Origin",
+    "Agent-authored:",
+    ...(agentAuthoredEvidence(statusResult).length > 0 ? agentAuthoredEvidence(statusResult).map((item) => `- ${item}`) : ["- see archive report"]),
+    "",
+    "Runtime-derived:",
+    ...(runtimeDerivedEvidence(statusResult).length > 0 ? runtimeDerivedEvidence(statusResult).map((item) => `- ${item}`) : ["- final report"]),
+    "",
+    "Gate phase:",
+    ...gatePhaseLines(statusResult),
+    "",
+    "Gates:",
+    ...compactGateLines(statusResult),
+    "",
+    "Blocked:",
+    `- ${blockingReason(statusResult)}`,
+    ""
+  ].join("\n");
+}
+
 export function formatDeliveryRun(result: DeliveryRunResult): string {
   return [
-    `created imfine run: ${result.runId}`,
-    `status: ${result.status}`,
-    `execution mode: ${result.executionMode}`,
-    `project kind: ${result.projectKind}`,
-    `run dir: ${result.runDir}`,
-    `orchestrator input: ${result.runDir}/orchestration/orchestrator-input.md`,
-    `orchestrator session: ${result.runDir}/orchestration/orchestrator-session.json`,
-    `dispatch mode: current session orchestrator must launch independent native subagents`,
-    `artifacts: ${result.artifacts.length}`,
+    `[runtime] created run context`,
+    `Run: ${result.runId}`,
+    `State: ${result.status}`,
+    `Execution: ${result.executionMode}`,
+    `[orchestrator] dispatch mode: current session launches independent native subagents`,
+    `[runtime] artifacts materialized: ${result.artifacts.length}`,
     ""
   ].join("\n");
 }
@@ -319,35 +512,54 @@ function formatSessionSummary(result: unknown): string[] {
 }
 
 export function formatOrchestrator(result: OrchestratorResult | SessionSummarizedOrchestratorResult): string {
+  const agentActions = result.nextActions.filter((action) => action.kind === "agent");
+  const runtimeActions = result.nextActions.filter((action) => action.kind === "runtime");
+  const readyAgents = agentActions.filter((action) => action.status === "ready");
+  const waitingAgents = agentActions.filter((action) => action.status === "waiting");
+  const blockedAgents = agentActions.filter((action) => action.status === "blocked");
   return [
-    `${result.mode === "resume" ? "resumed" : "orchestrated"} imfine run: ${result.runId}`,
-    `status: ${result.status}`,
-    `execution mode: ${result.executionMode}`,
-    `next actions: ${result.nextActions.length}`,
-    `agent runs: ${result.agentRuns.length}`,
-    `dispatch contracts: ${result.dispatchContracts.length}`,
-    `parallel groups: ${result.parallelGroups.length}`,
-    `state: ${result.files.state}`,
-    `queue: ${result.files.queue}`,
-    `contracts: ${result.files.dispatchContracts}`,
-    `timeline: ${result.files.timeline}`,
-    "actions:",
-    ...(result.nextActions.length > 0
-      ? result.nextActions.map((action) => `- [${action.status}] ${action.id}${action.command ? `: ${action.command}` : ""}`)
+    `[orchestrator] ${result.mode === "resume" ? "resumed" : "planned"} run ${result.runId}`,
+    `State: ${result.status}`,
+    `Execution: ${result.executionMode}`,
+    "",
+    "Current wave:",
+    `- agent ready: ${readyAgents.length}`,
+    `- agent waiting: ${waitingAgents.length}`,
+    `- agent blocked: ${blockedAgents.length}`,
+    `- runtime checkpoints: ${runtimeActions.length}`,
+    `- parallel groups: ${result.parallelGroups.length}`,
+    "",
+    "Dispatch:",
+    ...(readyAgents.length > 0
+      ? readyAgents.map((action) => `- [orchestrator] dispatch ${action.role}${action.taskId ? `/${action.taskId}` : ""} (${action.id})`)
       : ["- none"]),
+    "",
+    "Runtime:",
+    `- [runtime] dispatch contracts: ${result.dispatchContracts.length}`,
     ...formatSessionSummary(result),
     ""
   ].join("\n");
 }
 
 export function formatAutoOrchestrator(result: AutoOrchestratorResult | SessionSummarizedAutoOrchestratorResult): string {
+  const runtimeSteps = result.steps.filter((step) => step.kind === "runtime");
+  const agentSteps = result.steps.filter((step) => step.kind === "agent");
+  const lastStep = result.steps.at(-1);
   return [
-    `auto orchestration run: ${result.runId}`,
-    `status: ${result.status}`,
-    `iterations: ${result.iterations}`,
-    `timeline: ${result.timeline}`,
-    `steps: ${result.steps.length}`,
-    ...result.steps.map((step) => `- ${step.iteration} [${step.status}] ${step.actionId}: ${step.detail}`),
+    `[orchestrator] auto orchestration run ${result.runId}`,
+    `State: ${result.status}`,
+    `Iterations: ${result.iterations}`,
+    "",
+    "Runtime checkpoints:",
+    `- ${runtimeSteps.length}`,
+    "",
+    "Agent events:",
+    ...(agentSteps.length > 0
+      ? agentSteps.map((step) => `- [agent:${step.actionId}] ${step.status}`)
+      : ["- none"]),
+    "",
+    "Gates:",
+    `- [gate:last-event] last event: ${lastStep ? `${lastStep.status} (${lastStep.detail})` : "none"}`,
     ...formatSessionSummary(result),
     ""
   ].join("\n");

@@ -167,6 +167,28 @@ assert.ok(currentStatus.currentRunAgentNameMap.mappings.some((mapping) => (
   && mapping.providerReceiptPath === relativeToProject(project, agentContract.expected_provider_receipt_path)
   && mapping.gateIds.includes("true_harness")
 )));
+const statusText = run(["status"], project);
+assert.match(statusText, /Evidence Origin/);
+assert.match(statusText, /Gate phase:/);
+assert.match(statusText, /Gates:/);
+assert.match(statusText, /\[runtime\] context materialized/);
+assert.match(statusText, /\[gate:planning\] planning:/);
+assert.match(statusText, /\[gate:role-purity\] role purity:/);
+assert.doesNotMatch(statusText, /current run harness debugger:/);
+assert.doesNotMatch(statusText, /current run standard evidence:/);
+assert.doesNotMatch(statusText, /harness-debugger/);
+assert.doesNotMatch(statusText, /dispatch-contracts\.json/);
+const storyText = run(["status", "--story"], project);
+assert.match(storyText, /Current wave:/);
+assert.match(storyText, /Gate phase:/);
+assert.match(storyText, /\[gate:true-harness\] true harness evidence:/);
+assert.match(storyText, /Next:/);
+const debugStatusText = run(["status", "--debug"], project);
+assert.match(debugStatusText, /current run harness debugger:/);
+assert.match(debugStatusText, /current run standard evidence:/);
+assert.throws(() => run(["report", created.runId], project), /internal runtime action/);
+const demoReportText = run(["report", created.runId, "--demo-summary"], project);
+assert.match(demoReportText, /report not found:/);
 
 const planArtifact = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "parallel-plan.json"), "utf8"));
 assert.equal(planArtifact.artifact_type, "planning");

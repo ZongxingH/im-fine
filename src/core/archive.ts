@@ -605,6 +605,29 @@ function reviewStatusLines(graph: TaskGraph | null, cwd: string, runId: string):
   }).join(", ");
 }
 
+function agentHandoffEvidence(dir: string): string[] {
+  const agentsDir = path.join(dir, "agents");
+  if (!fs.existsSync(agentsDir)) return [];
+  return fs.readdirSync(agentsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(agentsDir, entry.name, "handoff.json"))
+    .filter((file) => fs.existsSync(file))
+    .sort();
+}
+
+function gatePhaseReportLines(checks: ArchiveCheck[]): string {
+  const byId = new Map(checks.map((check) => [check.id, check.status]));
+  const phase = [
+    { id: "planning", label: "planning", passed: ["project-context", "runtime-context", "task-graph"].every((id) => byId.get(id) === "pass") },
+    { id: "dispatch", label: "dispatch", passed: byId.get("true-harness-evidence") === "pass" },
+    { id: "qa", label: "QA", passed: byId.get("test-results") === "pass" && byId.get("quality.qa") === "pass" },
+    { id: "review", label: "review", passed: byId.get("review") === "pass" && byId.get("quality.review") === "pass" },
+    { id: "role-purity", label: "role purity", passed: byId.get("role-purity") === "pass" },
+    { id: "archive", label: "archive", passed: byId.get("run-level.archive-status") === "pass" && byId.get("run-level.archive-handoff") === "pass" }
+  ];
+  return phase.map((item, index) => `${index + 1}. [gate:${item.id}] ${item.label}: ${item.passed ? "pass" : "blocked"}`).join("\n");
+}
+
 function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, checks: ArchiveCheck[], blockedItems: string[], projectUpdateFiles: string[]): string {
   const dir = runDir(cwd, runId);
   const run = readJson<RunMetadata>(path.join(dir, "run.json"));
@@ -615,6 +638,7 @@ function buildArchiveReport(cwd: string, runId: string, status: ArchiveStatus, c
   const harnessEvidence = path.join(dir, "orchestration", "true-harness-evidence.md");
   const harnessEvidenceJson = path.join(dir, "orchestration", "true-harness-evidence.json");
   const methodProvenance = path.join(dir, "orchestration", "method-provenance.json");
+  const agentHandoffs = agentHandoffEvidence(dir);
   const harness = fs.existsSync(harnessEvidenceJson)
     ? readJson<{ harness_classification?: string; true_harness_passed?: boolean }>(harnessEvidenceJson)
     : null;
@@ -650,6 +674,22 @@ ${taskLines(graph, cwd, runId).join("\n")}
 - task graph: ${path.join(dir, "planning", "task-graph.json")}
 - execution plan: ${path.join(dir, "planning", "execution-plan.md")}
 - commit plan: ${path.join(dir, "planning", "commit-plan.md")}
+
+## Evidence Origin
+
+Agent-authored:
+${agentHandoffs.length > 0 ? agentHandoffs.map((file) => `- ${file}`).join("\n") : "- none"}
+
+Runtime-derived:
+- ${path.join(dir, "orchestration", "dispatch-contracts.json")}
+- ${path.join(dir, "orchestration", "provider-receipts")}
+- ${path.join(dir, "orchestration", "true-harness-evidence.json")}
+- ${path.join(dir, "orchestration", "final-gates.json")}
+- ${path.join(dir, "orchestration", "runtime-requirements.json")}
+
+## Gate Phase
+
+${gatePhaseReportLines(checks)}
 
 ## Verification Evidence
 
