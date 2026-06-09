@@ -740,6 +740,12 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     : [];
   const adoptedAgentRuns = adoptValidatedHandoffs(result, initialDispatchContracts, runDirPath, runId);
   const dispatchContracts = completeContractsWithAdoptedHandoffs(initialDispatchContracts, adoptedAgentRuns);
+  const completedActionIds = new Set(dispatchContracts
+    .filter((contract) => contract.kind === "agent" && contract.status === "done")
+    .map((contract) => contract.action_id));
+  const effectiveNextActions = result.nextActions.map((action) => (
+    completedActionIds.has(action.id) ? { ...action, status: "done" as const } : action
+  ));
   for (const contract of dispatchContracts.filter((item) => item.kind === "agent" && (item.status === "ready" || item.status === "waiting"))) {
     writeProviderDispatchReceipt(cwd, runId, {
       actionId: contract.action_id,
@@ -754,7 +760,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
       }
     });
   }
-  const actionable = result.nextActions.filter((action) => action.status !== "done");
+  const actionable = effectiveNextActions.filter((action) => action.status !== "done");
   const existingExecution = optionalJson<{ wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] }>(files.parallelExecution);
   const execution = materializeWaveHistory(existingExecution, dispatchContracts);
 
@@ -793,13 +799,13 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     blocked_parallel_groups: execution.blocked_parallel_groups,
     wave_history: execution.wave_history
   }, null, 2)}\n`);
-  writeTimeline(files.timeline, result);
-  writeAgentNameMap(cwd, runId, runDirPath, adoptedAgentRuns, result.nextActions, dispatchContracts);
+  writeTimeline(files.timeline, { ...result, nextActions: effectiveNextActions });
+  writeAgentNameMap(cwd, runId, runDirPath, adoptedAgentRuns, effectiveNextActions, dispatchContracts);
   const nativeAgents = adoptedAgentRuns.map((agent) => ({
     ...agent,
     executionType: "native_agent_run" as const
   }));
-  const runtimeGates = result.nextActions
+  const runtimeGates = effectiveNextActions
     .filter((action) => action.kind === "runtime")
     .map((action) => ({
       id: action.id,
@@ -820,14 +826,14 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     runtime_gates: runtimeGates,
     execution_units: [...nativeAgents, ...runtimeGates]
   }, null, 2)}\n`);
-  writeOrchestratorRuntimeConsistency(files.consistency, runId, { ...result, agentRuns: adoptedAgentRuns }, dispatchContracts);
+  writeOrchestratorRuntimeConsistency(files.consistency, runId, { ...result, nextActions: effectiveNextActions, agentRuns: adoptedAgentRuns }, dispatchContracts);
   appendRuntimeTraceEvent(cwd, runId, {
     source: "runtime.orchestrator",
     componentId: "runtime.ingest-orchestrator-session",
     actionId: "runtime.ingest_orchestrator_session",
     eventType: "ingest",
     status: result.status === "blocked" ? "blocked" : "recorded",
-    reason: `orchestrator status=${result.status}; actions=${result.nextActions.length}; agents=${adoptedAgentRuns.length}`,
+    reason: `orchestrator status=${result.status}; actions=${effectiveNextActions.length}; agents=${adoptedAgentRuns.length}`,
     inputArtifacts: [files.session],
     outputArtifacts: [
       files.state,

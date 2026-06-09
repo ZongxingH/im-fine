@@ -136,7 +136,7 @@ function nonRuntimeOwnedStatusLines(cwd: string): string[] {
     .map((line) => line.trimEnd())
     .filter(Boolean)
     .map((line) => line.slice(3).trim())
-    .filter((file) => file && !(file === ".imfine" || file.startsWith(".imfine/")));
+    .filter((file) => file && !(file === ".imfine" || file.startsWith(".imfine/") || file === ".gitignore"));
 }
 
 function agentType(task: TaskGraphTask): string {

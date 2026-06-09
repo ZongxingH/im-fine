@@ -148,7 +148,7 @@ function statusLines(cwd: string): StatusLine[] {
 }
 
 function isRuntimeOwnedStatusFile(file: string): boolean {
-  return file === ".imfine" || file.startsWith(".imfine/");
+  return file === ".imfine" || file.startsWith(".imfine/") || file === ".gitignore";
 }
 
 function nonRuntimeOwnedStatusLines(cwd: string): StatusLine[] {

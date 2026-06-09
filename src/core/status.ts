@@ -64,6 +64,15 @@ export interface StatusResult {
     qa: string;
     review: string;
     recheckFixLoop: string;
+    coverage: {
+      expectedTasks: string[];
+      qaPassed: number;
+      qaExpected: number;
+      qaMissing: string[];
+      reviewPassed: number;
+      reviewExpected: number;
+      reviewMissing: string[];
+    };
     latest: Array<{
       role: string;
       taskId: string;
@@ -144,6 +153,17 @@ export interface StatusResult {
     status: string;
     detail: string;
     recordedAt: string;
+  } | null;
+  currentRunDemoWarnings: string[];
+  currentRunAgentProgress: {
+    architect: string;
+    taskPlanner: string;
+    devCompleted: number;
+    devTotal: number;
+    qaPassed: number;
+    qaTotal: number;
+    reviewApproved: number;
+    reviewTotal: number;
   } | null;
   runs: Array<{
     runId: string;
@@ -262,6 +282,41 @@ function providerReceiptStatus(cwd: string, runRoot: string, runId: string): Sta
   };
 }
 
+function runEvidenceScore(cwd: string, runId: string): number {
+  const root = path.join(cwd, ".imfine", "runs", runId);
+  const agentsDir = path.join(root, "agents");
+  const handoffCount = fs.existsSync(agentsDir)
+    ? fs.readdirSync(agentsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .filter((entry) => fs.existsSync(path.join(agentsDir, entry.name, "handoff.json"))).length
+    : 0;
+  const receiptCount = providerReceipts(cwd, runId).filter((receipt) => validateProviderReceipt(cwd, receipt).valid).length;
+  return handoffCount + receiptCount;
+}
+
+function agentProgress(runRoot: string, quality: StatusResult["currentRunQualityLineage"]): StatusResult["currentRunAgentProgress"] {
+  const dispatchFile = path.join(runRoot, "orchestration", "dispatch-contracts.json");
+  if (!fs.existsSync(dispatchFile)) return null;
+  const dispatch = readJson<{ contracts?: Array<{ role?: unknown; status?: unknown; kind?: unknown }> }>(dispatchFile);
+  const contracts = Array.isArray(dispatch.contracts) ? dispatch.contracts.filter((contract) => contract.kind !== "runtime") : [];
+  const countRole = (role: string, status: string): number => contracts.filter((contract) => contract.role === role && contract.status === status).length;
+  const totalRole = (role: string): number => contracts.filter((contract) => contract.role === role).length;
+  const architectDone = countRole("architect", "done") > 0 ? "completed" : totalRole("architect") > 0 ? "pending" : "none";
+  const taskPlannerDone = countRole("task-planner", "done") > 0 ? "completed" : totalRole("task-planner") > 0 ? "pending" : "none";
+  const qaExpected = quality?.coverage.qaExpected || totalRole("qa");
+  const reviewExpected = quality?.coverage.reviewExpected || totalRole("reviewer");
+  return {
+    architect: architectDone,
+    taskPlanner: taskPlannerDone,
+    devCompleted: countRole("dev", "done") + countRole("technical-writer", "done"),
+    devTotal: totalRole("dev") + totalRole("technical-writer"),
+    qaPassed: quality?.coverage.qaPassed || countRole("qa", "done"),
+    qaTotal: qaExpected,
+    reviewApproved: quality?.coverage.reviewPassed || countRole("reviewer", "done"),
+    reviewTotal: reviewExpected
+  };
+}
+
 function providerObservationStatus(cwd: string, runRoot: string): StatusResult["currentRunProviderObservations"] {
   const observations = providerObservations(cwd, runRoot);
   return {
@@ -299,10 +354,24 @@ function qualityLineageStatus(cwd: string, runId: string): StatusResult["current
   writeQualityLineage(cwd, runId);
   const lineage = readQualityLineage(cwd, runId);
   if (!lineage) return null;
+  const coverage = lineage.summary.coverage || {
+    expected_tasks: [],
+    qa: { passed: 0, expected: 0, missing: [] },
+    review: { passed: 0, expected: 0, missing: [] }
+  };
   return {
     qa: lineage.summary.qa,
     review: lineage.summary.review,
     recheckFixLoop: lineage.summary.recheck_fix_loop,
+    coverage: {
+      expectedTasks: coverage.expected_tasks,
+      qaPassed: coverage.qa.passed,
+      qaExpected: coverage.qa.expected,
+      qaMissing: coverage.qa.missing,
+      reviewPassed: coverage.review.passed,
+      reviewExpected: coverage.review.expected,
+      reviewMissing: coverage.review.missing
+    },
     latest: lineage.lineages.map((item) => ({
       role: item.role,
       taskId: item.task_id,
@@ -490,6 +559,8 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
   let currentRunActions: StatusResult["currentRunActions"] = null;
   let currentRunBlockers: StatusResult["currentRunBlockers"] = null;
   let currentRunLatestCheckpoint: StatusResult["currentRunLatestCheckpoint"] = null;
+  let currentRunDemoWarnings: StatusResult["currentRunDemoWarnings"] = [];
+  let currentRunAgentProgress: StatusResult["currentRunAgentProgress"] = null;
 
   if (!selectedRunId && fs.existsSync(currentFile)) {
     try {
@@ -557,6 +628,7 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
         currentRunProviderObservations = providerObservationStatus(cwd, runRoot);
         currentRunAgentNameMap = agentNameMapStatus(runRoot);
         currentRunQualityLineage = qualityLineageStatus(cwd, currentRunId);
+        currentRunAgentProgress = agentProgress(runRoot, currentRunQualityLineage);
         currentRunStandardEvidence = standardEvidenceStatus(runRoot);
         currentRunRuntimeRequirements = runtimeRequirementsStatus(cwd, currentRunId);
         currentRunSandboxVerification = sandboxVerificationStatus(cwd, currentRunId, runRoot);
@@ -663,9 +735,7 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
           };
         }
         const blockerFile = path.join(runRoot, "orchestration", "blocker-summary.json");
-        const blockers = fs.existsSync(blockerFile) && !fs.existsSync(finalGates)
-          ? readJson<{ status?: string; sources?: Array<{ blockers?: unknown[] }> }>(blockerFile)
-          : blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
+        const blockers = blockerSummary(cwd, currentRunId) as { status?: string; sources?: Array<{ blockers?: unknown[] }> };
         if (blockers.sources && blockers.sources.length > 0) {
           const firstBlocker = blockers.sources.flatMap((source) => Array.isArray(source.blockers) ? source.blockers : [])[0];
           currentRunBlockers = {
@@ -706,6 +776,18 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
     }
   }
 
+  if (currentRunId && runs.length > 1) {
+    const currentScore = runEvidenceScore(cwd, currentRunId);
+    const richer = runs
+      .filter((run) => run.runId !== currentRunId)
+      .map((run) => ({ ...run, evidenceScore: runEvidenceScore(cwd, run.runId) }))
+      .filter((run) => run.evidenceScore > currentScore)
+      .sort((left, right) => right.evidenceScore - left.evidenceScore)[0];
+    if (richer) {
+      currentRunDemoWarnings.push(`current run has less validation evidence than ${richer.runId} (${currentScore} vs ${richer.evidenceScore})`);
+    }
+  }
+
   return {
     cwd,
     initialized: fs.existsSync(workspace),
@@ -732,6 +814,8 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
     currentRunActions,
     currentRunBlockers,
     currentRunLatestCheckpoint,
+    currentRunDemoWarnings,
+    currentRunAgentProgress,
     runs,
     reports
   };

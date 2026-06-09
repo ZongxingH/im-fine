@@ -16,6 +16,11 @@ export interface QualityLineageResult {
     qa: QualityGateStatus;
     review: QualityGateStatus;
     recheck_fix_loop: QualityGateStatus;
+    coverage: {
+      expected_tasks: string[];
+      qa: { passed: number; expected: number; missing: string[] };
+      review: { passed: number; expected: number; missing: string[] };
+    };
   };
   lineages: QualityLineage[];
 }
@@ -134,6 +139,18 @@ function collectQualityActions(cwd: string, runId: string): QualityAction[] {
   return actions.sort((a, b) => a.handoff.localeCompare(b.handoff));
 }
 
+function expectedTaskIds(cwd: string, runId: string): string[] {
+  const file = path.join(runDir(cwd, runId), "planning", "task-graph.json");
+  if (!fs.existsSync(file)) return [];
+  const parsed = readJson<{ tasks?: Array<{ id?: unknown; type?: unknown }> }>(file);
+  return Array.isArray(parsed.tasks)
+    ? parsed.tasks
+      .filter((task) => typeof task.id === "string" && task.id.trim().length > 0)
+      .filter((task) => task.type !== "runtime")
+      .map((task) => task.id as string)
+    : [];
+}
+
 function groupKey(role: QualityRole, taskId: string): string {
   return `${role}:${taskId}`;
 }
@@ -212,20 +229,36 @@ export function writeQualityLineage(cwd: string, runId: string): string {
   const dir = runDir(cwd, runId);
   const actions = collectQualityActions(cwd, runId);
   const keys = new Set(actions.map((action) => groupKey(action.role, action.task_id)));
+  const expectedTasks = expectedTaskIds(cwd, runId);
+  for (const taskId of expectedTasks) {
+    keys.add(groupKey("qa", taskId));
+    keys.add(groupKey("reviewer", taskId));
+  }
   const lineages = Array.from(keys).map((key) => {
     const [role, taskId] = key.split(":") as [QualityRole, string];
     return buildLineage(cwd, runId, role, taskId, actions.filter((action) => action.role === role && action.task_id === taskId));
   });
   const qaLineages = lineages.filter((item) => item.role === "qa");
   const reviewLineages = lineages.filter((item) => item.role === "reviewer");
+  const expectedQa = expectedTasks.length > 0 ? expectedTasks : qaLineages.map((item) => item.task_id);
+  const expectedReview = expectedTasks.length > 0 ? expectedTasks : reviewLineages.map((item) => item.task_id);
+  const qaPassed = qaLineages.filter((item) => expectedQa.includes(item.task_id) && item.status === "pass");
+  const reviewPassed = reviewLineages.filter((item) => expectedReview.includes(item.task_id) && item.status === "pass");
+  const qaMissing = expectedQa.filter((taskId) => !qaLineages.some((item) => item.task_id === taskId && item.status === "pass"));
+  const reviewMissing = expectedReview.filter((taskId) => !reviewLineages.some((item) => item.task_id === taskId && item.status === "pass"));
   const payload: QualityLineageResult = {
     schema_version: 1,
     run_id: runId,
     generated_at: new Date().toISOString(),
     summary: {
-      qa: qaLineages.length > 0 && qaLineages.every((item) => item.status === "pass") ? "pass" : "blocked",
-      review: reviewLineages.length > 0 && reviewLineages.every((item) => item.status === "pass") ? "pass" : "blocked",
-      recheck_fix_loop: lineages.length > 0 && lineages.every((item) => item.status === "pass" && item.invalid_rechecks.length === 0) ? "pass" : "blocked"
+      qa: expectedQa.length > 0 && qaMissing.length === 0 && qaLineages.every((item) => item.status === "pass") ? "pass" : "blocked",
+      review: expectedReview.length > 0 && reviewMissing.length === 0 && reviewLineages.every((item) => item.status === "pass") ? "pass" : "blocked",
+      recheck_fix_loop: lineages.length > 0 && lineages.every((item) => item.status === "pass" && item.invalid_rechecks.length === 0) ? "pass" : "blocked",
+      coverage: {
+        expected_tasks: expectedTasks,
+        qa: { passed: qaPassed.length, expected: expectedQa.length, missing: qaMissing },
+        review: { passed: reviewPassed.length, expected: expectedReview.length, missing: reviewMissing }
+      }
     },
     lineages
   };

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { recordProviderOriginAgentCompletion } from "../dist/core/agent-complete.js";
+import { blockerSummary } from "../dist/core/blocker-summary.js";
 import { orchestrateRun, resumeRun } from "../dist/core/orchestrator.js";
 import { reconcileRun } from "../dist/core/reconcile.js";
 import { status as readStatus } from "../dist/core/status.js";
@@ -622,6 +623,147 @@ function writeQualityHandoff(runDir, agentId, payload) {
 }
 
 {
+  const cwd = makeProject("imfine-quality-lineage-coverage-", true);
+  const runId = "quality-coverage";
+  const runDir = makeRun(cwd, runId, "planned", "Block partial QA and review coverage.");
+  fs.mkdirSync(path.join(runDir, "planning"), { recursive: true });
+  fs.writeFileSync(path.join(runDir, "planning", "task-graph.json"), JSON.stringify({
+    run_id: runId,
+    strategy: "parallel",
+    tasks: [
+      { id: "T1", type: "dev", title: "one" },
+      { id: "T2", type: "dev", title: "two" }
+    ]
+  }, null, 2) + "\n");
+  fs.mkdirSync(path.join(runDir, "evidence"), { recursive: true });
+  const qaEvidence = path.join(runDir, "evidence", "qa-T1.md");
+  const reviewEvidence = path.join(runDir, "evidence", "review-T1.md");
+  fs.writeFileSync(qaEvidence, "# QA T1\n\npass\n");
+  fs.writeFileSync(reviewEvidence, "# Review T1\n\napproved\n");
+  writeQualityHandoff(runDir, "qa-T1", {
+    run_id: runId,
+    task_id: "T1",
+    role: "qa",
+    from: "qa",
+    to: "reviewer",
+    status: "pass",
+    summary: "QA passed T1",
+    commands: [],
+    failures: [],
+    evidence: [qaEvidence],
+    next_state: "reviewing"
+  });
+  writeQualityHandoff(runDir, "reviewer-T1", {
+    run_id: runId,
+    task_id: "T1",
+    role: "reviewer",
+    from: "reviewer",
+    to: "archive",
+    status: "approved",
+    summary: "Review approved T1",
+    commands: [],
+    findings: [],
+    evidence: [reviewEvidence],
+    next_state: "committing"
+  });
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.gates.find((gate) => gate.id === "qa").status, "blocked");
+  assert.equal(result.gates.find((gate) => gate.id === "review").status, "blocked");
+  const lineage = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "quality-lineage.json"), "utf8"));
+  assert.equal(lineage.summary.qa, "blocked");
+  assert.equal(lineage.summary.review, "blocked");
+  assert.deepEqual(lineage.summary.coverage.qa, { passed: 1, expected: 2, missing: ["T2"] });
+  assert.deepEqual(lineage.summary.coverage.review, { passed: 1, expected: 2, missing: ["T2"] });
+}
+
+{
+  const cwd = makeProject("imfine-stale-blocker-summary-", true);
+  const runId = "stale-blocker";
+  const runDir = makeRun(cwd, runId, "waiting_for_agent_output", "Clear stale blocker files from current evidence.");
+  const handoff = path.join(runDir, "agents", "T1", "handoff.json");
+  const patch = path.join(runDir, "agents", "T1", "patch.diff");
+  fs.mkdirSync(path.dirname(handoff), { recursive: true });
+  fs.writeFileSync(patch, "diff --git a/src/index.js b/src/index.js\n");
+  fs.writeFileSync(handoff, JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "dev",
+    from: "dev",
+    to: "qa",
+    status: "ready",
+    summary: "implementation ready",
+    commands: [],
+    evidence: [patch],
+    next_state: "verifying",
+    files_changed: ["src/index.js"],
+    verification: []
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "provider-capability.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    provider: "codex",
+    entry_installed: "unknown",
+    subagent_supported: "unknown",
+    capabilities: {
+      supports_subagent: "unknown",
+      supports_parallel_subagent: "unknown",
+      supports_agent_file_output: "unknown",
+      supports_agent_wait: "unknown",
+      supports_agent_interrupt: "unknown"
+    },
+    detection_source: "test",
+    detected_at: "2026-01-01T00:00:00.000Z",
+    blocked: true,
+    blocked_reason: "current provider has not confirmed native subagent dispatch support"
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "handoff-validation.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    passed: false,
+    errors: ["architect: handoff evidence missing design/design.md"]
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    contracts: [
+      {
+        id: "T1",
+        kind: "agent",
+        action_id: "agent-dev-T1",
+        role: "dev",
+        task_id: "T1",
+        status: "done",
+        expected_handoff_path: handoff
+      },
+      {
+        id: "T2",
+        kind: "agent",
+        action_id: "agent-dev-T2",
+        role: "dev",
+        task_id: "T2",
+        status: "ready",
+        expected_handoff_path: path.join(runDir, "agents", "T2", "handoff.json")
+      }
+    ]
+  }, null, 2) + "\n");
+  writeProviderOriginReceipt(cwd, runId, {
+    actionId: "agent-dev-T1",
+    agentId: "T1",
+    role: "dev",
+    taskId: "T1",
+    parallelGroup: "delivery",
+    provider: "codex",
+    providerAgentId: "codex-agent-real-T1",
+    providerSessionId: `codex-session-real-${runId}`,
+    providerTaskHandle: "codex-task-real-agent-dev-T1",
+    outputPath: handoff
+  });
+  const summary = blockerSummary(cwd, runId);
+  assert.equal(summary.status, "clear");
+  assert.equal(summary.sources.flatMap((source) => source.blockers).length, 0);
+}
+
+{
   const cwd = makeProject("imfine-qa-recheck-lineage-", true);
   const runId = "qa-recheck";
   const runDir = makeRun(cwd, runId, "planned", "Model QA recheck lineage.");
@@ -783,6 +925,8 @@ function writeQualityHandoff(runDir, agentId, payload) {
   assert.match(finalReport, /## Evidence Origin/);
   assert.match(finalReport, /## Gate Phase/);
   assert.match(finalReport, /\[gate:final-gates\] final gates: pass/);
+  const userReport = fs.readFileSync(path.join(cwd, ".imfine", "reports", `${runId}.md`), "utf8");
+  assert.equal(userReport, finalReport);
   const freshness = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "project", "project-knowledge-freshness.json"), "utf8"));
   assert.equal(freshness.status, "fresh");
 }

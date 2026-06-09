@@ -196,6 +196,17 @@ function writeArtifact(file: string, content: string, artifacts: string[]): void
   artifacts.push(file);
 }
 
+function ensureRuntimeGitignore(cwd: string): void {
+  const file = path.join(cwd, ".gitignore");
+  const required = ["backend/target/", "backend/db/*.sqlite3"];
+  const existing = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+  const existingLines = new Set(existing.split(/\r?\n/).map((line) => line.trim()));
+  const missing = required.filter((line) => !existingLines.has(line));
+  if (missing.length === 0) return;
+  const prefix = existing.length > 0 && !existing.endsWith("\n") ? "\n" : "";
+  writeText(file, `${existing}${prefix}${missing.join("\n")}\n`);
+}
+
 function pendingRoles(projectKind: ProjectAnalysis["kind"]): string[] {
   return projectKind === "new_project"
     ? ["architect", "task-planner"]
@@ -251,6 +262,7 @@ function activeRunForRequirement(workspace: string, source: RequirementSource): 
 
 export function createDeliveryRun(cwd: string, requirementArgs: string[], options: CreateDeliveryRunOptions = {}): DeliveryRunResult {
   initProject(cwd);
+  ensureRuntimeGitignore(cwd);
 
   const source = readRequirement(cwd, requirementArgs);
   const ignoredProjectFiles = new Set<string>();

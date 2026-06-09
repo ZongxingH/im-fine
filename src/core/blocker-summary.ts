@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
+import { validateAgentHandoff } from "./handoff-evidence.js";
+import { providerReceipts, validateProviderReceipt } from "./provider-evidence.js";
 
 interface SummarySource {
   id: string;
@@ -55,6 +57,37 @@ function collectErrors(value: unknown): string[] {
   return [];
 }
 
+function currentHandoffErrors(cwd: string, runId: string): string[] {
+  const root = runDir(cwd, runId);
+  const dispatchFile = path.join(root, "orchestration", "dispatch-contracts.json");
+  if (!fs.existsSync(dispatchFile)) return [];
+  const dispatch = readJson(dispatchFile) as { contracts?: Array<Record<string, unknown>> };
+  const contracts = Array.isArray(dispatch.contracts) ? dispatch.contracts : [];
+  return contracts
+    .filter((contract) => contract.kind !== "runtime")
+    .filter((contract) => {
+      const handoffFile = typeof contract.expected_handoff_path === "string" ? contract.expected_handoff_path : "";
+      return contract.status === "done" || (handoffFile.length > 0 && fs.existsSync(handoffFile));
+    })
+    .flatMap((contract) => {
+      const id = typeof contract.id === "string" ? contract.id : typeof contract.action_id === "string" ? contract.action_id : "agent";
+      const role = typeof contract.role === "string" ? contract.role : "";
+      const taskId = typeof contract.task_id === "string" ? contract.task_id : undefined;
+      const handoffFile = typeof contract.expected_handoff_path === "string" ? contract.expected_handoff_path : undefined;
+      const validation = validateAgentHandoff({ id, role, taskId, handoffFile }, root, runId);
+      return validation.passed ? [] : validation.errors.map((error) => `${id}: ${error}`);
+    });
+}
+
+function sourceErrors(cwd: string, runId: string, source: SummarySource): string[] {
+  if (source.id === "provider-capability") {
+    const validReceipts = providerReceipts(cwd, runId).filter((receipt) => validateProviderReceipt(cwd, receipt).valid);
+    if (validReceipts.length > 0) return [];
+  }
+  if (source.id === "handoff-validation") return currentHandoffErrors(cwd, runId);
+  return collectErrors(readJson(source.file));
+}
+
 export function writeBlockerSummary(cwd: string, runId: string): string {
   const file = path.join(runDir(cwd, runId), "orchestration", "blocker-summary.json");
   writeText(file, `${JSON.stringify(blockerSummary(cwd, runId), null, 2)}\n`);
@@ -83,7 +116,7 @@ export function blockerSummary(cwd: string, runId: string): {
     .map((source) => ({
       id: source.id,
       file: rel(cwd, source.file),
-      blockers: collectErrors(readJson(source.file)).map((blocker) => ({
+      blockers: sourceErrors(cwd, runId, source).map((blocker) => ({
         reason: blocker,
         owner: source.id.includes("provider") ? "orchestrator" : source.id.includes("handoff") ? "agent" : "runtime",
         required_evidence: source.id.includes("provider") ? ["orchestration/provider-receipts/"] : [rel(cwd, source.file)],

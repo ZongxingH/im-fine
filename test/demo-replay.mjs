@@ -36,6 +36,46 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
 }
 
 {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-current-run-warning-"));
+  const currentRunId = "current-low-evidence";
+  const richerRunId = "previous-rich-evidence";
+  const currentRunDir = path.join(cwd, ".imfine", "runs", currentRunId);
+  const richerRunDir = path.join(cwd, ".imfine", "runs", richerRunId);
+  fs.mkdirSync(path.join(currentRunDir, "orchestration"), { recursive: true });
+  fs.mkdirSync(path.join(richerRunDir, "agents", "T1"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: currentRunId }, null, 2) + "\n");
+  for (const [runId, runDir, status] of [
+    [currentRunId, currentRunDir, "waiting_for_agent_output"],
+    [richerRunId, richerRunDir, "blocked"]
+  ]) {
+    fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status,
+      execution_mode: "true_harness",
+      project_kind: "new_project",
+      source: { type: "text", value: "warning fixture" }
+    }, null, 2) + "\n");
+  }
+  fs.writeFileSync(path.join(richerRunDir, "agents", "T1", "handoff.json"), JSON.stringify({
+    run_id: richerRunId,
+    task_id: "T1",
+    role: "dev",
+    from: "dev",
+    to: "qa",
+    status: "ready",
+    summary: "previous evidence",
+    commands: [],
+    evidence: [],
+    next_state: "verifying"
+  }, null, 2) + "\n");
+
+  const value = readStatus(cwd);
+  assert.ok(value.currentRunDemoWarnings.some((warning) => warning.includes(richerRunId)));
+}
+
+{
   const cwd = copyDemo(demoRoots.early, "imfine-real-early-demo-");
   const runId = runIds(cwd).find((id) => !id.endsWith("-2"));
   if (runId) {
@@ -415,8 +455,15 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   assert.equal(agentRuns.agents[0].handoffFile, handoff);
   const dispatch = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
   assert.equal(dispatch.contracts[0].status, "done");
+  const queue = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "queue.json"), "utf8"));
+  assert.deepEqual(queue.actions, []);
+  assert.deepEqual(queue.contracts, []);
+  const consistency = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-runtime-consistency.json"), "utf8"));
+  assert.equal(consistency.session_action_count, 1);
   const parallel = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8"));
   assert.ok(parallel.wave_history.some((wave) => wave.status === "completed" && wave.action_ids.includes("agent-dev-T1")));
+  const value = readStatus(cwd);
+  assert.equal(value.currentRunActions.ready, 0);
   const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(evidence.handoff_validation.passed, true);
   assert.deepEqual(evidence.parallel_execution.missing_completed_wave_contracts, []);

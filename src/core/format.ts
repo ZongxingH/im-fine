@@ -86,10 +86,22 @@ function compactGateLines(result: StatusResult): string[] {
     `- [gate:provider-receipts] provider receipts: ${receiptLine}`,
     `- [gate:handoffs] handoffs: ${handoffCount}`,
     `- [gate:role-purity] role purity: ${gates.role_purity || "not ready"}`,
-    `- [gate:qa] QA: ${gates.qa || result.currentRunQualityLineage?.qa || "not ready"}`,
-    `- [gate:review] review: ${gates.review || result.currentRunQualityLineage?.review || "not ready"}`,
+    `- [gate:qa] QA: ${gates.qa || result.currentRunQualityLineage?.qa || "not ready"}${result.currentRunQualityLineage ? `, coverage ${result.currentRunQualityLineage.coverage.qaPassed}/${result.currentRunQualityLineage.coverage.qaExpected}` : ""}`,
+    `- [gate:review] review: ${gates.review || result.currentRunQualityLineage?.review || "not ready"}${result.currentRunQualityLineage ? `, coverage ${result.currentRunQualityLineage.coverage.reviewPassed}/${result.currentRunQualityLineage.coverage.reviewExpected}` : ""}`,
     `- [gate:archive] archive: ${gates.archive || "not ready"}`,
     `- [gate:true-harness] true harness: ${gates.true_harness || result.currentRunTrueHarnessFreshness?.status || "not ready"}`
+  ];
+}
+
+function agentProgressLines(result: StatusResult): string[] {
+  const progress = result.currentRunAgentProgress;
+  if (!progress) return ["- none"];
+  return [
+    `- Architect: ${progress.architect}`,
+    `- Task Planner: ${progress.taskPlanner}`,
+    `- Dev: ${progress.devCompleted}/${progress.devTotal} completed`,
+    `- QA: ${progress.qaPassed}/${progress.qaTotal} passed`,
+    `- Review: ${progress.reviewApproved}/${progress.reviewTotal} approved`
   ];
 }
 
@@ -172,6 +184,10 @@ function formatStatusSummary(result: StatusResult): string {
     `Run: ${result.currentRunId || "none"}`,
     `State: ${result.currentRunStatus || "none"}`,
     `Execution: ${result.currentRunExecutionMode || "none"}`,
+    ...(result.currentRunDemoWarnings.length > 0 ? ["", "Warnings:", ...result.currentRunDemoWarnings.map((warning) => `- ${warning}`)] : []),
+    "",
+    "Agent progress:",
+    ...agentProgressLines(result),
     "",
     "Evidence Origin",
     "Agent-authored:",
@@ -212,6 +228,9 @@ function formatStatusStory(result: StatusResult): string {
     "",
     "Current wave:",
     ...currentWave,
+    "",
+    "Agent progress:",
+    ...agentProgressLines(result),
     "",
     "Evidence:",
     `- provider receipts: ${receipts ? `${receipts.validReceiptCount}/${Math.max(receipts.validReceiptCount + receipts.missingProviderReceiptActionIds.length, receipts.receiptCount)}` : "none"}`,
