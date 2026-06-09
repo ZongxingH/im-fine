@@ -3,6 +3,7 @@ import path from "node:path";
 import { buildDispatchContracts, type DispatchContract } from "./dispatch.js";
 import { ensureDir, writeText } from "./fs.js";
 import { providerReceipts, receiptProvesNativeSubagent } from "./provider-evidence.js";
+import { normalizeRuntimeRole } from "./role-registry.js";
 
 export interface RolePurityViolation {
   id: string;
@@ -425,9 +426,10 @@ function qualityBlockingHandoffs(runDirPath: string): Array<{ agentId: string; r
     const file = path.join(agentsDir, entry.name, "handoff.json");
     if (!fs.existsSync(file)) continue;
     const handoff = optionalJson<HandoffRecord>(file);
-    const role = handoff?.role || handoff?.from || "";
+    const rawRole = handoff?.role || handoff?.from || "";
+    const role = normalizeRuntimeRole(rawRole) || rawRole;
     const findings = role === "reviewer" ? handoff?.findings : role === "qa" ? handoff?.failures : [];
-    const status = handoff?.status || "";
+    const status = typeof handoff?.status === "string" ? handoff.status.replaceAll("-", "_") : "";
     const findingCount = Array.isArray(findings) ? findings.length : 0;
     if ((role === "reviewer" && (status === "changes_requested" || status === "blocked" || findingCount > 0))
       || (role === "qa" && (status === "fail" || status === "blocked" || findingCount > 0))) {

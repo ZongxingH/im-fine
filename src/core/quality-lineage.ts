@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
+import { normalizeRuntimeRole } from "./role-registry.js";
 import { appendRuntimeTraceEvent } from "./trace-events.js";
 
 type QualityRole = "qa" | "reviewer";
@@ -70,6 +71,13 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
 }
 
+function objectStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => isObject(item) && typeof item[field] === "string" ? item[field] : typeof item === "string" ? item : "")
+    .filter((item): item is string => item.trim().length > 0);
+}
+
 function safeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "finding";
 }
@@ -83,6 +91,58 @@ function resolvePath(cwd: string, dir: string, file: string): string {
 
 function normalizeEvidence(cwd: string, dir: string, value: unknown): string[] {
   return stringArray(value).map((file) => resolvePath(cwd, dir, file));
+}
+
+function combinedEvidence(cwd: string, dir: string, handoff: Record<string, unknown>): string[] {
+  return Array.from(new Set([
+    ...normalizeEvidence(cwd, dir, handoff.evidence),
+    ...normalizeEvidence(cwd, dir, handoff.files_created),
+    ...normalizeEvidence(cwd, dir, handoff.files_created_or_modified),
+    ...(typeof handoff.archive_report === "string" ? [resolvePath(cwd, dir, handoff.archive_report)] : [])
+  ]));
+}
+
+function normalizeQualityRole(handoff: Record<string, unknown>, fallback: string): QualityRole | null {
+  const raw = typeof handoff.role === "string"
+    ? handoff.role
+    : typeof handoff.from === "string"
+      ? handoff.from
+      : fallback;
+  const role = normalizeRuntimeRole(raw);
+  return role === "qa" || role === "reviewer" ? role : null;
+}
+
+function normalizeQualityStatus(role: QualityRole, handoff: Record<string, unknown>): string {
+  const raw = typeof handoff.status === "string" ? handoff.status.trim().toLowerCase().replaceAll("-", "_").replace(/\s+/g, "_") : "";
+  const approval = typeof handoff.approval_status === "string" ? handoff.approval_status.trim().toLowerCase().replaceAll("-", "_") : "";
+  if (role === "qa") {
+    if (raw === "pass" || raw === "passed") return "pass";
+    if (raw === "fail" || raw === "failed") return "fail";
+    if (raw.includes("blocked")) return "blocked";
+    const summary = isObject(handoff.verification_summary) ? handoff.verification_summary : null;
+    return summary?.required_coverage_declared_complete === true ? "pass" : raw;
+  }
+  if (raw === "approved" || raw === "approved_with_risks" || raw === "completed" || approval === "approved" || approval === "approved_with_risks") return "approved";
+  if (raw === "changes_requested" || approval === "changes_requested") return "changes_requested";
+  if (raw.includes("blocked") || approval.includes("blocked")) return "blocked";
+  return raw;
+}
+
+function coveredTaskIds(handoff: Record<string, unknown>, expectedTasks: string[]): string[] {
+  const explicit = [
+    ...stringArray(handoff.covered_task_ids),
+    ...stringArray(handoff.covered_tasks),
+    ...stringArray(handoff.task_ids),
+    ...objectStringArray(handoff.tasks, "id")
+  ];
+  if (explicit.length > 0) return Array.from(new Set(explicit));
+  const taskId = typeof handoff.task_id === "string" && handoff.task_id.trim() ? handoff.task_id : "";
+  if (taskId && taskId !== "run") return [taskId];
+  const summary = isObject(handoff.verification_summary) ? handoff.verification_summary : null;
+  if (expectedTasks.length > 0 && (summary?.required_coverage_declared_complete === true || handoff.approval_status === "approved_with_risks" || handoff.approval_status === "approved")) {
+    return expectedTasks;
+  }
+  return [];
 }
 
 function findingIds(role: QualityRole, taskId: string, status: string, handoff: Record<string, unknown>): string[] {
@@ -102,29 +162,29 @@ function findingIds(role: QualityRole, taskId: string, status: string, handoff: 
   return [];
 }
 
-function actionFromHandoff(cwd: string, dir: string, file: string): QualityAction | null {
+function actionsFromHandoff(cwd: string, dir: string, file: string, expectedTasks: string[]): QualityAction[] {
   const parsed = readJson<unknown>(file);
-  if (!isObject(parsed)) return null;
-  const role = parsed.role === "qa" || parsed.role === "reviewer" ? parsed.role : null;
-  const taskId = typeof parsed.task_id === "string" ? parsed.task_id : "";
-  const status = typeof parsed.status === "string" ? parsed.status : "";
-  if (!role || !taskId || !status) return null;
-  return {
-    id: typeof parsed.id === "string" && parsed.id.trim() ? parsed.id : path.basename(path.dirname(file)),
+  if (!isObject(parsed)) return [];
+  const role = normalizeQualityRole(parsed, path.basename(path.dirname(file)));
+  if (!role) return [];
+  const status = normalizeQualityStatus(role, parsed);
+  if (!status) return [];
+  return coveredTaskIds(parsed, expectedTasks).map((taskId) => ({
+    id: typeof parsed.id === "string" && parsed.id.trim() ? `${parsed.id}:${taskId}` : `${path.basename(path.dirname(file))}:${taskId}`,
     role,
     task_id: taskId,
     status,
     handoff: file,
-    evidence: normalizeEvidence(cwd, dir, parsed.evidence),
+    evidence: combinedEvidence(cwd, dir, parsed),
     summary: typeof parsed.summary === "string" ? parsed.summary : "",
     finding_ids: findingIds(role, taskId, status, parsed),
     resolves: stringArray(parsed.resolves),
     supersedes: stringArray(parsed.supersedes),
     fix_task_id: typeof parsed.fix_task_id === "string" && parsed.fix_task_id.trim() ? parsed.fix_task_id : null
-  };
+  }));
 }
 
-function collectQualityActions(cwd: string, runId: string): QualityAction[] {
+function collectQualityActions(cwd: string, runId: string, expectedTasks: string[]): QualityAction[] {
   const dir = runDir(cwd, runId);
   const agentsDir = path.join(dir, "agents");
   if (!fs.existsSync(agentsDir)) return [];
@@ -133,8 +193,7 @@ function collectQualityActions(cwd: string, runId: string): QualityAction[] {
     if (!entry.isDirectory()) continue;
     const file = path.join(agentsDir, entry.name, "handoff.json");
     if (!fs.existsSync(file)) continue;
-    const action = actionFromHandoff(cwd, dir, file);
-    if (action && (action.role === "qa" || action.role === "reviewer")) actions.push(action);
+    actions.push(...actionsFromHandoff(cwd, dir, file, expectedTasks));
   }
   return actions.sort((a, b) => a.handoff.localeCompare(b.handoff));
 }
@@ -227,9 +286,9 @@ function buildLineage(cwd: string, runId: string, role: QualityRole, taskId: str
 
 export function writeQualityLineage(cwd: string, runId: string): string {
   const dir = runDir(cwd, runId);
-  const actions = collectQualityActions(cwd, runId);
-  const keys = new Set(actions.map((action) => groupKey(action.role, action.task_id)));
   const expectedTasks = expectedTaskIds(cwd, runId);
+  const actions = collectQualityActions(cwd, runId, expectedTasks);
+  const keys = new Set(actions.map((action) => groupKey(action.role, action.task_id)));
   for (const taskId of expectedTasks) {
     keys.add(groupKey("qa", taskId));
     keys.add(groupKey("reviewer", taskId));

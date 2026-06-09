@@ -339,6 +339,121 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
 }
 
 {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-demo1-schema-normalization-"));
+  const runId = "demo1-schema-normalization";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(path.join(runDir, "orchestration"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "planning"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "evidence"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "agents", "T1"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "agents", "T2"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "agents", "qa-revalidation"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "agents", "reviewer-revalidation"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "waiting_for_agent_output",
+    execution_mode: "true_harness",
+    project_kind: "new_project",
+    source: { type: "text", value: "demo1 schema normalization" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "planning", "task-graph.json"), JSON.stringify({
+    run_id: runId,
+    strategy: "parallel",
+    tasks: [
+      { id: "T1", type: "dev", title: "backend" },
+      { id: "T2", type: "dev", title: "frontend" }
+    ]
+  }, null, 2) + "\n");
+  const qaEvidence = path.join(runDir, "evidence", "test-results.md");
+  const reviewEvidence = path.join(runDir, "evidence", "review.md");
+  const patchT1 = path.join(runDir, "agents", "T1", "patch.diff");
+  const patchT2 = path.join(runDir, "agents", "T2", "patch.diff");
+  fs.writeFileSync(qaEvidence, "# QA\n\npass\n");
+  fs.writeFileSync(reviewEvidence, "# Review\n\napproved\n");
+  fs.writeFileSync(patchT1, "diff --git a/backend b/backend\n");
+  fs.writeFileSync(patchT2, "diff --git a/frontend b/frontend\n");
+  fs.writeFileSync(path.join(runDir, "agents", "T1", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "Dev Backend",
+    status: "completed",
+    summary: "Backend remediation completed.",
+    evidence: [patchT1],
+    files_created_or_modified: ["backend/src/main/java/App.java"]
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "agents", "T2", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T2",
+    role: "dev-frontend-verification",
+    status: "completed_verification_blocked_by_missing_local_dependencies",
+    summary: "Frontend implementation completed; local dependency install was unavailable.",
+    evidence: [patchT2],
+    files_created_or_modified: ["frontend/src/App.tsx"],
+    verification_commands: ["npm test"]
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "agents", "qa-revalidation", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    role: "qa-revalidation",
+    status: "pass",
+    summary: "QA revalidation covered all graph tasks.",
+    evidence: [qaEvidence],
+    verification_summary: { required_coverage_declared_complete: true }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "agents", "reviewer-revalidation", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    role: "reviewer-revalidation",
+    status: "completed",
+    approval_status: "approved_with_risks",
+    summary: "Reviewer revalidation covered all graph tasks.",
+    evidence: [reviewEvidence],
+    findings: []
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    decision_source: "orchestrator_agent",
+    execution_mode: "true_harness",
+    harness_classification: "true_harness",
+    status: "in_progress",
+    next_actions: [
+      { id: "agent-dev-backend", kind: "agent", status: "completed", role: "Dev Backend", taskId: "T1", reason: "backend done", inputs: [], outputs: [path.join(runDir, "agents", "T1", "handoff.json")], dependsOn: [], parallelGroup: "delivery" },
+      { id: "agent-dev-frontend", kind: "agent", status: "completed", role: "Dev Frontend", taskId: "T2", reason: "frontend done", inputs: [], outputs: [path.join(runDir, "agents", "T2", "handoff.json")], dependsOn: [], parallelGroup: "delivery" },
+      { id: "agent-qa-revalidation", kind: "agent", status: "pass", role: "qa-revalidation", reason: "qa complete", inputs: [], outputs: [path.join(runDir, "agents", "qa-revalidation", "handoff.json")], dependsOn: [], parallelGroup: "validation" },
+      { id: "agent-reviewer-revalidation", kind: "agent", status: "approved_with_risks", role: "reviewer-revalidation", reason: "review complete", inputs: [], outputs: [path.join(runDir, "agents", "reviewer-revalidation", "handoff.json")], dependsOn: [], parallelGroup: "validation" }
+    ],
+    agent_runs: [
+      { id: "dev-backend-remediation", role: "dev-backend-remediation", taskId: "T1", status: "completed", skills: [], inputs: [], outputs: [path.join(runDir, "agents", "T1", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "T1", "**")], dependsOn: [], parallelGroup: "delivery" },
+      { id: "dev-backend-remediation", role: "dev-frontend-verification", taskId: "T2", status: "completed_blocked_required_frontend_verification", skills: [], inputs: [], outputs: [path.join(runDir, "agents", "T2", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "T2", "**")], dependsOn: [], parallelGroup: "delivery" },
+      { id: "qa-revalidation", role: "qa-revalidation", status: "pass", skills: ["verification"], inputs: [], outputs: [path.join(runDir, "agents", "qa-revalidation", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "qa-revalidation", "**")], dependsOn: [], parallelGroup: "validation" },
+      { id: "reviewer-revalidation", role: "reviewer-revalidation", status: "completed", skills: ["code-review"], inputs: [], outputs: [path.join(runDir, "agents", "reviewer-revalidation", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "reviewer-revalidation", "**")], dependsOn: [], parallelGroup: "validation" }
+    ]
+  }, null, 2) + "\n");
+
+  readStatus(cwd);
+  const session = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8"));
+  assert.equal(session.status, "waiting_for_agent_output");
+  assert.deepEqual(session.next_actions.map((action) => action.role), ["dev", "dev", "qa", "reviewer"]);
+  assert.equal(new Set(session.agent_runs.map((agent) => agent.id)).size, session.agent_runs.length);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "session-validation.json"), "utf8")).status, "pass");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "handoff-validation.json"), "utf8")).status, "pass");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8")).contracts.length, 4);
+
+  const result = reconcileRun(cwd, runId);
+  assert.equal(result.status, "blocked");
+  const lineage = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "quality-lineage.json"), "utf8"));
+  assert.equal(lineage.summary.qa, "pass");
+  assert.equal(lineage.summary.review, "pass");
+  assert.deepEqual(lineage.summary.coverage.qa, { passed: 2, expected: 2, missing: [] });
+  assert.deepEqual(lineage.summary.coverage.review, { passed: 2, expected: 2, missing: [] });
+  const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
+  assert.ok(evidence.handoff_evidence_chain.some((handoff) => handoff.role === "qa"));
+  assert.ok(evidence.handoff_evidence_chain.some((handoff) => handoff.role === "reviewer"));
+}
+
+{
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-planned-action-contract-"));
   const runId = "planned-action-contract";
   const runDir = path.join(cwd, ".imfine", "runs", runId);

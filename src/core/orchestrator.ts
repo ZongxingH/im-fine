@@ -270,6 +270,40 @@ function normalizeRoleOrOriginal(role: unknown): string {
   return normalizeRuntimeRole(role) || role;
 }
 
+function normalizeSessionStatus(status: unknown): RunState {
+  if (typeof status !== "string") return "waiting_for_agent_output";
+  if (isRunState(status)) return status;
+  const normalized = status.trim().toLowerCase().replaceAll("-", "_").replace(/\s+/g, "_");
+  if (normalized === "in_progress" || normalized === "running" || normalized === "working") return "waiting_for_agent_output";
+  if (normalized === "ready_for_commit") return "ready_for_commit";
+  if (normalized.includes("blocked")) return "blocked";
+  if (normalized.startsWith("completed")) return "completed";
+  return "waiting_for_agent_output";
+}
+
+function normalizeActionStatus(status: unknown): OrchestrationActionStatus {
+  if (status === "ready" || status === "waiting" || status === "blocked" || status === "done") return status;
+  if (typeof status !== "string") return "ready";
+  const normalized = status.trim().toLowerCase().replaceAll("-", "_").replace(/\s+/g, "_");
+  if (normalized === "running" || normalized === "in_progress") return "ready";
+  if (normalized.startsWith("completed") || normalized === "pass" || normalized === "approved" || normalized === "approved_with_risks" || normalized === "changes_requested" || normalized === "ready_for_commit") {
+    return "done";
+  }
+  if (normalized.includes("blocked")) return "blocked";
+  return "ready";
+}
+
+function normalizeAgentStatus(status: unknown): AgentRun["status"] {
+  if (status === "ready" || status === "waiting" || status === "planned" || status === "completed") return status;
+  if (typeof status !== "string") return "planned";
+  const normalized = status.trim().toLowerCase().replaceAll("-", "_").replace(/\s+/g, "_");
+  if (normalized === "running" || normalized === "in_progress") return "ready";
+  if (normalized.startsWith("completed") || normalized === "done" || normalized === "pass" || normalized === "approved" || normalized === "approved_with_risks" || normalized === "changes_requested" || normalized === "ready_for_commit" || normalized.includes("blocked")) {
+    return "completed";
+  }
+  return "planned";
+}
+
 function normalizeAction(value: unknown): unknown {
   if (!isObject(value)) return value;
   const role = normalizeRoleOrOriginal(value.role);
@@ -279,7 +313,7 @@ function normalizeAction(value: unknown): unknown {
     ...value,
     id,
     kind: typeof value.kind === "string" ? value.kind : "agent",
-    status: value.status === "completed" ? "done" : value.status || "ready",
+    status: normalizeActionStatus(value.status),
     role,
     reason: typeof value.reason === "string" && value.reason.trim() ? value.reason : description || "orchestrator declared action",
     inputs: normalizeArray(value.inputs),
@@ -301,7 +335,7 @@ function normalizeAgentRun(value: unknown): unknown {
     ...value,
     id,
     role,
-    status: value.status === "done" ? "completed" : value.status || "planned",
+    status: normalizeAgentStatus(value.status),
     skills: normalizeArray(value.skills),
     inputs: normalizeArray(value.inputs),
     outputs: normalizeArray(value.outputs),
@@ -310,6 +344,16 @@ function normalizeAgentRun(value: unknown): unknown {
     dependsOn: normalizeArray(value.dependsOn),
     parallelGroup: typeof value.parallelGroup === "string" && value.parallelGroup.trim() ? value.parallelGroup : role || "default"
   };
+}
+
+function uniqueAgentRuns(agents: AgentRun[]): AgentRun[] {
+  const seen = new Map<string, number>();
+  return agents.map((agent) => {
+    const count = seen.get(agent.id) || 0;
+    seen.set(agent.id, count + 1);
+    if (count === 0) return agent;
+    return { ...agent, id: `${agent.id}-${count + 1}` };
+  });
 }
 
 function normalizeSession(session: AgentAuthoredSession): { session: AgentAuthoredSession; changed: boolean } {
@@ -321,8 +365,9 @@ function normalizeSession(session: AgentAuthoredSession): { session: AgentAuthor
   const normalized = {
     ...session,
     schema_version: session.schema_version || 1,
+    status: normalizeSessionStatus(session.status),
     next_actions: sourceActions.map(normalizeAction) as OrchestrationAction[],
-    agent_runs: (Array.isArray(session.agent_runs) ? session.agent_runs : []).map(normalizeAgentRun) as AgentRun[]
+    agent_runs: uniqueAgentRuns((Array.isArray(session.agent_runs) ? session.agent_runs : []).map(normalizeAgentRun) as AgentRun[])
   };
   delete normalized.next_action;
   return {
@@ -1014,6 +1059,13 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       parallelGroups: []
     };
   }
+  writeText(path.join(runDirPath, "orchestration", "session-validation.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "pass",
+    errors: [],
+    validated_at: new Date().toISOString()
+  }, null, 2)}\n`);
 
   const currentStatus = currentNormalizedStatus;
   const sessionStatus = normalizeRunState(session.status);
@@ -1053,6 +1105,13 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       parallelGroups: groupActions(nextActions)
     };
   }
+  writeText(path.join(runDirPath, "orchestration", "handoff-validation.json"), `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "pass",
+    errors: [],
+    validated_at: new Date().toISOString()
+  }, null, 2)}\n`);
   const parallelGroups = groupActions(nextActions);
 
   return {

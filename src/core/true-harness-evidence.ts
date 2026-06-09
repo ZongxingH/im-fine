@@ -9,6 +9,7 @@ import { providerReceipts, receiptProvesNativeSubagent, resolveProviderCapabilit
 import { writeRolePurityAudit } from "./role-purity.js";
 import { skillEvidenceRequirements } from "./skill-registry.js";
 import { appendRuntimeTraceEvent, latestTraceSourceForArtifact } from "./trace-events.js";
+import { normalizeRuntimeRole } from "./role-registry.js";
 
 interface RunMetadata {
   run_id: string;
@@ -270,10 +271,15 @@ function collectHandoffs(runDirPath: string, cwd: string): Array<{
     const file = path.join(agentsDir, entry.name, "handoff.json");
     if (!fs.existsSync(file)) continue;
     const handoff = readJson<HandoffRecord>(file);
-    if (typeof handoff.from !== "string") continue;
+    const rawRole = typeof handoff.from === "string"
+      ? handoff.from
+      : typeof (handoff as { role?: unknown }).role === "string"
+        ? (handoff as { role: string }).role
+        : entry.name;
+    const role = normalizeRuntimeRole(rawRole) || rawRole;
     handoffs.push({
       agent_id: entry.name,
-      role: handoff.from,
+      role,
       task_id: handoff.task_id,
       status: handoff.status || "unknown",
       summary: handoff.summary || "",
