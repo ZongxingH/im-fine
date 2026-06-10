@@ -3,6 +3,8 @@ import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { validateAgentHandoff } from "./handoff-evidence.js";
 import { type ProviderName, writeProviderOriginReceipt } from "./provider-evidence.js";
+import { recordActionStatus } from "./reliability.js";
+import { transitionTaskState } from "./state-machine.js";
 
 export interface AgentCompleteResult {
   runId: string;
@@ -131,6 +133,69 @@ function recordWave(dir: string, runId: string, action: ActionRecord, status: Ag
   return file;
 }
 
+function roleStatusFromHandoff(action: ActionRecord, parsed: { status?: unknown; approval_status?: unknown }): string {
+  const status = typeof parsed.status === "string" ? parsed.status : "";
+  const approval = typeof parsed.approval_status === "string" ? parsed.approval_status : "";
+  if (action.role === "qa") {
+    if (status === "pass" || status === "fail" || status === "blocked") return status;
+    return "pass";
+  }
+  if (approval === "approved" || approval === "approved_with_risks") return "approved";
+  if (status === "approved" || status === "changes_requested" || status === "blocked") return status;
+  return "approved";
+}
+
+function writeRoleStatus(dir: string, action: ActionRecord, handoffFile: string): string | null {
+  if (!action.taskId || (action.role !== "qa" && action.role !== "reviewer")) return null;
+  const parsed = readJson<{ status?: unknown; approval_status?: unknown; errors?: unknown; failures?: unknown; findings?: unknown; summary?: unknown }>(handoffFile);
+  const status = roleStatusFromHandoff(action, parsed);
+  const agentDir = path.join(dir, "agents", `${action.role}-${action.taskId}`);
+  ensureDir(agentDir);
+  const file = path.join(agentDir, "status.json");
+  writeText(file, `${JSON.stringify({
+    task_id: action.taskId,
+    status,
+    summary: typeof parsed.summary === "string" ? parsed.summary : undefined,
+    errors: Array.isArray(parsed.errors) ? parsed.errors : action.role === "qa" ? parsed.failures || [] : parsed.findings || []
+  }, null, 2)}\n`);
+  return file;
+}
+
+function transitionRoleTaskState(cwd: string, runId: string, action: ActionRecord, handoffFile: string): string | null {
+  if (!action.taskId || (action.role !== "qa" && action.role !== "reviewer")) return null;
+  const parsed = readJson<{ status?: unknown; approval_status?: unknown }>(handoffFile);
+  const status = roleStatusFromHandoff(action, parsed);
+  const nextState = action.role === "qa"
+    ? status === "pass" ? "qa_passed" : status === "fail" ? "qa_failed" : "qa_blocked"
+    : status === "approved" ? "review_approved" : status === "changes_requested" ? "review_changes_requested" : "review_blocked";
+  const transition = transitionTaskState(cwd, runId, action.taskId, nextState, { provider_origin_action: action.id });
+  return transition.accepted ? null : `provider-origin ${action.role} rejected task transition ${transition.from} -> ${transition.to}: ${transition.reason || "unknown reason"}`;
+}
+
+function writeProviderEvidenceSummary(dir: string, action: ActionRecord, handoffFile: string): string | null {
+  if (!action.taskId || (action.role !== "qa" && action.role !== "reviewer")) return null;
+  const parsed = readJson<{ status?: unknown; approval_status?: unknown; summary?: unknown; evidence?: unknown }>(handoffFile);
+  const status = roleStatusFromHandoff(action, parsed);
+  const evidence = Array.isArray(parsed.evidence) ? parsed.evidence.filter((item): item is string => typeof item === "string") : [];
+  const file = path.join(dir, "evidence", action.role === "qa" ? "test-results.md" : "review.md");
+  const title = action.role === "qa" ? "Test Results" : "Review Evidence";
+  const section = [
+    `## ${action.taskId}`,
+    "",
+    `- status: ${status}`,
+    `- summary: ${typeof parsed.summary === "string" ? parsed.summary : "none"}`,
+    `- handoff: ${handoffFile}`,
+    "",
+    "## Provider Evidence",
+    "",
+    evidence.length > 0 ? evidence.map((item) => `- ${item}`).join("\n") : "- none"
+  ].join("\n");
+  ensureDir(path.dirname(file));
+  if (fs.existsSync(file)) fs.appendFileSync(file, `\n\n${section}\n`);
+  else fs.writeFileSync(file, `# ${title}\n\n${section}\n`);
+  return file;
+}
+
 export function recordProviderOriginAgentCompletion(cwd: string, runId: string, actionId: string, input: AgentReceiptInput): AgentCompleteResult {
   const dir = runDir(cwd, runId);
   const action = findAction(dir, actionId);
@@ -169,13 +234,29 @@ export function recordProviderOriginAgentCompletion(cwd: string, runId: string, 
   });
   const agentRuns = updateAgentRuns(dir, runId, action, agentId, status, validation.file);
   const wave = recordWave(dir, runId, action, status);
+  const roleStatus = writeRoleStatus(dir, action, validation.file);
+  const evidenceSummary = writeProviderEvidenceSummary(dir, action, validation.file);
+  const transitionError = transitionRoleTaskState(cwd, runId, action, validation.file);
+  if (transitionError) {
+    const ledger = recordActionStatus(cwd, runId, actionId, "failed", transitionError, [validation.file]);
+    return {
+      runId,
+      actionId,
+      agentId,
+      role: action.role,
+      status: "blocked",
+      files: [validation.file, agentRuns, wave, roleStatus, evidenceSummary, ledger].filter((file): file is string => Boolean(file)),
+      errors: [transitionError]
+    };
+  }
+  const ledger = recordActionStatus(cwd, runId, actionId, "completed", `provider-origin agent completed: ${action.role}`, [validation.file]);
   return {
     runId,
     actionId,
     agentId,
     role: action.role,
     status,
-    files: [validation.file, agentRuns, wave, receipt ? path.join(dir, "orchestration", "provider-receipts", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`) : null].filter((file): file is string => Boolean(file)),
+    files: [validation.file, agentRuns, wave, roleStatus, evidenceSummary, ledger, receipt ? path.join(dir, "orchestration", "provider-receipts", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`) : null].filter((file): file is string => Boolean(file)),
     errors: []
   };
 }

@@ -76,7 +76,10 @@ function compactGateLines(result: StatusResult): string[] {
   const gates = result.currentRunGates || {};
   const receipts = result.currentRunProviderReceipts;
   const dispatch = result.currentRunDispatch;
-  const handoffCount = result.currentRunAgentNameMap?.mappings.filter((item) => item.handoffPath).length || 0;
+  const handoffCount = Math.max(
+    result.currentRunAgentNameMap?.mappings.filter((item) => item.handoffPath).length || 0,
+    result.currentRunHandoffFiles.length
+  );
   const receiptLine = receipts
     ? `${receipts.validReceiptCount}/${Math.max(receipts.validReceiptCount + receipts.missingProviderReceiptActionIds.length, receipts.receiptCount)}`
     : "none";
@@ -132,7 +135,7 @@ function agentAuthoredEvidence(result: StatusResult): string[] {
   const quality = result.currentRunQualityLineage?.latest
     .map((item) => item.latestHandoff)
     .filter((item): item is string => Boolean(item)) || [];
-  return Array.from(new Set([...fromMap, ...quality])).sort();
+  return Array.from(new Set([...fromMap, ...quality, ...result.currentRunHandoffFiles])).sort();
 }
 
 function runtimeDerivedEvidence(result: StatusResult): string[] {
@@ -155,6 +158,9 @@ function runtimeDerivedEvidence(result: StatusResult): string[] {
 }
 
 function blockingReason(result: StatusResult): string {
+  if (result.currentRunBlockers?.firstReason) {
+    return result.currentRunBlockers.firstReason;
+  }
   if (result.currentRunNextOwner && result.currentRunNextOwner.reason !== "no blocking next action detected") {
     return `${result.currentRunNextOwner.owner}: ${result.currentRunNextOwner.reason}`;
   }
@@ -162,6 +168,22 @@ function blockingReason(result: StatusResult): string {
     return `${result.currentRunBlockers.items} blocker(s); ${result.currentRunBlockers.nextAction || "see blocker summary"}`;
   }
   return "none";
+}
+
+function rootCauseLines(result: StatusResult): string[] {
+  const reason = blockingReason(result);
+  const downstream: string[] = [];
+  if (result.currentRunDispatch?.contractCount === 0) downstream.push("dispatch contracts");
+  if (result.currentRunProviderReceipts?.validReceiptCount === 0) downstream.push("provider receipts");
+  if (!result.currentRunQualityLineage || [result.currentRunQualityLineage.qa, result.currentRunQualityLineage.review, result.currentRunQualityLineage.recheckFixLoop].some((status) => status !== "pass")) {
+    downstream.push("quality lineage");
+  }
+  if (!result.currentRunGates || result.currentRunGates.role_purity !== "pass") downstream.push("role purity");
+  if (!result.currentRunGates || !Object.values(result.currentRunGates).every((status) => status === "pass")) downstream.push("final gates");
+  return [
+    `- root cause: ${reason}`,
+    `- not evaluated or blocked downstream: ${downstream.length > 0 ? Array.from(new Set(downstream)).join(", ") : "none"}`
+  ];
 }
 
 function nextAction(result: StatusResult): string {
@@ -198,6 +220,9 @@ function formatStatusSummary(result: StatusResult): string {
     "",
     "Gate phase:",
     ...gatePhaseLines(result),
+    "",
+    "Root cause:",
+    ...rootCauseLines(result),
     "",
     "Gates:",
     ...compactGateLines(result),
@@ -239,6 +264,9 @@ function formatStatusStory(result: StatusResult): string {
     "",
     "Gate phase:",
     ...gatePhaseLines(result),
+    "",
+    "Root cause:",
+    ...rootCauseLines(result),
     "",
     "Gates:",
     ...compactGateLines(result),
@@ -299,7 +327,7 @@ function formatStatusDebug(result: StatusResult): string {
     ? `${result.currentRunNextOwner.owner}: ${result.currentRunNextOwner.reason}; evidence=${result.currentRunNextOwner.evidence.join(",") || "none"}`
     : "none";
   const blockers = result.currentRunBlockers
-    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, file=${result.currentRunBlockers.file}, next=${result.currentRunBlockers.nextAction || "none"}, doc=${result.currentRunBlockers.diagnosticDoc || "none"}`
+    ? `${result.currentRunBlockers.status}, items=${result.currentRunBlockers.items}, first=${result.currentRunBlockers.firstReason || "none"}, file=${result.currentRunBlockers.file}, next=${result.currentRunBlockers.nextAction || "none"}, doc=${result.currentRunBlockers.diagnosticDoc || "none"}`
     : "none";
   const checkpoint = result.currentRunLatestCheckpoint
     ? `${result.currentRunLatestCheckpoint.actionId}:${result.currentRunLatestCheckpoint.status} (${result.currentRunLatestCheckpoint.detail})`
@@ -366,6 +394,9 @@ export function formatReportDemoSummary(result: ReportResult, statusResult: Stat
     "",
     "Gate phase:",
     ...gatePhaseLines(statusResult),
+    "",
+    "Root cause:",
+    ...rootCauseLines(statusResult),
     "",
     "Gates:",
     ...compactGateLines(statusResult),

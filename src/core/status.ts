@@ -28,6 +28,7 @@ export interface StatusResult {
     waveCount: number;
     missingCompletedWaveActionIds: string[];
   } | null;
+  currentRunHandoffFiles: string[];
   currentRunProviderReceipts: {
     receiptCount: number;
     validReceiptCount: number;
@@ -144,6 +145,7 @@ export interface StatusResult {
     file: string;
     status: string;
     items: number;
+    firstReason: string | null;
     nextAction: string | null;
     diagnosticDoc: string | null;
   } | null;
@@ -249,6 +251,17 @@ function dispatchStatus(runRoot: string): StatusResult["currentRunDispatch"] {
     waveCount: waves.length,
     missingCompletedWaveActionIds
   };
+}
+
+function handoffFiles(cwd: string, runRoot: string): string[] {
+  const agentsDir = path.join(runRoot, "agents");
+  if (!fs.existsSync(agentsDir)) return [];
+  return fs.readdirSync(agentsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(agentsDir, entry.name, "handoff.json"))
+    .filter((file) => fs.existsSync(file))
+    .map((file) => path.relative(cwd, file))
+    .sort();
 }
 
 function providerReceiptStatus(cwd: string, runRoot: string, runId: string): StatusResult["currentRunProviderReceipts"] {
@@ -544,6 +557,7 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
   let currentRunGates: StatusResult["currentRunGates"] = null;
   let currentRunConsistency: StatusResult["currentRunConsistency"] = null;
   let currentRunDispatch: StatusResult["currentRunDispatch"] = null;
+  let currentRunHandoffFiles: StatusResult["currentRunHandoffFiles"] = [];
   let currentRunProviderReceipts: StatusResult["currentRunProviderReceipts"] = null;
   let currentRunProviderObservations: StatusResult["currentRunProviderObservations"] = null;
   let currentRunAgentNameMap: StatusResult["currentRunAgentNameMap"] = null;
@@ -624,6 +638,7 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
         currentRunBranch = typeof parsed.run_branch === "string" ? parsed.run_branch : null;
         const runRoot = path.join(workspace, "runs", currentRunId);
         currentRunDispatch = dispatchStatus(runRoot);
+        currentRunHandoffFiles = handoffFiles(cwd, runRoot);
         currentRunProviderReceipts = providerReceiptStatus(cwd, runRoot, currentRunId);
         currentRunProviderObservations = providerObservationStatus(cwd, runRoot);
         currentRunAgentNameMap = agentNameMapStatus(runRoot);
@@ -742,6 +757,11 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
             file: blockerFile,
             status: blockers.status || "unknown",
             items: Array.isArray(blockers.sources) ? blockers.sources.reduce((total, source) => total + (Array.isArray(source.blockers) ? source.blockers.length : 0), 0) : 0,
+            firstReason: firstBlocker && typeof firstBlocker === "object" && typeof (firstBlocker as { reason?: unknown }).reason === "string"
+              ? (firstBlocker as { reason: string }).reason
+              : typeof firstBlocker === "string"
+                ? firstBlocker
+                : null,
             nextAction: firstBlocker && typeof firstBlocker === "object"
               ? `owner=${String((firstBlocker as { owner?: unknown }).owner || "orchestrator")}; evidence=${Array.isArray((firstBlocker as { required_evidence?: unknown }).required_evidence) ? ((firstBlocker as { required_evidence: unknown[] }).required_evidence).join(", ") : "unknown"}`
               : typeof firstBlocker === "string"
@@ -787,6 +807,18 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
       currentRunDemoWarnings.push(`current run has less validation evidence than ${richer.runId} (${currentScore} vs ${richer.evidenceScore})`);
     }
   }
+  if (currentRunId && currentRunDispatch?.contractCount === 0 && currentRunHandoffFiles.length > 0) {
+    currentRunDemoWarnings.push(`session invalid: dispatch not materialized; handoffs found: ${currentRunHandoffFiles.length}; dispatch contracts: 0`);
+  }
+  if (currentRunId) {
+    const runRoot = path.join(workspace, "runs", currentRunId);
+    if (fs.existsSync(path.join(runRoot, "acceptance-matrix.json")) && !fs.existsSync(path.join(runRoot, "orchestration", "acceptance-matrix.json"))) {
+      currentRunDemoWarnings.push("root-level acceptance-matrix.json is non-standard and is not counted for role purity");
+    }
+    if (fs.existsSync(path.join(runRoot, "final-gates.json")) && !fs.existsSync(path.join(runRoot, "orchestration", "final-gates.json"))) {
+      currentRunDemoWarnings.push("root-level final-gates.json is agent-authored evidence and does not replace runtime final gates");
+    }
+  }
 
   return {
     cwd,
@@ -799,6 +831,7 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
     currentRunGates,
     currentRunConsistency,
     currentRunDispatch,
+    currentRunHandoffFiles,
     currentRunProviderReceipts,
     currentRunProviderObservations,
     currentRunAgentNameMap,

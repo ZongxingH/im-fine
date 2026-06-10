@@ -384,6 +384,7 @@ The file must:
 - declare \`harness_classification=true_harness\`
 - define every planned \`next_action\`
 - define every \`agent_run\`
+- use registered runtime skill ids in \`agent_runs[].skills\`; current aliases such as \`imfine-dev\` are tolerated, but canonical ids like \`execute-task-plan\`, \`verification\`, and \`code-review\` are preferred
 - define explicit dependencies and parallel groups
 
 You must:
@@ -392,9 +393,10 @@ You must:
 - use the current session's native subagent capability to dispatch independent agents
 - keep QA, Review, Committer, and Archive as separate roles
 - mark the run blocked if the current provider session cannot launch independent subagents
-- keep the current session as Orchestrator-only: do not directly edit role-owned artifacts such as planning/**, design/**, backend/**, frontend/**, tests/**, README.md, evidence/test-results.md, evidence/review.md, acceptance-matrix.json, final-gates.json, or non-orchestrator handoff files
+- keep the current session as Orchestrator-only: do not directly edit role-owned artifacts such as planning/**, design/**, backend/**, frontend/**, tests/**, README.md, evidence/test-results.md, evidence/review.md, root-level acceptance-matrix.json, root-level final-gates.json, orchestration/acceptance-matrix.json, orchestration/final-gates.json, or non-orchestrator handoff files
 - convert QA or Reviewer findings into remediation dispatches; do not patch source code or tests from the Orchestrator session
-- record any required-scope deviation through agent-authored acceptance evidence before final gates
+- record acceptance coverage and any required-scope deviation through agent-authored \`orchestration/agent-acceptance-matrix.json\` or \`agents/<role>/acceptance-matrix.json\` before final gates
+- never write runtime final gates from an Agent; runtime reconcile is the only writer of \`orchestration/final-gates.json\`
 
 Runtime will only materialize what you write in that file and will only perform deterministic backend actions.
 

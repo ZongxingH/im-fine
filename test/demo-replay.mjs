@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { formatStatus } from "../dist/core/format.js";
 import { reconcileRun } from "../dist/core/reconcile.js";
 import { status as readStatus } from "../dist/core/status.js";
 import { writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
@@ -76,6 +77,78 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
 }
 
 {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-session-invalid-diagnostic-"));
+  const runId = "session-invalid-diagnostic";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(path.join(runDir, "orchestration"), { recursive: true });
+  fs.mkdirSync(path.join(runDir, "agents", "dev"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "waiting_for_agent_output",
+    execution_mode: "true_harness",
+    project_kind: "new_project",
+    source: { type: "text", value: "invalid session diagnostic" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "agents", "dev", "handoff.json"), JSON.stringify({
+    run_id: runId,
+    task_id: "T1",
+    role: "dev",
+    from: "dev",
+    to: "orchestrator",
+    status: "ready",
+    summary: "handoff exists but session cannot materialize",
+    commands: [],
+    evidence: [],
+    next_state: "blocked",
+    files_changed: [],
+    verification: []
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "acceptance-matrix.json"), JSON.stringify({ required_coverage_declared_complete: true, items: [] }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "final-gates.json"), JSON.stringify({ status: "pass_with_risks", generated_by: "merge-agent" }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    decision_source: "orchestrator_agent",
+    execution_mode: "true_harness",
+    harness_classification: "true_harness",
+    status: "waiting_for_agent_output",
+    next_actions: [
+      { id: "agent-dev", kind: "agent", status: "ready", role: "dev", reason: "dispatch dev", inputs: [], outputs: [path.join(runDir, "agents", "dev", "handoff.json")], dependsOn: [], parallelGroup: "delivery" }
+    ],
+    agent_runs: [
+      { id: "dev", role: "dev", taskId: "T1", status: "planned", skills: ["missing-skill"], inputs: [], outputs: [path.join(runDir, "agents", "dev", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "dev", "**")], dependsOn: [], parallelGroup: "delivery" }
+    ]
+  }, null, 2) + "\n");
+
+  const status = readStatus(cwd);
+  assert.equal(status.currentRunDispatch.contractCount, 0);
+  assert.equal(status.currentRunHandoffFiles.length, 1);
+  assert.ok(status.currentRunBlockers.firstReason.includes("unknown skill"));
+  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("dispatch not materialized")));
+  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level acceptance-matrix")));
+  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level final-gates")));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-runtime-consistency.json"), "utf8")).status, "blocked");
+  assert.match(formatStatus(status), /Root cause:\n- root cause: agent_runs\[0\]\.unknown skill/);
+}
+
+{
+  const cwd = copyDemo(demoRoots.early, "imfine-latest-demo-skill-alias-");
+  const runId = runIds(cwd)[0];
+  assert.ok(runId);
+  const status = readStatus(cwd);
+  const validation = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "orchestration", "session-validation.json"), "utf8"));
+  const dispatch = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "orchestration", "dispatch-contracts.json"), "utf8"));
+  assert.equal(validation.status, "pass");
+  assert.deepEqual(validation.errors, []);
+  assert.ok(dispatch.contracts.length > 0);
+  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level acceptance-matrix")));
+  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level final-gates")));
+}
+
+{
   const cwd = copyDemo(demoRoots.early, "imfine-real-early-demo-");
   const runId = runIds(cwd).find((id) => !id.endsWith("-2"));
   if (runId) {
@@ -93,7 +166,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
     }]);
     const result = reconcileRun(cwd, runId);
     assert.equal(result.status, "blocked");
-    assert.equal(result.gates.find((gate) => gate.id === "commit").status, "blocked");
+    assert.equal(result.gates.find((gate) => gate.id === "acceptance_matrix").status, "blocked");
     const run = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "run.json"), "utf8"));
     assert.equal(run.status, "blocked");
   } else {
@@ -425,10 +498,10 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
       { id: "agent-reviewer-revalidation", kind: "agent", status: "approved_with_risks", role: "reviewer-revalidation", reason: "review complete", inputs: [], outputs: [path.join(runDir, "agents", "reviewer-revalidation", "handoff.json")], dependsOn: [], parallelGroup: "validation" }
     ],
     agent_runs: [
-      { id: "dev-backend-remediation", role: "dev-backend-remediation", taskId: "T1", status: "completed", skills: [], inputs: [], outputs: [path.join(runDir, "agents", "T1", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "T1", "**")], dependsOn: [], parallelGroup: "delivery" },
-      { id: "dev-backend-remediation", role: "dev-frontend-verification", taskId: "T2", status: "completed_blocked_required_frontend_verification", skills: [], inputs: [], outputs: [path.join(runDir, "agents", "T2", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "T2", "**")], dependsOn: [], parallelGroup: "delivery" },
-      { id: "qa-revalidation", role: "qa-revalidation", status: "pass", skills: ["verification"], inputs: [], outputs: [path.join(runDir, "agents", "qa-revalidation", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "qa-revalidation", "**")], dependsOn: [], parallelGroup: "validation" },
-      { id: "reviewer-revalidation", role: "reviewer-revalidation", status: "completed", skills: ["code-review"], inputs: [], outputs: [path.join(runDir, "agents", "reviewer-revalidation", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "reviewer-revalidation", "**")], dependsOn: [], parallelGroup: "validation" }
+      { id: "dev-backend-remediation", role: "dev-backend-remediation", taskId: "T1", status: "completed", skills: ["imfine-dev"], inputs: [], outputs: [path.join(runDir, "agents", "T1", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "T1", "**")], dependsOn: [], parallelGroup: "delivery" },
+      { id: "dev-backend-remediation", role: "dev-frontend-verification", taskId: "T2", status: "completed_blocked_required_frontend_verification", skills: ["imfine-dev"], inputs: [], outputs: [path.join(runDir, "agents", "T2", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "T2", "**")], dependsOn: [], parallelGroup: "delivery" },
+      { id: "qa-revalidation", role: "qa-revalidation", status: "pass", skills: ["imfine-qa"], inputs: [], outputs: [path.join(runDir, "agents", "qa-revalidation", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "qa-revalidation", "**")], dependsOn: [], parallelGroup: "validation" },
+      { id: "reviewer-revalidation", role: "reviewer-revalidation", status: "completed", skills: ["imfine-review"], inputs: [], outputs: [path.join(runDir, "agents", "reviewer-revalidation", "handoff.json")], readScope: [], writeScope: [path.join(runDir, "agents", "reviewer-revalidation", "**")], dependsOn: [], parallelGroup: "validation" }
     ]
   }, null, 2) + "\n");
 
@@ -436,6 +509,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   const session = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8"));
   assert.equal(session.status, "waiting_for_agent_output");
   assert.deepEqual(session.next_actions.map((action) => action.role), ["dev", "dev", "qa", "reviewer"]);
+  assert.deepEqual(session.agent_runs.map((agent) => agent.skills), [["execute-task-plan"], ["execute-task-plan"], ["verification"], ["code-review"]]);
   assert.equal(new Set(session.agent_runs.map((agent) => agent.id)).size, session.agent_runs.length);
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "session-validation.json"), "utf8")).status, "pass");
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "handoff-validation.json"), "utf8")).status, "pass");

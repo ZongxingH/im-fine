@@ -165,8 +165,32 @@ const SKILLS: Record<string, SkillContract> = {
   }
 };
 
+const SKILL_ALIASES: Record<string, string> = {
+  "imfine-product-planning": "clarify",
+  "imfine-architecture": "project-analysis",
+  "imfine-task-planning": "write-delivery-plan",
+  "imfine-dev": "execute-task-plan",
+  "imfine-qa": "verification",
+  "imfine-review": "code-review",
+  "imfine-risk-review": "risk-review",
+  "imfine-merge": "merge",
+  "imfine-technical-writing": "documentation",
+  "imfine-project-knowledge": "project-knowledge",
+  "imfine-commit": "scope-control",
+  "imfine-archive": "archive"
+};
+
+export function normalizeSkillId(id: string): string {
+  const normalized = id.trim().toLowerCase().replaceAll("_", "-").replace(/\s+/g, "-");
+  return SKILL_ALIASES[normalized] || normalized;
+}
+
+export function normalizeSkillIds(ids: string[]): string[] {
+  return Array.from(new Set(ids.map(normalizeSkillId).filter((id) => id.length > 0)));
+}
+
 export function skillContract(id: string): SkillContract | null {
-  return SKILLS[id] || null;
+  return SKILLS[normalizeSkillId(id)] || null;
 }
 
 export function skillContracts(): SkillContract[] {
@@ -176,8 +200,8 @@ export function skillContracts(): SkillContract[] {
 export function validateAgentSkills(role: string, skills: string[]): string[] {
   const errors: string[] = [];
   if (!isRuntimeRole(role)) return errors;
-  for (const skill of skills) {
-    const contract = skillContract(skill);
+  for (const skill of normalizeSkillIds(skills)) {
+    const contract = SKILLS[skill];
     if (!contract) {
       errors.push(`unknown skill for ${role}: ${skill}`);
       continue;
@@ -191,5 +215,5 @@ export function validateAgentSkills(role: string, skills: string[]): string[] {
 }
 
 export function skillEvidenceRequirements(skills: string[]): string[] {
-  return Array.from(new Set(skills.flatMap((skill) => skillContract(skill)?.requiredEvidence || []))).sort();
+  return Array.from(new Set(normalizeSkillIds(skills).flatMap((skill) => skillContract(skill)?.requiredEvidence || []))).sort();
 }

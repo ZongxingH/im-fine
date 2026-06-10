@@ -106,8 +106,8 @@ export function blockerSummary(cwd: string, runId: string): {
   const orchestration = path.join(root, "orchestration");
   const sources: SummarySource[] = [
     { id: "state-blockers", file: path.join(orchestration, "state-blockers.json") },
-    { id: "provider-capability", file: path.join(orchestration, "provider-capability.json") },
     { id: "session-validation", file: path.join(orchestration, "session-validation.json") },
+    { id: "provider-capability", file: path.join(orchestration, "provider-capability.json") },
     { id: "handoff-validation", file: path.join(orchestration, "handoff-validation.json") },
     { id: "final-gates", file: path.join(orchestration, "final-gates.json") }
   ];

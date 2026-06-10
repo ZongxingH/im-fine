@@ -7,7 +7,7 @@ import { validateTaskGraph } from "../dist/core/plan.js";
 import { RUNTIME_ROLES, allowedTransitionsForRole, evidenceRequirementsForRole, handoffSchemaForRole, runtimeRoleContracts } from "../dist/core/role-registry.js";
 import { buildDispatchContracts } from "../dist/core/dispatch.js";
 import { isHandoffRole } from "../dist/core/handoff-evidence.js";
-import { validateAgentSkills } from "../dist/core/skill-registry.js";
+import { normalizeSkillIds, validateAgentSkills } from "../dist/core/skill-registry.js";
 import { writeProviderObservation } from "../dist/core/provider-observation.js";
 import { validateProviderReceipt, writeProviderCapabilitySnapshot, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
 import { writeRuntimeRequirements } from "../dist/core/runtime-requirements.js";
@@ -164,6 +164,10 @@ for (const contract of runtimeRoleContracts()) {
   assert.ok(contract.requiredFields.includes("evidence"));
 }
 assert.deepEqual(validateAgentSkills("dev", ["implementation"]), []);
+assert.deepEqual(normalizeSkillIds(["imfine-dev", "imfine-qa", "imfine-review"]), ["execute-task-plan", "verification", "code-review"]);
+assert.deepEqual(validateAgentSkills("dev", ["imfine-dev"]), []);
+assert.deepEqual(validateAgentSkills("qa", ["imfine-qa"]), []);
+assert.deepEqual(validateAgentSkills("reviewer", ["imfine-review"]), []);
 assert.ok(validateAgentSkills("dev", ["archive"]).some((error) => error.includes("not allowed")));
 assert.ok(validateAgentSkills("dev", ["missing-skill"]).some((error) => error.includes("unknown skill")));
 

@@ -106,6 +106,7 @@ the current session must act as Orchestrator:
    - \`harness_classification=true_harness\`
    - every planned \`next_action\`
    - every \`agent_run\`
+   - registered runtime skill ids such as \`project-analysis\`, \`write-delivery-plan\`, \`execute-task-plan\`, \`verification\`, \`code-review\`, \`risk-review\`, \`merge\`, \`documentation\`, \`project-knowledge\`, \`scope-control\`, and \`archive\`
    - explicit \`dependsOn\` and \`parallelGroup\`
 4. launch independent native subagents for the declared roles
 5. use runtime only for deterministic backend actions between agent handoffs
@@ -179,8 +180,9 @@ Before marking \`orchestration/orchestrator-session.json.status\` as \`completed
 - every required dispatch contract has a provider-origin completed receipt
 - every required Agent wrote \`agents/<agent-id>/handoff.json\`
 - \`parallel-execution.json\` has completed waves for required contracts
-- \`acceptance-matrix.json\` is agent-authored, declares \`required_coverage_declared_complete=true\`, has no blocked required items, and deviations use \`library/templates/acceptance-deviation.json\`
-- \`final-gates.json\` exists and all required gates pass
+- acceptance coverage is agent-authored at \`orchestration/agent-acceptance-matrix.json\` or \`agents/<role>/acceptance-matrix.json\`, then runtime derives \`orchestration/acceptance-matrix.json\`; do not write a root-level \`acceptance-matrix.json\`
+- accepted deviations, if any, are recorded as Agent evidence in \`orchestration/acceptance-deviation.json\` or \`agents/<role>/acceptance-deviation.json\`; do not write root-level deviation files
+- runtime-generated \`orchestration/final-gates.json\` exists, has \`generated_by=imfine-runtime\`, and all required gates pass; Agent-authored root-level \`final-gates.json\` does not count
 - \`true-harness-evidence.json\` is fresh and \`true_harness_passed=true\`
 - commit/push/archive policy is satisfied; otherwise use \`ready_for_commit\`, \`awaiting_user_approval\`, \`waiting_for_agent_output\`, or \`blocked\`
 
@@ -301,6 +303,7 @@ Orchestrator 必须：
    - \`harness_classification=true_harness\`
    - 所有计划中的 \`next_action\`
    - 所有 \`agent_run\`
+   - runtime 已注册的 skill id，例如 \`project-analysis\`、\`write-delivery-plan\`、\`execute-task-plan\`、\`verification\`、\`code-review\`、\`risk-review\`、\`merge\`、\`documentation\`、\`project-knowledge\`、\`scope-control\`、\`archive\`
    - 明确的 \`dependsOn\` 和 \`parallelGroup\`
 4. 直接使用当前环境的原生子 Agent 能力拉起独立 Agent
 5. agent handoff 之间只把 runtime 当作确定性后端
@@ -374,8 +377,9 @@ provider agent id、session id 和 task handle 必须来自原生 provider run�
 - 每个 required dispatch contract 都有 provider-origin completed receipt
 - 每个 required Agent 都写出 \`agents/<agent-id>/handoff.json\`
 - \`parallel-execution.json\` 对 required contracts 有 completed wave
-- \`acceptance-matrix.json\` 由 Agent 编写，声明 \`required_coverage_declared_complete=true\`，没有 blocked required item；deviation 使用 \`library/templates/acceptance-deviation.json\`
-- \`final-gates.json\` 存在且 required gates 全部 pass
+- acceptance 覆盖必须由 Agent 写到 \`orchestration/agent-acceptance-matrix.json\` 或 \`agents/<role>/acceptance-matrix.json\`，再由 runtime 派生 \`orchestration/acceptance-matrix.json\`；不要写 run 根目录 \`acceptance-matrix.json\`
+- 如有 accepted deviation，必须作为 Agent evidence 写到 \`orchestration/acceptance-deviation.json\` 或 \`agents/<role>/acceptance-deviation.json\`；不要写 run 根目录 deviation 文件
+- runtime 生成的 \`orchestration/final-gates.json\` 存在，且 \`generated_by=imfine-runtime\`、required gates 全部 pass；Agent 手写的根目录 \`final-gates.json\` 不计入通过
 - \`true-harness-evidence.json\` fresh 且 \`true_harness_passed=true\`
 - commit/push/archive policy 已满足；否则只能使用 \`ready_for_commit\`、\`awaiting_user_approval\`、\`waiting_for_agent_output\` 或 \`blocked\`
 

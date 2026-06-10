@@ -209,7 +209,11 @@ function dependencyEvidenceSatisfied(runDirPath: string, dependency: string): bo
 }
 
 function dependenciesCompleted(cwd: string, runId: string, orchestration: OrchestratorResult, action: OrchestrationAction): boolean {
-  return action.dependsOn.every((dependency) => isActionCompleted(cwd, runId, dependency) || dependencyEvidenceSatisfied(orchestration.runDir, dependency));
+  return action.dependsOn.every((dependency) =>
+    isActionCompleted(cwd, runId, dependency)
+    || dependencyEvidenceSatisfied(orchestration.runDir, dependency)
+    || orchestration.nextActions.some((candidate) => candidate.id === dependency && candidate.status === "done")
+  );
 }
 
 function firstReadyAction(cwd: string, runId: string, orchestration: OrchestratorResult): OrchestrationAction | undefined {

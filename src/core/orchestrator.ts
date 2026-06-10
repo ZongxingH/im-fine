@@ -8,8 +8,9 @@ import { writeTrueHarnessEvidence } from "./true-harness-evidence.js";
 import type { ExecutionMode } from "./execution-mode.js";
 import { writeBlockerSummary } from "./blocker-summary.js";
 import { readProviderCapabilitySnapshot, writeProviderCapabilitySnapshot, writeProviderDispatchReceipt } from "./provider-evidence.js";
+import { isActionCompleted } from "./reliability.js";
 import { isRuntimeRole, normalizeRuntimeRole } from "./role-registry.js";
-import { validateAgentSkills } from "./skill-registry.js";
+import { normalizeSkillIds, validateAgentSkills } from "./skill-registry.js";
 import { appendRuntimeTraceEvent } from "./trace-events.js";
 
 export type OrchestrationActionKind = "runtime" | "agent";
@@ -336,7 +337,7 @@ function normalizeAgentRun(value: unknown): unknown {
     id,
     role,
     status: normalizeAgentStatus(value.status),
-    skills: normalizeArray(value.skills),
+    skills: normalizeSkillIds(normalizeArray(value.skills)),
     inputs: normalizeArray(value.inputs),
     outputs: normalizeArray(value.outputs),
     readScope: normalizeArray(value.readScope),
@@ -780,7 +781,13 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     consistency: path.join(orchestrationDir, "orchestrator-runtime-consistency.json"),
     timeline: path.join(orchestrationDir, "auto-timeline.md")
   };
-  const initialDispatchContracts = exists(files.session) && result.nextActions.length > 0
+  const sessionValidation = optionalJson<{ status?: string; errors?: string[] }>(path.join(orchestrationDir, "session-validation.json"));
+  const sessionBlocked = sessionValidation?.status === "blocked";
+  const sessionBlockedReason = sessionValidation?.errors?.length
+    ? `orchestrator-session schema validation failed: ${sessionValidation.errors[0]}`
+    : "orchestrator-session schema validation failed";
+  const sessionCanMaterialize = !sessionBlocked;
+  const initialDispatchContracts = exists(files.session) && result.nextActions.length > 0 && sessionCanMaterialize
     ? buildDispatchContracts(runId, runDirPath, files.session)
     : [];
   const adoptedAgentRuns = adoptValidatedHandoffs(result, initialDispatchContracts, runDirPath, runId);
@@ -788,9 +795,11 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
   const completedActionIds = new Set(dispatchContracts
     .filter((contract) => contract.kind === "agent" && contract.status === "done")
     .map((contract) => contract.action_id));
-  const effectiveNextActions = result.nextActions.map((action) => (
-    completedActionIds.has(action.id) ? { ...action, status: "done" as const } : action
-  ));
+  const effectiveNextActions = sessionBlocked
+    ? result.nextActions.map((action) => ({ ...action, status: "blocked" as const, reason: sessionBlockedReason }))
+    : result.nextActions.map((action) => (
+      completedActionIds.has(action.id) || isActionCompleted(cwd, runId, action.id) ? { ...action, status: "done" as const } : action
+    ));
   for (const contract of dispatchContracts.filter((item) => item.kind === "agent" && (item.status === "ready" || item.status === "waiting"))) {
     writeProviderDispatchReceipt(cwd, runId, {
       actionId: contract.action_id,
@@ -805,7 +814,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
       }
     });
   }
-  const actionable = effectiveNextActions.filter((action) => action.status !== "done");
+  const actionable = sessionBlocked ? [] : effectiveNextActions.filter((action) => action.status !== "done");
   const existingExecution = optionalJson<{ wave_history?: unknown[]; executed_parallel_groups?: string[]; blocked_parallel_groups?: string[] }>(files.parallelExecution);
   const execution = materializeWaveHistory(existingExecution, dispatchContracts);
 
@@ -892,7 +901,7 @@ function persist(cwd: string, runId: string, result: Omit<OrchestratorResult, "f
     ]
   });
   if (options.writeHarnessEvidence !== false) writeTrueHarnessEvidence(cwd, runId);
-  return { ...result, agentRuns: adoptedAgentRuns, dispatchContracts, files };
+  return { ...result, nextActions: effectiveNextActions, agentRuns: adoptedAgentRuns, dispatchContracts, files };
 }
 
 function waitingForOrchestratorDecision(cwd: string, runId: string, mode: OrchestratorResult["mode"]): OrchestratorResult {
@@ -1034,13 +1043,61 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
   }
   const validationErrors = validateSession(session, runId);
   if (validationErrors.length > 0) {
-    writeText(path.join(runDirPath, "orchestration", "session-validation.json"), `${JSON.stringify({
+    const orchestrationDir = path.join(runDirPath, "orchestration");
+    const sessionValidationFile = path.join(orchestrationDir, "session-validation.json");
+    const dispatchContractsFile = path.join(orchestrationDir, "dispatch-contracts.json");
+    const queueFile = path.join(orchestrationDir, "queue.json");
+    const agentRunsFile = path.join(orchestrationDir, "agent-runs.json");
+    const parallelExecutionFile = path.join(orchestrationDir, "parallel-execution.json");
+    const consistencyFile = path.join(orchestrationDir, "orchestrator-runtime-consistency.json");
+    writeText(sessionValidationFile, `${JSON.stringify({
       schema_version: 1,
       run_id: runId,
       status: "blocked",
       errors: validationErrors,
       validated_at: new Date().toISOString()
     }, null, 2)}\n`);
+    writeText(dispatchContractsFile, `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      contracts: [],
+      blocked_reason: "orchestrator-session schema validation failed",
+      session_validation_errors: validationErrors
+    }, null, 2)}\n`);
+    writeText(queueFile, `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      status: "blocked",
+      actions: [],
+      contracts: [],
+      blocked_reason: "orchestrator-session schema validation failed"
+    }, null, 2)}\n`);
+    writeText(agentRunsFile, `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      agents: [],
+      execution_units: [],
+      blocked_reason: "orchestrator-session schema validation failed"
+    }, null, 2)}\n`);
+    writeText(parallelExecutionFile, `${JSON.stringify({
+      schema_version: 1,
+      run_id: runId,
+      executed_parallel_groups: [],
+      blocked_parallel_groups: [],
+      wave_history: [],
+      blocked_reason: "orchestrator-session schema validation failed"
+    }, null, 2)}\n`);
+    writeOrchestratorRuntimeConsistency(consistencyFile, runId, {
+      runId,
+      runDir: runDirPath,
+      mode,
+      status: "blocked",
+      executionMode: "true_harness",
+      nextActions: Array.isArray(session.next_actions) ? session.next_actions : [],
+      agentRuns: Array.isArray(session.agent_runs) ? session.agent_runs : [],
+      dispatchContracts: [],
+      parallelGroups: []
+    }, []);
     transitionRunState(cwd, runId, "blocked", {
       blocked_at: new Date().toISOString(),
       blocked_reason: "orchestrator-session schema validation failed",
@@ -1053,10 +1110,10 @@ function buildSessionDrivenDecision(cwd: string, runId: string, mode: Orchestrat
       mode,
       status: "blocked",
       executionMode: "true_harness",
-      nextActions: [],
-      agentRuns: [],
+      nextActions: Array.isArray(session.next_actions) ? session.next_actions : [],
+      agentRuns: Array.isArray(session.agent_runs) ? session.agent_runs : [],
       dispatchContracts: [],
-      parallelGroups: []
+      parallelGroups: Array.isArray(session.next_actions) ? groupActions(session.next_actions) : []
     };
   }
   writeText(path.join(runDirPath, "orchestration", "session-validation.json"), `${JSON.stringify({
