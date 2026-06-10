@@ -12,7 +12,7 @@ imfine 当前是一套面向真实软件项目交付的项目级自主多 Agent 
 - `true_harness` 是唯一执行语义
 - Codex 和 Claude 是同一 harness 能力面的两个 provider；涉及 provider 的能力必须同时实现、同时测试、同时文档化
 
-用户主入口只有：
+用户主工作流入口只有：
 
 ```text
 /imfine init
@@ -336,11 +336,13 @@ Claude:
 
 ## 6. 用户命令
 
-当前公开命令只有：
+当前主工作流公开命令是：
 
 - `/imfine init`
 - `/imfine run "<requirement>"` 或 `/imfine run <requirement-file>`
 - `/imfine status`
+
+`report --demo-summary` 是只读演示视图，用于展示已有 run 的摘要，不属于写入型主工作流。
 
 内部确定性命令仍然存在于代码中，例如：
 
@@ -352,6 +354,7 @@ Claude:
 - `commit`
 - `push`
 - `archive`
+- `report`
 - `agent complete`
 - `reconcile`
 - `finalize`
@@ -362,13 +365,13 @@ Claude:
 - `library`
 - `resume`
 
-这些命令属于 runtime 内部动作或测试分发器，不属于用户公开契约。
+除 `report --demo-summary` 这个只读演示视图外，这些命令属于 runtime 内部动作或测试分发器，不属于用户公开契约。
 
 其中 `resume` 只返回当前 run 的只读 orchestration 快照，不负责写状态、制造 blocked 或补 runtime evidence；写入型收敛动作由 `orchestrate`、`agent complete`、`reconcile`、`finalize` 等内部动作承担。
 
 `--plan-only` 也走 `/imfine run` 的同一条主路径：它只创建 run、物化上下文并返回当前 orchestrator 快照，不切换到另一套 planning runtime。
 
-普通用户不需要知道 `orchestrate`、`agent complete`、`finalize` 等内部命令。它们只能由当前会话 Orchestrator protocol、runtime backend 或测试 harness 调用。
+普通用户主流程不需要知道 `orchestrate`、`agent complete`、`finalize` 等内部命令。它们只能由当前会话 Orchestrator protocol、runtime backend 或测试 harness 调用。
 
 ## 7. init 和基础设施检查
 
@@ -455,7 +458,7 @@ Claude:
 当前实现还会在读取 session 时执行确定性 normalize：
 
 - `next_action` 会迁移为 `next_actions`
-- 展示型或旧版 role 名称会通过 role alias 归一到 canonical role，例如 `Architect`、`Task Planner`、`Backend Dev`、`frontend_dev`、`task_planner`、`technical_writer`
+- 展示型或旧版 role 名称会通过 role alias 归一到 canonical role，例如 `Architect`、`Task Planner`、`Backend Dev`、`Dev Backend`、`Dev Frontend`、`frontend_dev`、`qa-revalidation`、`reviewer-revalidation`、`task_planner`、`technical_writer`
 - 缺省数组字段和缺省 `parallelGroup` 会按 runtime 合约补齐
 - 无法 normalize 或校验失败的 session 会写出 `session-validation.json` 并进入 `blocked`
 
@@ -1367,7 +1370,7 @@ experiment config 可以通过 `extends` 继承 base config，并覆盖：
 
 当前实现的关键事实是：
 
-- 公开入口只有 `init`、`run`、`status`
+- 主工作流公开入口只有 `init`、`run`、`status`；`report --demo-summary` 仅作为只读演示视图存在
 - 安装入口只有 `npx github:<owner>/<repo> install ...`
 - 唯一执行模式是 `true_harness`
 - 唯一编排决策源是当前会话中的 `orchestrator agent`
@@ -1416,7 +1419,7 @@ experiment config 可以通过 `extends` 继承 base config，并覆盖：
 - run 防重策略已经存在：同一 active current run 与同一 source 默认复用，需要新 run 时显式 `--new`
 - internal runtime command 已经通过环境变量 guard 与用户公开入口隔离
 - final gates 由 runtime 从标准 evidence 派生，不作为独立事实来源；completed run 缺 final gates 或 final gates 不完整会显示 inconsistent
-- runtime/Agent 边界、调度协议、证据说明、组件注册、演进记录、实验配置和 sandbox verification 已合并进本文档；`docs/` 下不再保留对应小文档，后续以本文档为唯一文档基准
+- runtime/Agent 边界、调度协议、证据说明、组件注册、演进记录、实验配置和 sandbox verification 已合并进本文档；`docs/` 下保留的 demo 复盘文档仅作为历史溯源和验证记录，不作为独立任务源
 - test coverage 已覆盖 role registry 一致性、TaskGraph 负例与语义 warning、provider supported/unsupported/unknown、resolved_by_receipts、provider-origin receipt、provider output snapshot、true harness 缺 receipt/wave/handoff/evidence/pre-archive 负例、status/gate matrix 状态输出、agent registry execution units、blocker matrix、project knowledge freshness、reconcile/finalize、agent complete、resume 幂等、Agent-authored acceptance matrix 对照 fixture 和真实双 demo replay
 - `test/demo-replay.mjs` 直接回放 `/Users/zongxinghuang/MyWorks/work-ifly/research/ai/imfine-demo` 和 `/Users/zongxinghuang/MyWorks/work-ifly/research/ai/imfine-demo1`：早期 demo 不能因 `run.json.completed` 被误判为 true-harness completed；当前 demo1 不能因 git commit 存在被误判为 runtime completed
 
@@ -1439,8 +1442,8 @@ experiment config 可以通过 `extends` 继承 base config，并覆盖：
 - archive 终态是 `completed | blocked`
 - session summary 不写入 `.imfine` 文档
 - `resume` 是只读快照；`status` 不推进 run state，但会刷新 runtime requirements、component snapshot、trace 和 debugger 诊断产物；需要修复或最终收敛时走明确的 reconcile/finalize
-- 基于 `imfine-demo` 与 `imfine-demo1` 对比得到的 12 项 runtime / harness 修复已按当前实现整合进本文档；临时复盘文档不再作为独立来源保留
-- harness backlog 与 AHE 借鉴文档中的有效工程要求已合并进本文档；对应文档已移除，后续不再作为独立任务源保留
+- 基于 `imfine-demo` 与 `imfine-demo1` 对比得到的 12 项 runtime / harness 修复已按当前实现整合进本文档；临时复盘文档如仍保留，仅作为历史溯源和验证记录，不再作为独立待办来源
+- harness backlog 与 AHE 借鉴文档中的有效工程要求已合并进本文档；如仓库中仍保留对应文档，仅作为历史材料，后续不再作为独立任务源保留
 
 ## 21. 参考来源
 
