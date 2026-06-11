@@ -30,7 +30,7 @@ Usage:
   ${program} report <run-id> [--demo-summary|--debug] [--cwd path] [--json]
   ${program} help
 
-Public slash-command surface is intentionally limited to init, run, and status; report --demo-summary is a read-only runtime demo view.
+Public slash-command surface is intentionally limited to init, run, status, and observe; report --demo-summary is a read-only runtime demo view used by the observe workflow.
 Default text output is a demo-oriented harness summary. Use --debug or --json for full runtime paths and deterministic evidence details.
 All planning materialization, orchestration, QA, review, commit, push, archive, recovery, and agent-dispatch commands remain internal runtime actions.
 Outside init-time environment inspection and deterministic runtime materialization, delivery work is expected to be handled by the current session's Orchestrator launching independent native subagents with model-led multi-role multi-agent + skill execution.
@@ -162,7 +162,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
 
     const readonlyDemoReport = command === "report" && readBooleanFlag(args, "demoSummary") && !readBooleanFlag(args, "debug");
     if (isInternalCommand(command) && !readonlyDemoReport && !internalInvocationAllowed()) {
-      throw new Error(`${command} is an internal runtime action. Use /imfine init, /imfine run, or /imfine status from the public workflow.`);
+      throw new Error(`${command} is an internal runtime action. Use /imfine init, /imfine run, /imfine status, or /imfine observe from the public workflow.`);
     }
 
     if (command === "orchestrate") {

@@ -18,6 +18,7 @@ imfine 当前是一套面向真实软件项目交付的项目级自主多 Agent 
 /imfine init
 /imfine run "<requirement>"
 /imfine status
+/imfine observe [run-id]
 ```
 
 `/imfine run` 的固定主路径是：
@@ -146,6 +147,25 @@ library/agents/
 ```
 
 这些角色定义由 orchestrator agent 调度，不由用户手动选择。
+
+### 3.4 AHE / HARNESS.md
+
+吸收的核心能力：
+
+- harness audit
+- 组件化观察
+- evidence-driven 结论
+- 可证伪的改进建议
+- failure evidence / root cause / targeted fix / predicted impact 记录
+
+在 imfine 中，这些能力已经沉淀为 runtime library 下的观察型 Agent 和 skill：
+
+```text
+library/agents/harness-auditor.md
+library/skills/harness-audit.md
+```
+
+它们服务于 `/imfine observe [run-id]`：当前 Codex 或 Claude 会话读取 runtime 观测产物后，拉起独立 Harness Auditor Agent，或在没有原生子 Agent 能力时直接运行 `harness-audit` skill 并披露 `auditor_execution=single_session_skill`。runtime 只提供状态、报告和证据文件，不负责替 Agent 判断 demo 好坏。
 
 ## 4. 安装形态
 
@@ -341,8 +361,11 @@ Claude:
 - `/imfine init`
 - `/imfine run "<requirement>"` 或 `/imfine run <requirement-file>`
 - `/imfine status`
+- `/imfine observe [run-id]`
 
-`report --demo-summary` 是只读演示视图，用于展示已有 run 的摘要，不属于写入型主工作流。
+`/imfine observe [run-id]` 是 Codex / Claude 会话中的观察型 Agent/Skill 工作流：它会读取当前 run 的可观测产物，加载 `harness-auditor` agent 与 `harness-audit` skill，输出 demo 是否 `pass`、`pass_with_risks`、`blocked` 或 `misleading_demo`。runtime 不直接裁判 demo 质量。
+
+`report --demo-summary` 是只读演示视图，用于展示已有 run 的摘要，可作为 `/imfine observe` 的输入，不属于写入型主工作流。
 
 内部确定性命令仍然存在于代码中，例如：
 
@@ -1370,7 +1393,7 @@ experiment config 可以通过 `extends` 继承 base config，并覆盖：
 
 当前实现的关键事实是：
 
-- 主工作流公开入口只有 `init`、`run`、`status`；`report --demo-summary` 仅作为只读演示视图存在
+- 主工作流公开入口只有 `init`、`run`、`status`、`observe`；`report --demo-summary` 仅作为只读演示视图存在
 - 安装入口只有 `npx github:<owner>/<repo> install ...`
 - 唯一执行模式是 `true_harness`
 - 唯一编排决策源是当前会话中的 `orchestrator agent`

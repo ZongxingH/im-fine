@@ -20,6 +20,7 @@ Only these \`/imfine\` forms are user-facing:
 - \`/imfine init\`
 - \`/imfine run <requirement text|requirement-file>\`
 - \`/imfine status\`
+- \`/imfine observe [run-id]\`
 
 ## Layer Contract
 
@@ -114,6 +115,35 @@ the current session must act as Orchestrator:
 
 Do not ask the user to decide which agent runs next.
 
+## Observe Workflow
+
+When the user runs:
+
+\`\`\`text
+/imfine observe [run-id]
+\`\`\`
+
+the current session must evaluate demo quality and true-harness observability. This is an Agent/Skill workflow, not a deterministic runtime verdict.
+
+1. resolve the target run id from the argument or \`.imfine/state/current.json\`
+2. collect read-only runtime views when useful:
+   \`\`\`bash
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js status --story
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js status --debug
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js report <run-id> --demo-summary
+   \`\`\`
+3. load the imfine library material:
+   \`\`\`bash
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents show harness-auditor
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js skills show harness-audit
+   \`\`\`
+4. launch an independent native Harness Auditor Agent when the current provider supports subagents
+5. ask the auditor to inspect \`.imfine/runs/<run-id>/**\` without mutating product code or delivery evidence
+6. have the auditor produce \`.imfine/runs/<run-id>/analysis/demo-observation.md\` when file writing is appropriate
+7. summarize the verdict as \`pass\`, \`pass_with_risks\`, \`blocked\`, or \`misleading_demo\`
+
+If native subagents are unavailable, run the \`harness-audit\` skill in the current session and disclose \`auditor_execution=single_session_skill\`. Do not claim independent auditor evidence in that case.
+
 ## Required Agent Roles
 
 The runtime library contains imfine-owned source-level roles and skills. Core roles include:
@@ -134,6 +164,7 @@ The runtime library contains imfine-owned source-level roles and skills. Core ro
 - Technical Writer
 - Project Knowledge Updater
 - Archive
+- Harness Auditor
 
 Use runtime library commands only when you need the local source text:
 
@@ -217,6 +248,7 @@ function chineseBody(toolName: string): string {
 - \`/imfine init\`
 - \`/imfine run <需求文本|需求文件>\`
 - \`/imfine status\`
+- \`/imfine observe [run-id]\`
 
 ## 三层契约
 
@@ -311,6 +343,35 @@ Orchestrator 必须：
 
 不要问用户下一步该跑哪个 Agent。
 
+## Observe 工作流
+
+当用户执行：
+
+\`\`\`text
+/imfine observe [run-id]
+\`\`\`
+
+当前会话必须评估 demo 质量与 true-harness 可观测性。这是 Agent/Skill 工作流，不是确定性 runtime 自己打分。
+
+1. 从参数或 \`.imfine/state/current.json\` 解析目标 run id
+2. 必要时收集只读 runtime 视图：
+   \`\`\`bash
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js status --story
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js status --debug
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js report <run-id> --demo-summary
+   \`\`\`
+3. 读取 imfine library 材料：
+   \`\`\`bash
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js agents show harness-auditor
+   node ~/.imfine/runtime/dist/cli/imfine-runtime.js skills show harness-audit
+   \`\`\`
+4. 如果当前 provider 支持子 Agent，拉起独立原生 Harness Auditor Agent
+5. 要求 auditor 只读检查 \`.imfine/runs/<run-id>/**\`，不要修改产品代码或交付证据
+6. 适合写文件时，让 auditor 产出 \`.imfine/runs/<run-id>/analysis/demo-observation.md\`
+7. 汇总结论为 \`pass\`、\`pass_with_risks\`、\`blocked\` 或 \`misleading_demo\`
+
+如果没有原生子 Agent 能力，可以在当前会话直接运行 \`harness-audit\` skill，但必须披露 \`auditor_execution=single_session_skill\`，不能声称这是独立 auditor 证据。
+
 ## 角色库
 
 runtime 内置 imfine 自有的源码级角色和 skills。核心角色包括：
@@ -331,6 +392,7 @@ runtime 内置 imfine 自有的源码级角色和 skills。核心角色包括：
 - Technical Writer
 - Project Knowledge Updater
 - Archive
+- Harness Auditor
 
 只有在需要读取本地库内容时，才使用：
 

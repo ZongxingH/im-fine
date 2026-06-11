@@ -9,6 +9,7 @@ imfine adapts selected ideas into its own artifacts:
 - BMAD: role separation, orchestrator/master responsibility, architect/dev/QA/review style responsibilities, project context, implementation readiness, and staged delivery thinking.
 - Superpowers: clarification, planning, execution discipline, TDD, systematic debugging, subagent dispatch with review, and evidence-based completion.
 - OpenSpec: proposal/design/tasks/spec-delta style artifacts, capability knowledge organization, structured acceptance, and archive-to-current-facts thinking.
+- AHE / HARNESS.md: harness audit, component observability, evidence-driven findings, falsifiable predicted impact, and regression-risk tracking.
 
 ## Library Layout
 

@@ -78,6 +78,7 @@ Use imfine from inside Codex or Claude through the slash command:
 /imfine run "<requirement>"
 /imfine run <requirement-file>
 /imfine status
+/imfine observe [run-id]
 ```
 
 ### Initialize A Project
@@ -114,6 +115,14 @@ The current session acts as Orchestrator. It is responsible for planning, dispat
 
 Status reads the current `.imfine` workspace and reports the active run, gates, blockers, final consistency, and relevant evidence paths.
 
+### Observe A Demo
+
+```text
+/imfine observe [run-id]
+```
+
+The current Codex or Claude session loads the imfine `harness-auditor` agent and `harness-audit` skill to inspect an existing run's observability. It reports whether the demo is `pass`, `pass_with_risks`, `blocked`, or `misleading_demo`, citing run artifacts instead of relying on natural-language claims.
+
 ## Runtime Evidence And Diagnostics
 
 Every run is evidence-first. In addition to agent handoffs and final reports, imfine now records harness-level diagnostics under each run:
@@ -135,6 +144,7 @@ The installed runtime lives at `~/.imfine/runtime`, but runtime commands are bac
 - `/imfine init`
 - `/imfine run ...`
 - `/imfine status`
+- `/imfine observe [run-id]`
 
 Internal runtime commands exist for deterministic materialization, validation, provider receipts, evidence collection, commit/push, reconcile, finalize, and archive reporting.
 

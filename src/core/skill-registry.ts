@@ -162,6 +162,14 @@ const SKILLS: Record<string, SkillContract> = {
     expectedOutputs: ["archive report"],
     requiredEvidence: ["archive/archive-report.md"],
     failureHandling: "block archive"
+  },
+  "harness-audit": {
+    id: "harness-audit",
+    roles: ALL_ROLES,
+    requiredInputs: ["run artifacts", "runtime status", "demo summary"],
+    expectedOutputs: ["demo observation report"],
+    requiredEvidence: ["analysis/demo-observation.md"],
+    failureHandling: "mark demo blocked or misleading when evidence is missing"
   }
 };
 
@@ -177,7 +185,10 @@ const SKILL_ALIASES: Record<string, string> = {
   "imfine-technical-writing": "documentation",
   "imfine-project-knowledge": "project-knowledge",
   "imfine-commit": "scope-control",
-  "imfine-archive": "archive"
+  "imfine-archive": "archive",
+  "imfine-harness-audit": "harness-audit",
+  "demo-observability": "harness-audit",
+  "demo-audit": "harness-audit"
 };
 
 export function normalizeSkillId(id: string): string {

@@ -8,6 +8,7 @@ import { RUNTIME_ROLES, allowedTransitionsForRole, evidenceRequirementsForRole, 
 import { buildDispatchContracts } from "../dist/core/dispatch.js";
 import { isHandoffRole } from "../dist/core/handoff-evidence.js";
 import { normalizeSkillIds, validateAgentSkills } from "../dist/core/skill-registry.js";
+import { listLibrary, readLibrary } from "../dist/core/library.js";
 import { writeProviderObservation } from "../dist/core/provider-observation.js";
 import { validateProviderReceipt, writeProviderCapabilitySnapshot, writeProviderExecutionReceipt, writeProviderOriginReceipt } from "../dist/core/provider-evidence.js";
 import { writeRuntimeRequirements } from "../dist/core/runtime-requirements.js";
@@ -168,8 +169,19 @@ assert.deepEqual(normalizeSkillIds(["imfine-dev", "imfine-qa", "imfine-review"])
 assert.deepEqual(validateAgentSkills("dev", ["imfine-dev"]), []);
 assert.deepEqual(validateAgentSkills("qa", ["imfine-qa"]), []);
 assert.deepEqual(validateAgentSkills("reviewer", ["imfine-review"]), []);
+assert.deepEqual(validateAgentSkills("risk-reviewer", ["harness-audit"]), []);
+assert.deepEqual(validateAgentSkills("qa", ["demo-audit"]), []);
 assert.ok(validateAgentSkills("dev", ["archive"]).some((error) => error.includes("not allowed")));
 assert.ok(validateAgentSkills("dev", ["missing-skill"]).some((error) => error.includes("unknown skill")));
+
+{
+  const agentIds = listLibrary("agents").map((entry) => entry.id);
+  const skillIds = listLibrary("skills").map((entry) => entry.id);
+  assert.ok(agentIds.includes("harness-auditor"));
+  assert.ok(skillIds.includes("harness-audit"));
+  assert.match(readLibrary("agents", "harness-auditor"), /misleading_demo/);
+  assert.match(readLibrary("skills", "harness-audit"), /failure evidence/);
+}
 
 let result = validateTaskGraph(validTaskGraph("run-1"), { expectedRunId: "other" });
 assert.equal(result.passed, false);
@@ -317,6 +329,9 @@ try {
 {
   for (const content of [codexSkillTemplate("en"), claudeCommandTemplate("zh")]) {
     assert.match(content, /Completion Preconditions|完成前置条件/);
+    assert.match(content, /\/imfine observe \[run-id\]/);
+    assert.match(content, /harness-auditor/);
+    assert.match(content, /harness-audit/);
     assert.match(content, /acceptance-deviation\.json/);
     assert.match(content, /awaiting_user_approval/);
     assert.match(content, /true_harness_passed=true/);
