@@ -36,7 +36,7 @@ By default this installs Chinese imfine entries for both Codex and Claude:
 - Claude command pointers: `~/.claude/commands/imfine-*.md`
 - Runtime: `~/.imfine/runtime`
 
-Codex discovers imfine from the shared `~/.agents/skills/imfine-*` entries. imfine no longer installs a single `~/.codex/skills/imfine/SKILL.md` behavior source.
+Codex discovers imfine from the shared `~/.agents/skills/imfine-*` entries. Claude discovers imfine from command pointer files that load the same shared skills. imfine no longer installs a single `~/.codex/skills/imfine/SKILL.md` or `~/.claude/commands/imfine.md` behavior source.
 
 Install only one target:
 
@@ -58,6 +58,8 @@ npx github:ZongxingH/im-fine install --dry-run
 ```
 
 Direct local `imfine install ...` is not part of the supported user surface. Use the `npx github:ZongxingH/im-fine install ...` entry.
+
+After installing, restart the Codex or Claude session so the newly installed entries are discovered.
 
 ## Uninstall
 
@@ -86,22 +88,55 @@ imfine-archive
 
 `imfine-agent-orchestrator` is the main coordination entry. It routes initialization, delivery, status, observation, and archive requests to the narrower workflow skills.
 
-The installer also exposes the full BMAD-style imfine roster, not only the shortcut entries:
+The installer exposes the full BMAD-style imfine roster, not only the shortcut entries. The current package contains 17 Agent entries and 22 Skill entries:
 
 - Agents: `imfine-agent-orchestrator`, `imfine-agent-intake`, `imfine-agent-project-analyzer`, `imfine-agent-product-planner`, `imfine-agent-architect`, `imfine-agent-task-planner`, `imfine-agent-dev`, `imfine-agent-qa`, `imfine-agent-reviewer`, `imfine-agent-risk-reviewer`, `imfine-agent-merge-agent`, `imfine-agent-committer`, `imfine-agent-archive`, `imfine-agent-technical-writer`, `imfine-agent-project-knowledge-updater`, `imfine-agent-harness-auditor`, `imfine-agent-ux-designer`.
-- Workflows: `imfine-brainstorming`, `imfine-product-brief`, `imfine-validate-requirement`, `imfine-implementation-readiness`, `imfine-correct-course`, `imfine-retrospective`, `imfine-clarify`, `imfine-project-analysis`, `imfine-write-delivery-plan`, `imfine-execute-task-plan`, `imfine-tdd`, `imfine-systematic-debugging`, `imfine-parallel-agent-dispatch`, `imfine-code-review`, `imfine-archive-confirmation`, `imfine-harness-audit`.
+- Primary/helper skills: `imfine-help`, `imfine-init`, `imfine-run`, `imfine-status`, `imfine-observe`, `imfine-archive`.
+- Workflow skills: `imfine-brainstorming`, `imfine-product-brief`, `imfine-validate-requirement`, `imfine-implementation-readiness`, `imfine-correct-course`, `imfine-retrospective`, `imfine-clarify`, `imfine-project-analysis`, `imfine-write-delivery-plan`, `imfine-execute-task-plan`, `imfine-tdd`, `imfine-systematic-debugging`, `imfine-parallel-agent-dispatch`, `imfine-code-review`, `imfine-archive-confirmation`, `imfine-harness-audit`.
+
+## Demo Validation
+
+To validate imfine itself on a demo project, install imfine, restart Codex or Claude, then run these entries from inside the demo project:
+
+```text
+imfine-agent-orchestrator
+imfine-init
+imfine-run "Build a small todo demo with add, complete, delete, and local persistence."
+imfine-status
+imfine-observe
+```
+
+The expected behavior is not that runtime completes everything by itself. A credible demo shows:
+
+- `imfine-run` creates the run context and waits for Orchestrator/Agent output when `orchestrator-session.json` is missing.
+- The current Codex or Claude session acts as Orchestrator and writes `orchestration/orchestrator-session.json`.
+- Native provider Agents perform role-specific work when the provider supports subagents.
+- Runtime records provider-origin receipts, handoff evidence, gates, commits, archive reports, and true-harness evidence.
+- `imfine-observe` audits the run and returns `pass`, `pass_with_risks`, `blocked`, or `misleading_demo` with artifact references.
+
+If native subagent capability or provider-origin receipts are unavailable, the demo should be reported as blocked or single-session skill fallback, not as a passing true harness.
 
 ## Runtime Evidence And Diagnostics
 
 Every run is evidence-first. In addition to agent handoffs and final reports, imfine records harness-level diagnostics under each run:
 
+- `orchestration/provider-capability.json`
+- `orchestration/provider-capability-resolution.json`
+- `orchestration/provider-receipts/`
+- `orchestration/provider-outputs/`
+- `orchestration/provider-observations/`
 - `orchestration/harness-components.json`
 - `orchestration/run-trace.jsonl`
 - `orchestration/gate-trace.jsonl`
+- `orchestration/agent-runs.json`
+- `orchestration/parallel-plan.json`
+- `orchestration/parallel-execution.json`
+- `orchestration/final-gates.json`
 - `analysis/harness-debug-overview.md`
 - `analysis/harness-debug-detail.json`
 - `orchestration/runtime-requirements.json`
 - `orchestration/sandbox-verification.json`
+- `archive/final-report.md`
 
 `imfine-status` surfaces recent blocker trace, debugger report paths, sandbox verification status, and the next owner. If QA evidence says a run passed but sandbox verification fails, status reports an environment or verification mismatch instead of treating the run as completed.
 
@@ -114,6 +149,8 @@ The installed runtime lives at `~/.imfine/runtime`, but runtime commands are bac
 Internal runtime commands exist for deterministic materialization, validation, provider receipts, evidence collection, commit/push, reconcile, finalize, and archive reporting.
 
 They do not include any `launch`, `spawn`, or `start provider agent` entry. If provider metadata is unavailable, runtime keeps `true_harness_passed=false` and reports the missing receipt evidence.
+
+`imfine-run` does not include an auto-orchestrator or a plan-only branch. It creates a run, materializes request/analysis/orchestration context, returns the current Orchestrator snapshot, and then expects the current Codex or Claude session to drive Agent/Skill execution.
 
 Default commit policy is recorded in each run:
 
@@ -130,8 +167,8 @@ If a run requires user approval or the user declines commit/push, imfine must no
 imfine writes run and project evidence under `.imfine/`, including:
 
 - `.imfine/project/**`: project knowledge and capability traces.
-- `.imfine/runs/<run-id>/**`: request, analysis, planning, agent handoffs, provider receipts, evidence, gates, traces, debugger reports, sandbox verification, and archive artifacts.
+- `.imfine/runs/<run-id>/**`: request, analysis, orchestration, planning, dispatch contracts, agent handoffs, provider receipts, provider output snapshots, evidence, gates, traces, debugger reports, sandbox verification, and archive artifacts.
 - `.imfine/harness-experiments/<experiment-id>/**`: harness experiment input, patch, verification, and change evaluation.
 - `.imfine/reports/<run-id>.md`: final run report.
 
-The migration baseline is [IMFINE_BMAD_MIGRATION_PLAN.md](./docs/IMFINE_BMAD_MIGRATION_PLAN.md).
+The current implementation contract is [IMFINE_IMPLEMENTATION.md](./docs/IMFINE_IMPLEMENTATION.md). The BMAD migration rationale is kept in [IMFINE_BMAD_MIGRATION_PLAN.md](./docs/IMFINE_BMAD_MIGRATION_PLAN.md).
