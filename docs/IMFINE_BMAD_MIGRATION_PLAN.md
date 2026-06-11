@@ -121,7 +121,7 @@ imfine-archive
 - `imfine-observe`：审计 demo 质量和 true-harness observability。
 - `imfine-archive`：执行 archive readiness、final gates 和归档收尾。
 
-允许保留 `/imfine` 兼容入口，但它只能作为 `imfine-agent-orchestrator` 的指针，不能承载另一套旧行为。
+不保留 `/imfine` 兼容入口。安装时清理旧 `~/.codex/skills/imfine` 和 `~/.claude/commands/imfine.md`，避免出现第二套行为来源。
 
 ## 安装兼容要求
 
@@ -442,8 +442,7 @@ agents:
 - 对 Agent 生成 `imfine-agent-*` canonical id。
 - 对 Workflow 生成 `imfine-*` canonical id。
 - 为 Claude 生成同名 command pointer，例如 `~/.claude/commands/imfine-run.md`。
-- 保留一个兼容入口 `~/.claude/commands/imfine.md` 时，它只能作为 Orchestrator 指针，不能承载另一套行为来源。
-- 如果需要保留 Codex 旧入口 `~/.codex/skills/imfine/SKILL.md`，它也只能作为兼容指针，指向 `~/.agents/skills/imfine-agent-orchestrator/SKILL.md`，不能承载另一套行为来源。
+- 删除旧 `~/.claude/commands/imfine.md` 和 `~/.codex/skills/imfine`，不保留兼容指针。
 - 确保安装产物不依赖旧 `library/agents/*.md` 或 `library/skills/*.md`。
 
 安装器不负责：
@@ -605,7 +604,7 @@ Node runtime
 - Claude 安装后存在 `~/.claude/commands/imfine-*.md` command pointers。
 - Codex 不再依赖 `~/.codex/skills/imfine/SKILL.md` 作为主行为入口，而是通过 `~/.agents/skills/imfine-*` 发现 skills。
 - `~/.imfine/runtime` 继续存在。
-- 兼容入口 `/imfine` 如继续保留，只能路由到 `imfine-agent-orchestrator`，不能成为第二套行为来源。
+- 不保留 `/imfine` 兼容入口，安装产物只暴露 BMAD-style `imfine-*` / `imfine-agent-*` 入口。
 - 安装后的公开使用方式与 BMAD 类似：可直接调用 `imfine-agent-orchestrator`、`imfine-init`、`imfine-run`、`imfine-status`、`imfine-observe`、`imfine-archive`。
 - 每个 imfine Agent 都可以通过 BMAD 风格 `SKILL.md` 激活。
 - 每个 imfine Agent 都有 `customize.toml`。

@@ -1,0 +1,7 @@
+[workflow]
+activation_steps_prepend = []
+activation_steps_append = []
+persistent_facts = [
+  "file:{project-root}/.imfine/project/**/*.md"
+]
+on_complete = ""

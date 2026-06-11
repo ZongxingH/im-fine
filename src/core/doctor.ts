@@ -135,21 +135,21 @@ function normalizeSubagentSupport(value: string | undefined): SubagentSupport {
 }
 
 function providerEntryInstalled(provider: ImfineProvider): boolean {
-  if (provider === "codex") return fs.existsSync(path.join(process.env.HOME || "", ".codex", "skills", "imfine", "SKILL.md"));
-  if (provider === "claude") return fs.existsSync(path.join(process.env.HOME || "", ".claude", "commands", "imfine.md"));
+  if (provider === "codex") return fs.existsSync(path.join(process.env.HOME || "", ".agents", "skills", "imfine-agent-orchestrator", "SKILL.md"));
+  if (provider === "claude") return fs.existsSync(path.join(process.env.HOME || "", ".claude", "commands", "imfine-agent-orchestrator.md"));
   return false;
 }
 
 function targetChecks(): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
-  const codexSkill = path.join(process.env.HOME || "", ".codex", "skills", "imfine", "SKILL.md");
-  const claudeCommand = path.join(process.env.HOME || "", ".claude", "commands", "imfine.md");
+  const codexSkill = path.join(process.env.HOME || "", ".agents", "skills", "imfine-agent-orchestrator", "SKILL.md");
+  const claudeCommand = path.join(process.env.HOME || "", ".claude", "commands", "imfine-agent-orchestrator.md");
   const codexInstalled = fs.existsSync(codexSkill);
   const claudeInstalled = fs.existsSync(claudeCommand);
   const provider = normalizeProvider(process.env.IMFINE_PROVIDER);
   const subagentSupport = normalizeSubagentSupport(process.env.IMFINE_SUBAGENT_SUPPORTED);
-  checks.push(check("target.codex", "Codex /imfine skill", codexInstalled ? "pass" : "warn", codexInstalled ? codexSkill : "Codex skill is not installed"));
-  checks.push(check("target.claude", "Claude /imfine command", claudeInstalled ? "pass" : "warn", claudeInstalled ? claudeCommand : "Claude command is not installed"));
+  checks.push(check("target.codex", "Codex imfine shared skill", codexInstalled ? "pass" : "warn", codexInstalled ? codexSkill : "Codex shared skill is not installed"));
+  checks.push(check("target.claude", "Claude imfine command", claudeInstalled ? "pass" : "warn", claudeInstalled ? claudeCommand : "Claude command is not installed"));
   checks.push(check("provider.codex.entry_installed", "Codex provider entry installed", codexInstalled ? "pass" : "warn", codexInstalled ? `entry_installed=true path=${codexSkill}` : "entry_installed=false"));
   checks.push(check("provider.codex.session_orchestrator", "Codex session orchestrator", codexInstalled ? "pass" : "warn", codexInstalled ? "session_orchestrator=true; current Codex session executes or dispatches model Agent work" : "session_orchestrator=false"));
   checks.push(check("provider.codex.subagent_supported", "Codex subagent support", process.env.IMFINE_PROVIDER === "codex" && subagentSupport === "supported" ? "pass" : "warn", process.env.IMFINE_PROVIDER === "codex" ? `subagent_supported=${subagentSupport}` : "subagent_supported=unknown"));

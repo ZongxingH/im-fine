@@ -18,7 +18,7 @@ import { doctor } from "../dist/core/doctor.js";
 import { initProject } from "../dist/core/init.js";
 import { createDeliveryRun } from "../dist/core/run.js";
 import { transitionRunState } from "../dist/core/state-machine.js";
-import { codexSkillTemplate, claudeCommandTemplate } from "../dist/core/templates.js";
+import { install } from "../dist/core/install.js";
 
 const root = path.resolve(import.meta.dirname, "..");
 const cli = path.join(root, "dist", "cli", "imfine.js");
@@ -159,7 +159,7 @@ for (const contract of runtimeRoleContracts()) {
   assert.ok(RUNTIME_ROLES.includes(contract.role), `missing role ${contract.role}`);
   assert.equal(isHandoffRole(contract.role), true, `handoff role not accepted: ${contract.role}`);
   assert.deepEqual(allowedTransitionsForRole(contract.role), contract.allowedTransitions);
-  assert.equal(handoffSchemaForRole(contract.role), "library/templates/handoff.schema.json");
+  assert.equal(handoffSchemaForRole(contract.role), "src/imfine-skills/templates/handoff.schema.json");
   assert.ok(evidenceRequirementsForRole(contract.role).length > 0, `missing role evidence for ${contract.role}`);
   assert.ok(contract.requiredFields.includes("run_id"));
   assert.ok(contract.requiredFields.includes("evidence"));
@@ -177,10 +177,12 @@ assert.ok(validateAgentSkills("dev", ["missing-skill"]).some((error) => error.in
 {
   const agentIds = listLibrary("agents").map((entry) => entry.id);
   const skillIds = listLibrary("skills").map((entry) => entry.id);
-  assert.ok(agentIds.includes("harness-auditor"));
-  assert.ok(skillIds.includes("harness-audit"));
-  assert.match(readLibrary("agents", "harness-auditor"), /misleading_demo/);
-  assert.match(readLibrary("skills", "harness-audit"), /failure evidence/);
+  assert.ok(agentIds.includes("imfine-agent-harness-auditor"));
+  assert.ok(agentIds.includes("imfine-agent-orchestrator"));
+  assert.ok(skillIds.includes("imfine-harness-audit"));
+  assert.ok(skillIds.includes("imfine-run"));
+  assert.match(readLibrary("agents", "imfine-agent-harness-auditor"), /misleading_demo/);
+  assert.match(readLibrary("skills", "imfine-harness-audit"), /failure evidence/);
 }
 
 let result = validateTaskGraph(validTaskGraph("run-1"), { expectedRunId: "other" });
@@ -249,7 +251,7 @@ assert.ok(result.errors.some((error) => error.includes("no matching orchestrator
     }]
   }, null, 2) + "\n");
   const contracts = buildDispatchContracts(runId, runDir, sessionFile);
-  assert.equal(contracts[0].handoff_schema, "library/templates/handoff.schema.json");
+  assert.equal(contracts[0].handoff_schema, "src/imfine-skills/templates/handoff.schema.json");
   assert.ok(contracts[0].role_required_evidence.includes("agents/*/patch.diff"));
 }
 
@@ -327,16 +329,15 @@ try {
 }
 
 {
-  for (const content of [codexSkillTemplate("en"), claudeCommandTemplate("zh")]) {
-    assert.match(content, /Completion Preconditions|完成前置条件/);
-    assert.match(content, /\/imfine observe \[run-id\]/);
-    assert.match(content, /harness-auditor/);
-    assert.match(content, /harness-audit/);
-    assert.match(content, /acceptance-deviation\.json/);
-    assert.match(content, /awaiting_user_approval/);
-    assert.match(content, /true_harness_passed=true/);
-  }
-  const schema = JSON.parse(fs.readFileSync(path.join(root, "library", "templates", "orchestrator-session.schema.json"), "utf8"));
+  const installed = install("all", "zh", true).written;
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-agent-orchestrator"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-observe"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-agent-orchestrator.md"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-observe.md"))));
+  assert.equal(installed.some((item) => item.endsWith(path.join(".codex", "skills", "imfine", "SKILL.md"))), false);
+  assert.match(readLibrary("skills", "imfine-observe"), /imfine-agent-harness-auditor/);
+  assert.match(readLibrary("skills", "imfine-harness-audit"), /true_harness_passed=true/);
+  const schema = JSON.parse(fs.readFileSync(path.join(root, "src", "imfine-skills", "templates", "orchestrator-session.schema.json"), "utf8"));
   assert.ok(schema.properties.completion_preconditions.required.includes("final_gates_pass"));
   assert.ok(schema.properties.completion_preconditions.required.includes("commit_push_archive_policy_satisfied"));
 }

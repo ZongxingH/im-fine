@@ -1,0 +1,36 @@
+code: imfine
+name: "imfine"
+description: "Observable multi-agent harness engineering workflow"
+default_selected: true
+
+directories:
+  - ".imfine"
+  - ".imfine/project"
+  - ".imfine/runs"
+  - ".imfine/custom"
+
+agents:
+  - code: imfine-agent-orchestrator
+    name: Orchestrator
+    title: Harness Orchestrator
+    description: "Coordinates native provider agents and deterministic runtime gates."
+
+  - code: imfine-agent-dev
+    name: Dev
+    title: Implementation Agent
+    description: "Implements task-level changes with patch, test, and handoff evidence."
+
+  - code: imfine-agent-qa
+    name: QA
+    title: Verification Agent
+    description: "Verifies runtime behavior, tests, acceptance coverage, and evidence quality."
+
+  - code: imfine-agent-reviewer
+    name: Reviewer
+    title: Code Review Agent
+    description: "Reviews implementation quality, scope control, risks, and regressions."
+
+  - code: imfine-agent-harness-auditor
+    name: Harness Auditor
+    title: Observability Auditor
+    description: "Evaluates whether an imfine run is a credible true-harness demonstration."

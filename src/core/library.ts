@@ -9,6 +9,7 @@ export interface LibraryEntry {
   id: string;
   file: string;
   kind: LibraryKind;
+  directory?: string;
 }
 
 export interface LibrarySyncResult {
@@ -21,11 +22,40 @@ export interface LibrarySyncResult {
 const KINDS: LibraryKind[] = ["agents", "skills", "templates", "workflows"];
 
 export function libraryRoot(): string {
-  return path.join(packageRoot(), "library");
+  return path.join(packageRoot(), "src", "imfine-skills");
 }
 
-export function listLibrary(kind: LibraryKind): LibraryEntry[] {
-  const dir = path.join(libraryRoot(), kind);
+function walkDirs(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const result: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name.startsWith(".")) continue;
+    const child = path.join(dir, entry.name);
+    result.push(child, ...walkDirs(child));
+  }
+  return result;
+}
+
+function skillEntries(kind: LibraryKind): LibraryEntry[] {
+  const root = libraryRoot();
+  const dirs = walkDirs(root).filter((dir) => fs.existsSync(path.join(dir, "SKILL.md")));
+  return dirs
+    .filter((dir) => {
+      const relative = path.relative(root, dir).split(path.sep);
+      if (kind === "agents") return relative[0] === "agents";
+      return relative[0] !== "agents";
+    })
+    .map((dir) => ({
+      id: path.basename(dir),
+      file: path.join(dir, "SKILL.md"),
+      directory: dir,
+      kind
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function fileEntries(kind: LibraryKind, dir: string): LibraryEntry[] {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir)
     .filter((file) => file.endsWith(".md") || file.endsWith(".json") || file.endsWith(".yaml"))
@@ -35,6 +65,12 @@ export function listLibrary(kind: LibraryKind): LibraryEntry[] {
       file: path.join(dir, file),
       kind
     }));
+}
+
+export function listLibrary(kind: LibraryKind): LibraryEntry[] {
+  if (kind === "agents" || kind === "skills") return skillEntries(kind);
+  if (kind === "templates") return fileEntries(kind, path.join(libraryRoot(), "templates"));
+  return fileEntries(kind, path.join(libraryRoot(), "runtime-workflows"));
 }
 
 export function readLibrary(kind: LibraryKind, id: string): string {
@@ -47,7 +83,7 @@ export function readLibrary(kind: LibraryKind, id: string): string {
 }
 
 export function syncLibrary(cwd: string): LibrarySyncResult {
-  const workspace = path.join(cwd, ".imfine", "debug", "library-snapshot");
+  const workspace = path.join(cwd, ".imfine", "debug", "imfine-skills-snapshot");
   const created: string[] = [];
   const updated: string[] = [];
   const preserved: string[] = [];
@@ -56,13 +92,9 @@ export function syncLibrary(cwd: string): LibrarySyncResult {
     const targetDir = path.join(workspace, kind);
     ensureDir(targetDir);
     for (const entry of listLibrary(kind)) {
-      copyFileIfChanged(entry.file, path.join(targetDir, path.basename(entry.file)), created, updated, preserved);
+      const targetName = entry.directory ? path.join(entry.id, "SKILL.md") : path.basename(entry.file);
+      copyFileIfChanged(entry.file, path.join(targetDir, targetName), created, updated, preserved);
     }
-  }
-
-  const readme = path.join(libraryRoot(), "README.md");
-  if (fs.existsSync(readme)) {
-    copyFileIfChanged(readme, path.join(workspace, "README.md"), created, updated, preserved);
   }
 
   return { workspace, created, updated, preserved };

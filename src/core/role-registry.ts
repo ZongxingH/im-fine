@@ -28,7 +28,7 @@ export interface RoleContract {
   requiredStringFields: string[];
 }
 
-const DEFAULT_HANDOFF_SCHEMA = "library/templates/handoff.schema.json";
+const DEFAULT_HANDOFF_SCHEMA = "src/imfine-skills/templates/handoff.schema.json";
 const COMMON_REQUIRED_FIELDS = [
   "run_id",
   "task_id",

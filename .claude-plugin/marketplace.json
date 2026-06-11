@@ -1,0 +1,38 @@
+{
+  "name": "imfine",
+  "owner": {
+    "name": "imfine"
+  },
+  "description": "Observable multi-agent harness workflow for Codex and Claude.",
+  "license": "GPL-3.0-or-later",
+  "plugins": [
+    {
+      "name": "imfine-harness",
+      "source": "./",
+      "description": "Observable multi-agent harness workflow for Codex and Claude.",
+      "version": "0.1.0",
+      "author": {
+        "name": "imfine"
+      },
+      "skills": [
+        "./src/imfine-skills/0-core/imfine-help",
+        "./src/imfine-skills/1-bootstrap/imfine-init",
+        "./src/imfine-skills/2-run/imfine-run",
+        "./src/imfine-skills/2-run/imfine-status",
+        "./src/imfine-skills/3-observe/imfine-observe",
+        "./src/imfine-skills/4-archive/imfine-archive",
+        "./src/imfine-skills/agents/imfine-agent-orchestrator",
+        "./src/imfine-skills/agents/imfine-agent-dev",
+        "./src/imfine-skills/agents/imfine-agent-qa",
+        "./src/imfine-skills/agents/imfine-agent-reviewer",
+        "./src/imfine-skills/agents/imfine-agent-harness-auditor",
+        "./src/imfine-skills/workflows/imfine-project-analysis",
+        "./src/imfine-skills/workflows/imfine-write-delivery-plan",
+        "./src/imfine-skills/workflows/imfine-execute-task-plan",
+        "./src/imfine-skills/workflows/imfine-code-review",
+        "./src/imfine-skills/workflows/imfine-harness-audit",
+        "./src/imfine-skills/workflows/imfine-archive-confirmation"
+      ]
+    }
+  ]
+}

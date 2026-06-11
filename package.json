@@ -20,7 +20,8 @@
   },
   "files": [
     "dist",
-    "library",
+    "src/imfine-skills",
+    ".claude-plugin",
     "package.json",
     "README.md"
   ],

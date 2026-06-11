@@ -30,11 +30,11 @@ Usage:
   ${program} report <run-id> [--demo-summary|--debug] [--cwd path] [--json]
   ${program} help
 
-Public slash-command surface is intentionally limited to init, run, status, and observe; report --demo-summary is a read-only runtime demo view used by the observe workflow.
+Public workflow surface is installed as BMAD-style entries: imfine-agent-orchestrator, imfine-init, imfine-run, imfine-status, imfine-observe, and imfine-archive.
 Default text output is a demo-oriented harness summary. Use --debug or --json for full runtime paths and deterministic evidence details.
 All planning materialization, orchestration, QA, review, commit, push, archive, recovery, and agent-dispatch commands remain internal runtime actions.
 Outside init-time environment inspection and deterministic runtime materialization, delivery work is expected to be handled by the current session's Orchestrator launching independent native subagents with model-led multi-role multi-agent + skill execution.
-Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables Chinese /imfine entries for both Codex and Claude.
+Install is intended to be invoked through npx github:<owner>/<repo>. It defaults to --target all and --lang zh so one command enables shared ~/.agents/skills/imfine-* entries and Claude command pointers.
 `;
 }
 
@@ -162,7 +162,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
 
     const readonlyDemoReport = command === "report" && readBooleanFlag(args, "demoSummary") && !readBooleanFlag(args, "debug");
     if (isInternalCommand(command) && !readonlyDemoReport && !internalInvocationAllowed()) {
-      throw new Error(`${command} is an internal runtime action. Use /imfine init, /imfine run, /imfine status, or /imfine observe from the public workflow.`);
+      throw new Error(`${command} is an internal runtime action. Use imfine-agent-orchestrator, imfine-init, imfine-run, imfine-status, imfine-observe, or imfine-archive from the installed workflow surface.`);
     }
 
     if (command === "orchestrate") {

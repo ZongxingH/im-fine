@@ -323,7 +323,7 @@ export function initProject(cwd: string): InitResult {
   writeFileIfMissing(path.join(workspace, "project", "module-map.md"), markdown("Module Map", "Status: pending.\n\nModule boundaries must be filled by model agents from source evidence."), created, preserved);
   writeFileIfMissing(path.join(workspace, "project", "conventions.md"), markdown("Conventions", "Status: pending.\n\nDevelopment conventions must be confirmed from repository evidence."), created, preserved);
   writeFileIfMissing(path.join(workspace, "project", "test-strategy.md"), markdown("Test Strategy", "Status: pending.\n\nTesting conclusions must be supplied from repository evidence."), created, preserved);
-  writeFileIfMissing(path.join(workspace, "project", "infrastructure.md"), markdown("Infrastructure", "Status: pending.\n\nUse `/imfine init` or `imfine doctor` to refresh deterministic infrastructure checks."), created, preserved);
+  writeFileIfMissing(path.join(workspace, "project", "infrastructure.md"), markdown("Infrastructure", "Status: pending.\n\nUse `imfine-init` or `imfine doctor` to refresh deterministic infrastructure checks."), created, preserved);
   writeFileIfMissing(path.join(workspace, "project", "risks.md"), markdown("Risks", "Status: pending.\n\nNo evidence-backed risk summary has been written yet."), created, preserved);
   writeFileIfMissing(path.join(workspace, "project", "capabilities", ".gitkeep"), "", created, preserved);
   writeFileIfMissing(path.join(workspace, "runs", ".gitkeep"), "", created, preserved);
