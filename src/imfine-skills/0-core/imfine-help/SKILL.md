@@ -16,7 +16,9 @@ Use this skill to route users through the imfine BMAD-style harness.
 - `imfine-observe` - audit demo quality and true-harness observability.
 - `imfine-archive` - confirm final gates and archive the run.
 
-## Agent Entries
+Only these six entries should be presented to users. Keep deeper Agent and Workflow definitions internal to the Orchestrator.
+
+## Internal Agent Library
 
 - `imfine-agent-orchestrator`
 - `imfine-agent-intake`
@@ -36,7 +38,7 @@ Use this skill to route users through the imfine BMAD-style harness.
 - `imfine-agent-harness-auditor`
 - `imfine-agent-ux-designer`
 
-## Workflow Entries
+## Internal Workflow Library
 
 - `imfine-brainstorming`
 - `imfine-product-brief`
@@ -54,6 +56,8 @@ Use this skill to route users through the imfine BMAD-style harness.
 - `imfine-code-review`
 - `imfine-archive-confirmation`
 - `imfine-harness-audit`
+
+Internal libraries live under `~/.imfine/runtime/src/imfine-skills/`. Use them to guide Orchestrator decisions, but do not expose them as top-level Codex or Claude entries.
 
 ## Runtime Boundary
 

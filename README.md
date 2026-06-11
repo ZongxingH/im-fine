@@ -32,11 +32,11 @@ npx github:ZongxingH/im-fine install
 
 By default this installs Chinese imfine entries for both Codex and Claude:
 
-- Shared native skills: `~/.agents/skills/imfine-*`
-- Claude command pointers: `~/.claude/commands/imfine-*.md`
+- Shared native skills: `~/.agents/skills/imfine-agent-orchestrator`, `~/.agents/skills/imfine-init`, `~/.agents/skills/imfine-run`, `~/.agents/skills/imfine-status`, `~/.agents/skills/imfine-observe`, and `~/.agents/skills/imfine-archive`
+- Claude command pointers for the same six public entries
 - Runtime: `~/.imfine/runtime`
 
-Codex discovers imfine from the shared `~/.agents/skills/imfine-*` entries. Claude discovers imfine from command pointer files that load the same shared skills. imfine no longer installs a single `~/.codex/skills/imfine/SKILL.md` or `~/.claude/commands/imfine.md` behavior source.
+Codex discovers imfine from the shared public entries. Claude discovers imfine from command pointer files that load the same shared entries. imfine no longer installs a single `~/.codex/skills/imfine/SKILL.md` or `~/.claude/commands/imfine.md` behavior source.
 
 Install only one target:
 
@@ -88,10 +88,10 @@ imfine-archive
 
 `imfine-agent-orchestrator` is the main coordination entry. It routes initialization, delivery, status, observation, and archive requests to the narrower workflow skills.
 
-The installer exposes the full BMAD-style imfine roster, not only the shortcut entries. The current package contains 17 Agent entries and 22 Skill entries:
+Only these six entries are installed into the Codex/Claude public surface to keep usage simple. The full BMAD-style roster remains inside `~/.imfine/runtime/src/imfine-skills/` for Orchestrator-driven internal use:
 
 - Agents: `imfine-agent-orchestrator`, `imfine-agent-intake`, `imfine-agent-project-analyzer`, `imfine-agent-product-planner`, `imfine-agent-architect`, `imfine-agent-task-planner`, `imfine-agent-dev`, `imfine-agent-qa`, `imfine-agent-reviewer`, `imfine-agent-risk-reviewer`, `imfine-agent-merge-agent`, `imfine-agent-committer`, `imfine-agent-archive`, `imfine-agent-technical-writer`, `imfine-agent-project-knowledge-updater`, `imfine-agent-harness-auditor`, `imfine-agent-ux-designer`.
-- Primary/helper skills: `imfine-help`, `imfine-init`, `imfine-run`, `imfine-status`, `imfine-observe`, `imfine-archive`.
+- Public skills: `imfine-init`, `imfine-run`, `imfine-status`, `imfine-observe`, `imfine-archive`.
 - Workflow skills: `imfine-brainstorming`, `imfine-product-brief`, `imfine-validate-requirement`, `imfine-implementation-readiness`, `imfine-correct-course`, `imfine-retrospective`, `imfine-clarify`, `imfine-project-analysis`, `imfine-write-delivery-plan`, `imfine-execute-task-plan`, `imfine-tdd`, `imfine-systematic-debugging`, `imfine-parallel-agent-dispatch`, `imfine-code-review`, `imfine-archive-confirmation`, `imfine-harness-audit`.
 
 ## Demo Validation

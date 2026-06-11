@@ -13,6 +13,7 @@ You are the imfine Harness Orchestrator. You coordinate model-led Agent/Skill wo
 - `{project-root}` is the current project working directory.
 - `{skill-name}` is this directory's basename.
 - Runtime command: `node ~/.imfine/runtime/dist/cli/imfine-runtime.js`.
+- Internal skill library: `~/.imfine/runtime/src/imfine-skills/`.
 
 ## On Activation
 
@@ -23,7 +24,7 @@ You are the imfine Harness Orchestrator. You coordinate model-led Agent/Skill wo
 5. Inspect `.imfine/state/current.json`, `.imfine/project/**`, and active run status when present.
 6. Greet briefly and present the menu unless the user's message clearly maps to a menu item.
 7. Execute `agent.activation_steps_append`.
-8. Dispatch the selected menu item by invoking the referenced imfine skill.
+8. Dispatch the selected menu item. Public menu items may invoke installed entries; internal Agent/Workflow items must be loaded from `~/.imfine/runtime/src/imfine-skills/` instead of requiring them to appear in the user's Codex/Claude entry list.
 
 ## Hard Rules
 

@@ -5,6 +5,17 @@ import { copyDirectory, ensureDir, writeText } from "./fs.js";
 import { homeDir, packageRoot, runtimeHome } from "./paths.js";
 import { listLibrary, type LibraryEntry } from "./library.js";
 
+const PUBLIC_ENTRY_ORDER = [
+  "imfine-agent-orchestrator",
+  "imfine-init",
+  "imfine-run",
+  "imfine-status",
+  "imfine-observe",
+  "imfine-archive"
+];
+
+const PUBLIC_ENTRY_IDS = new Set(PUBLIC_ENTRY_ORDER);
+
 export interface InstallResult {
   target: InstallTarget;
   language: InstallLanguage;
@@ -43,10 +54,10 @@ function installRuntime(dryRun: boolean, written: string[]): void {
   written.push(target);
 }
 
-function imfineSkillEntries(): LibraryEntry[] {
-  return [...listLibrary("agents"), ...listLibrary("skills")]
-    .filter((entry) => entry.id.startsWith("imfine-") && entry.directory)
-    .sort((a, b) => a.id.localeCompare(b.id));
+function publicSkillEntries(): LibraryEntry[] {
+  const entries = [...listLibrary("agents"), ...listLibrary("skills")]
+    .filter((entry) => PUBLIC_ENTRY_IDS.has(entry.id) && entry.directory);
+  return PUBLIC_ENTRY_ORDER.map((id) => entries.find((entry) => entry.id === id)).filter((entry): entry is LibraryEntry => Boolean(entry));
 }
 
 function parseDescription(skillFile: string): string {
@@ -81,8 +92,33 @@ function removeLegacyEntries(dryRun: boolean, written: string[]): void {
   }
 }
 
+function removeStaleSharedSkills(dryRun: boolean, written: string[]): void {
+  const skillsDir = path.join(homeDir(), ".agents", "skills");
+  if (!dryRun && fs.existsSync(skillsDir)) {
+    for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && entry.name.startsWith("imfine-")) {
+        fs.rmSync(path.join(skillsDir, entry.name), { recursive: true, force: true });
+      }
+    }
+  }
+  written.push(path.join(skillsDir, "imfine-* (removed stale hidden entries if present)"));
+}
+
+function removeStaleClaudeCommands(dryRun: boolean, written: string[]): void {
+  const commandsDir = path.join(homeDir(), ".claude", "commands");
+  if (!dryRun && fs.existsSync(commandsDir)) {
+    for (const entry of fs.readdirSync(commandsDir, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.startsWith("imfine-") && entry.name.endsWith(".md")) {
+        fs.rmSync(path.join(commandsDir, entry.name), { force: true });
+      }
+    }
+  }
+  written.push(path.join(commandsDir, "imfine-*.md (removed stale hidden commands if present)"));
+}
+
 function installSharedSkills(dryRun: boolean, written: string[]): void {
-  for (const entry of imfineSkillEntries()) {
+  removeStaleSharedSkills(dryRun, written);
+  for (const entry of publicSkillEntries()) {
     const source = entry.directory;
     if (!source) continue;
     const target = path.join(homeDir(), ".agents", "skills", entry.id);
@@ -98,7 +134,8 @@ function installSharedSkills(dryRun: boolean, written: string[]): void {
 }
 
 function writeClaudeCommands(language: InstallLanguage, dryRun: boolean, written: string[]): void {
-  for (const entry of imfineSkillEntries()) {
+  removeStaleClaudeCommands(dryRun, written);
+  for (const entry of publicSkillEntries()) {
     const file = path.join(homeDir(), ".claude", "commands", `${entry.id}.md`);
     if (!dryRun) writeText(file, commandPointer(entry, language));
     written.push(file);

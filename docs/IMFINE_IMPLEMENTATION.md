@@ -128,7 +128,7 @@ src/imfine-skills/workflows/imfine-correct-course/
 src/imfine-skills/workflows/imfine-retrospective/
 ```
 
-这些 workflow skill 主要服务于 Orchestrator / Agent 工作；安装后也会作为 BMAD-style entries 暴露，便于当前会话按需直接加载。它们不是 runtime CLI 命令，也不要求用户手工串联执行。
+这些 workflow skill 主要服务于 Orchestrator / Agent 工作；安装后保留在 `~/.imfine/runtime/src/imfine-skills/` 的内部库中，由公开入口加载和调度。它们不是 runtime CLI 命令，也不对 Codex / Claude 用户入口列表直接暴露。
 
 ### 3.3 BMAD
 
@@ -161,7 +161,7 @@ src/imfine-skills/agents/imfine-agent-harness-auditor/
 src/imfine-skills/agents/imfine-agent-ux-designer/
 ```
 
-这些角色定义由 orchestrator agent 调度；安装层会暴露完整 roster，便于当前会话直接加载指定 Agent，但 run 内是否参与执行必须由 `orchestrator-session.json` 和 dispatch contract 决定。
+这些角色定义由 orchestrator agent 调度；除 `imfine-agent-orchestrator` 外不直接暴露到 Codex / Claude 用户入口列表。run 内哪些 Agent 参与执行必须由 `orchestrator-session.json` 和 dispatch contract 决定。
 
 ### 3.4 AHE / HARNESS.md
 
@@ -205,20 +205,29 @@ npx github:<owner>/<repo> install --target all --lang en
 
 ```text
 Codex:
-  ~/.agents/skills/imfine-agent-*/SKILL.md
-  ~/.agents/skills/imfine-*/SKILL.md
+  ~/.agents/skills/imfine-agent-orchestrator/SKILL.md
+  ~/.agents/skills/imfine-init/SKILL.md
+  ~/.agents/skills/imfine-run/SKILL.md
+  ~/.agents/skills/imfine-status/SKILL.md
+  ~/.agents/skills/imfine-observe/SKILL.md
+  ~/.agents/skills/imfine-archive/SKILL.md
   ~/.imfine/runtime/
 
 Claude:
-  ~/.claude/commands/imfine-agent-*.md
-  ~/.claude/commands/imfine-*.md
+  ~/.claude/commands/imfine-agent-orchestrator.md
+  ~/.claude/commands/imfine-init.md
+  ~/.claude/commands/imfine-run.md
+  ~/.claude/commands/imfine-status.md
+  ~/.claude/commands/imfine-observe.md
+  ~/.claude/commands/imfine-archive.md
   ~/.imfine/runtime/
 ```
 
 设计原则：
 
-- Codex 通过共享 `~/.agents/skills/imfine-*` entries 发现 imfine Agent / Workflow skills
-- Claude 通过 `~/.claude/commands/imfine-*.md` command pointers 进入对应 imfine skill
+- Codex 只通过共享 `~/.agents/skills/` 中的 6 个公开 entries 发现 imfine
+- Claude 只通过 `~/.claude/commands/` 中的 6 个 command pointers 进入 imfine
+- 完整 Agent / Workflow roster 保留在 runtime 内部库中，不进入用户入口列表
 - runtime CLI 是内部确定性能力，不是用户主入口
 - 安装入口只认 `npx github:<owner>/<repo> install ...`
 - 本地直接调用 `imfine install ...` 不属于支持形态
@@ -385,7 +394,7 @@ Claude:
 - `imfine-observe [run-id]`
 - `imfine-archive`
 
-`imfine-agent-orchestrator` 是主协调入口，用于把 init、run、status、observe、archive 请求路由到更窄的 workflow skill。安装器也暴露完整 Agent / Workflow roster，供 Orchestrator 在当前会话中按需使用。
+`imfine-agent-orchestrator` 是主协调入口，用于把 init、run、status、observe、archive 请求路由到更窄的 workflow skill。安装器只暴露上述 6 个公开入口；完整 Agent / Workflow roster 作为 runtime 内部库保留，供 Orchestrator 在当前会话中按需读取和调度。
 
 `imfine-observe [run-id]` 是 Codex / Claude 会话中的观察型 Agent/Skill 工作流：它会读取当前 run 的可观测产物，加载 `imfine-agent-harness-auditor` agent 与 `imfine-harness-audit` skill，输出 demo 是否 `pass`、`pass_with_risks`、`blocked` 或 `misleading_demo`。runtime 不直接裁判 demo 质量。
 
@@ -1425,9 +1434,9 @@ experiment config 可以通过 `extends` 继承 base config，并覆盖：
 当前实现的关键事实是：
 
 - 主工作流公开入口是 BMAD-style entries：`imfine-agent-orchestrator`、`imfine-init`、`imfine-run`、`imfine-status`、`imfine-observe`、`imfine-archive`；`report --demo-summary` 仅作为只读演示视图存在
-- 安装后同时暴露完整 Agent / Workflow roster：当前为 17 个 Agent package 和 16 个 Workflow package，供 Orchestrator 在当前会话中按需使用
+- 安装后只暴露 6 个公开入口：1 个 Orchestrator Agent entry 和 5 个 workflow entries；当前 17 个 Agent package 和 16 个 Workflow package 作为 runtime 内部库保留，供 Orchestrator 在当前会话中按需使用
 - 安装入口只有 `npx github:<owner>/<repo> install ...`
-- 安装产物为共享 `~/.agents/skills/imfine-*` skill directories、Claude `~/.claude/commands/imfine-*.md` command pointers 和 `~/.imfine/runtime/`；不再使用单个旧 `~/.codex/skills/imfine/SKILL.md` 作为主行为入口
+- 安装产物为共享的 6 个 `~/.agents/skills/imfine-*` public skill directories、Claude 6 个 `~/.claude/commands/imfine-*.md` command pointers 和 `~/.imfine/runtime/`；不再使用单个旧 `~/.codex/skills/imfine/SKILL.md` 作为主行为入口
 - 唯一执行模式是 `true_harness`
 - 唯一编排决策源是当前会话中的 `orchestrator agent`
 - 角色契约已经集中到 role registry，handoff validator、dispatch contract、evidence validation 共用同一份 role 定义
