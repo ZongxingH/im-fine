@@ -17,7 +17,9 @@ principles = [
   "Agent decisions come from Agents and Skills, not deterministic runtime code.",
   "Runtime is the non-LLM evidence judge.",
   "Provider-origin receipts are required for true native subagent proof.",
-  "Blocked is better than misleading success."
+  "Blocked is better than misleading success.",
+  "Use fresh native subagents with curated context for role work.",
+  "Every completion claim needs runtime evidence and Agent-authored handoff evidence."
 ]
 
 [[agent.menu]]
@@ -44,3 +46,28 @@ skill = "imfine-observe"
 code = "ARCHIVE"
 description = "Confirm final gates and archive the run"
 skill = "imfine-archive"
+
+[[agent.menu]]
+code = "DISPATCH"
+description = "Dispatch ready parallel Agent work from the current task graph"
+skill = "imfine-parallel-agent-dispatch"
+
+[[agent.menu]]
+code = "PLAN"
+description = "Write or repair the imfine delivery plan and task graph"
+skill = "imfine-write-delivery-plan"
+
+[[agent.menu]]
+code = "BRAINSTORM"
+description = "Explore unclear or open-ended requests before planning"
+skill = "imfine-brainstorming"
+
+[[agent.menu]]
+code = "READY"
+description = "Check implementation readiness before dispatch"
+skill = "imfine-implementation-readiness"
+
+[[agent.menu]]
+code = "CORRECT"
+description = "Handle material run changes and replan safely"
+skill = "imfine-correct-course"

@@ -90,8 +90,8 @@ function normalizeSubagentSupport(value: string | undefined): SubagentSupport {
 }
 
 function providerEntryInstalled(provider: ProviderName): boolean | "unknown" {
-  if (provider === "codex") return fs.existsSync(path.join(process.env.HOME || "", ".codex", "skills", "imfine", "SKILL.md"));
-  if (provider === "claude") return fs.existsSync(path.join(process.env.HOME || "", ".claude", "commands", "imfine.md"));
+  if (provider === "codex") return fs.existsSync(path.join(process.env.HOME || "", ".agents", "skills", "imfine-agent-orchestrator", "SKILL.md"));
+  if (provider === "claude") return fs.existsSync(path.join(process.env.HOME || "", ".claude", "commands", "imfine-agent-orchestrator.md"));
   return "unknown";
 }
 

@@ -13,5 +13,22 @@ persistent_facts = [
 principles = [
   "Implement only the assigned task.",
   "Tests and command evidence are part of the deliverable.",
-  "Escalate uncertainty instead of guessing."
+  "Escalate uncertainty instead of guessing.",
+  "Red, green, refactor in that order when behavior is testable.",
+  "No task is done until QA and Review can verify evidence."
 ]
+
+[[agent.menu]]
+code = "IMPLEMENT"
+description = "Implement the assigned task using TDD and handoff evidence"
+skill = "imfine-execute-task-plan"
+
+[[agent.menu]]
+code = "TDD"
+description = "Run the imfine TDD workflow for the current task"
+skill = "imfine-tdd"
+
+[[agent.menu]]
+code = "DEBUG"
+description = "Use systematic debugging for a failing command, review blocker, or runtime gate"
+skill = "imfine-systematic-debugging"

@@ -1,5 +1,4 @@
 import type { ArchiveResult } from "./archive.js";
-import type { AutoOrchestratorResult } from "./auto-orchestrator.js";
 import type { DoctorReport, InitResult } from "./types.js";
 import type { CommitResult, PushResult } from "./gitflow.js";
 import type { InstallResult } from "./install.js";
@@ -9,7 +8,7 @@ import type { DesignReworkResult, ReviewResult, VerificationResult } from "./qua
 import type { ReplanResult } from "./replan.js";
 import type { RecoveryResult } from "./recovery.js";
 import type { DeliveryRunResult } from "./run.js";
-import type { SessionSummarizedAutoOrchestratorResult, SessionSummarizedOrchestratorResult } from "./session-summary.js";
+import type { SessionSummarizedOrchestratorResult } from "./session-summary.js";
 import type { ReportResult, StatusResult } from "./status.js";
 import type { PatchCollectResult, PatchValidationResult, WorktreePrepareResult } from "./worktree.js";
 
@@ -552,7 +551,7 @@ export function formatArchive(result: ArchiveResult): string {
 }
 
 function formatSessionSummary(result: unknown): string[] {
-  const sessionSummary = (result as { sessionSummary?: SessionSummarizedOrchestratorResult["sessionSummary"] | SessionSummarizedAutoOrchestratorResult["sessionSummary"] }).sessionSummary;
+  const sessionSummary = (result as { sessionSummary?: SessionSummarizedOrchestratorResult["sessionSummary"] }).sessionSummary;
   if (!sessionSummary) return [];
   return [
     "session summary:",
@@ -586,30 +585,6 @@ export function formatOrchestrator(result: OrchestratorResult | SessionSummarize
     "",
     "Runtime:",
     `- [runtime] dispatch contracts: ${result.dispatchContracts.length}`,
-    ...formatSessionSummary(result),
-    ""
-  ].join("\n");
-}
-
-export function formatAutoOrchestrator(result: AutoOrchestratorResult | SessionSummarizedAutoOrchestratorResult): string {
-  const runtimeSteps = result.steps.filter((step) => step.kind === "runtime");
-  const agentSteps = result.steps.filter((step) => step.kind === "agent");
-  const lastStep = result.steps.at(-1);
-  return [
-    `[orchestrator] auto orchestration run ${result.runId}`,
-    `State: ${result.status}`,
-    `Iterations: ${result.iterations}`,
-    "",
-    "Runtime checkpoints:",
-    `- ${runtimeSteps.length}`,
-    "",
-    "Agent events:",
-    ...(agentSteps.length > 0
-      ? agentSteps.map((step) => `- [agent:${step.actionId}] ${step.status}`)
-      : ["- none"]),
-    "",
-    "Gates:",
-    `- [gate:last-event] last event: ${lastStep ? `${lastStep.status} (${lastStep.detail})` : "none"}`,
     ...formatSessionSummary(result),
     ""
   ].join("\n");

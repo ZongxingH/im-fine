@@ -131,12 +131,14 @@ function normalizeHandoff(value: unknown, role: HandoffRole, runId: string, task
     else if (field === "docs_changed") normalized[field] = stringArray(value.docs_changed);
     else if (field === "updated_files") normalized[field] = stringArray(value.updated_files);
     else if (field === "design_files") normalized[field] = stringArray(value.design_files).concat(stringArray(value.files_created));
+    else if (field === "acceptance") normalized[field] = stringArray(value.acceptance).concat(stringArray(value.acceptance_candidates));
     else if (field === "parallel_groups" || field === "serial_tasks") normalized[field] = stringArray(value[field]);
   }
   if (contract.requiredStringFields.includes("task_graph") && typeof normalized.task_graph !== "string") normalized.task_graph = "planning/task-graph.json";
   if (contract.requiredStringFields.includes("archive_report") && typeof normalized.archive_report !== "string") normalized.archive_report = evidence.find((item) => item.includes("archive")) || "archive/final-report.md";
   if (contract.requiredStringFields.includes("commit_mode") && typeof normalized.commit_mode !== "string") normalized.commit_mode = "task";
   if (contract.requiredStringFields.includes("reason") && typeof normalized.reason !== "string") normalized.reason = summary;
+  if (contract.requiredStringFields.includes("ux_design") && typeof normalized.ux_design !== "string") normalized.ux_design = evidence.find((item) => item.includes("ux-design")) || "design/ux-design.md";
   return normalized;
 }
 

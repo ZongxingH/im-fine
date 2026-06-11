@@ -1,21 +1,20 @@
 import { archiveRun } from "./archive.js";
 import { recordProviderOriginAgentCompletion } from "./agent-complete.js";
 import { parseArgs, readBooleanFlag, readStringFlag } from "./args.js";
-import { runAutoOrchestrator } from "./auto-orchestrator.js";
 import { doctor } from "./doctor.js";
-import { formatArchive, formatAutoOrchestrator, formatCommit, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReportDemoSummary, formatReview, formatStatus, formatVerification, formatWorktreePrepare, type StatusFormatView } from "./format.js";
+import { formatArchive, formatCommit, formatDesignRework, formatDoctor, formatInit, formatInstall, formatLibraryList, formatLibrarySync, formatOrchestrator, formatPatchCollect, formatPatchValidation, formatPush, formatRecovery, formatReplan, formatReport, formatReportDemoSummary, formatReview, formatStatus, formatVerification, formatWorktreePrepare, type StatusFormatView } from "./format.js";
 import { commitRun, commitTask, pushRun, type CommitMode } from "./gitflow.js";
 import { initProject } from "./init.js";
 import { install } from "./install.js";
 import { listLibrary, parseKind, readLibrary, syncLibrary } from "./library.js";
-import { resumeRun } from "./orchestrator.js";
+import { orchestrateRun, resumeRun } from "./orchestrator.js";
 import { resolveCwd } from "./paths.js";
 import { requestDesignRework, type ReviewDecision, type VerificationStatus, reviewTask, verifyTask } from "./quality.js";
 import { requestTaskPlannerReplan } from "./replan.js";
 import { recoverTask } from "./recovery.js";
 import { finalizeRun, reconcileRun } from "./reconcile.js";
 import { createDeliveryRun } from "./run.js";
-import { summarizeAutoOrchestratorSession, summarizeOrchestratorSession } from "./session-summary.js";
+import { summarizeOrchestratorSession } from "./session-summary.js";
 import { readReport, status } from "./status.js";
 import { collectPatch, prepareWorktrees, validatePatch } from "./worktree.js";
 
@@ -25,7 +24,7 @@ function help(program: string): string {
 Usage:
   npx github:<owner>/<repo> install [--target codex|claude|all] [--lang zh|en] [--dry-run] [--json]
   ${program} init [--cwd path] [--json]
-  ${program} run <requirement text|requirement-file> [--plan-only] [--new] [--max-iterations n] [--cwd path] [--json]
+  ${program} run <requirement text|requirement-file> [--new] [--cwd path] [--json]
   ${program} status [--cwd path] [--story|--debug] [--json]
   ${program} report <run-id> [--demo-summary|--debug] [--cwd path] [--json]
   ${program} help
@@ -53,13 +52,6 @@ function parseCommitMode(value: string | undefined): CommitMode {
   if (!value || value === "task") return "task";
   if (value === "integration") return value;
   throw new Error("Invalid commit --mode. Expected task or integration.");
-}
-
-function parseMaxIterations(value: string | undefined): number {
-  if (!value) return 20;
-  const parsed = Number.parseInt(value, 10);
-  if (Number.isNaN(parsed) || parsed <= 0) throw new Error("Invalid --max-iterations. Expected a positive integer.");
-  return parsed;
 }
 
 function statusView(args: ReturnType<typeof parseArgs>): StatusFormatView {
@@ -147,16 +139,8 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
 
     if (command === "run") {
       const result = createDeliveryRun(cwd, args.positional.slice(1), { allowNew: readBooleanFlag(args, "new") });
-      if (readBooleanFlag(args, "planOnly")) {
-        const orchestration = summarizeOrchestratorSession(cwd, resumeRun(cwd, result.runId));
-        print(orchestration, json, () => formatOrchestrator(orchestration));
-        return;
-      }
-      const auto = summarizeAutoOrchestratorSession(cwd, await runAutoOrchestrator(cwd, result.runId, {
-        dryRun: readBooleanFlag(args, "dryRun"),
-        maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
-      }));
-      print(auto, json, () => formatAutoOrchestrator(auto));
+      const orchestration = summarizeOrchestratorSession(cwd, resumeRun(cwd, result.runId));
+      print(orchestration, json, () => formatOrchestrator(orchestration));
       return;
     }
 
@@ -168,11 +152,8 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     if (command === "orchestrate") {
       const runId = args.positional[1];
       if (!runId) throw new Error("Expected orchestrate <run-id>.");
-      const result = summarizeAutoOrchestratorSession(cwd, await runAutoOrchestrator(cwd, runId, {
-        dryRun: readBooleanFlag(args, "dryRun"),
-        maxIterations: parseMaxIterations(readStringFlag(args, "maxIterations"))
-      }));
-      print(result, json, () => formatAutoOrchestrator(result));
+      const result = summarizeOrchestratorSession(cwd, orchestrateRun(cwd, runId));
+      print(result, json, () => formatOrchestrator(result));
       return;
     }
 
@@ -330,7 +311,13 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     if (command === "archive") {
       const runId = args.positional[1];
       if (!runId) throw new Error("Expected archive <run-id>.");
-      const result = archiveRun(cwd, runId);
+      const result = archiveRun(cwd, runId, {
+        archiveAction: {
+          id: "runtime-archive-finalize",
+          role: "orchestrator",
+          parallelGroup: "archive-finalize"
+        }
+      });
       print(result, json, () => formatArchive(result));
       return;
     }

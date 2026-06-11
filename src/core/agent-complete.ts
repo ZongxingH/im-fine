@@ -71,8 +71,9 @@ function agentIdFor(action: ActionRecord): string {
 
 function updateAgentRuns(dir: string, runId: string, action: ActionRecord, agentId: string, status: AgentCompleteResult["status"], handoffFile: string | null): string {
   const file = path.join(dir, "orchestration", "agent-runs.json");
-  const current = fs.existsSync(file) ? readJson<{ agents?: AgentRecord[] }>(file) : { agents: [] };
+  const current = fs.existsSync(file) ? readJson<{ agents?: AgentRecord[]; runtime_gates?: unknown[] }>(file) : { agents: [] };
   const agents = Array.isArray(current.agents) ? current.agents : [];
+  const runtimeGates = Array.isArray(current.runtime_gates) ? current.runtime_gates : [];
   const index = agents.findIndex((agent) => agent.id === agentId || (agent.role === action.role && (agent.taskId || "") === (action.taskId || "")));
   const next: AgentRecord = {
     ...(index >= 0 ? agents[index] : {}),
@@ -86,7 +87,13 @@ function updateAgentRuns(dir: string, runId: string, action: ActionRecord, agent
   };
   if (index >= 0) agents[index] = next;
   else agents.push(next);
-  writeText(file, `${JSON.stringify({ schema_version: 1, run_id: runId, agents }, null, 2)}\n`);
+  writeText(file, `${JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    agents,
+    runtime_gates: runtimeGates,
+    execution_units: [...agents, ...runtimeGates]
+  }, null, 2)}\n`);
   return file;
 }
 

@@ -13,5 +13,27 @@ persistent_facts = [
 principles = [
   "No pass without evidence.",
   "Runtime versions and commands matter.",
-  "A clear fail is useful signal."
+  "A clear fail is useful signal.",
+  "Completion claims require fresh verification evidence.",
+  "Recheck evidence must close the same blocker it claims to fix."
 ]
+
+[[agent.menu]]
+code = "VERIFY"
+description = "Verify task acceptance, commands, runtime requirements, and evidence"
+skill = "imfine-execute-task-plan"
+
+[[agent.menu]]
+code = "DEBUG"
+description = "Investigate failing checks with systematic debugging"
+skill = "imfine-systematic-debugging"
+
+[[agent.menu]]
+code = "REVIEW"
+description = "Request or receive code review after verification"
+skill = "imfine-code-review"
+
+[[agent.menu]]
+code = "READY"
+description = "Check implementation readiness and QA coverage before Dev dispatch"
+skill = "imfine-implementation-readiness"

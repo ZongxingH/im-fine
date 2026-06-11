@@ -513,6 +513,9 @@ function validateSession(session: AgentAuthoredSession, runId: string): string[]
     for (const dependency of action.dependsOn) {
       if (!actionIds.has(dependency)) errors.push(`next_actions.${action.id}.dependsOn references unknown action ${dependency}`);
     }
+    if (action.kind === "agent" && !agents.some((agent) => actionMatchesAgent(action, agent))) {
+      errors.push(`next_actions.${action.id} has no matching agent_run`);
+    }
   }
 
   for (const agent of agents) {

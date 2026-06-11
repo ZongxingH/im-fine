@@ -565,18 +565,11 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   }, null, 2) + "\n");
 
   const value = readStatus(cwd);
-  const dispatch = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
-  const parallel = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8"));
-  assert.equal(dispatch.contracts.length, 1);
-  assert.equal(dispatch.contracts[0].action_id, "agent-dev-T1");
-  assert.equal(dispatch.contracts[0].role, "dev");
-  assert.equal(dispatch.contracts[0].task_id, "T1");
-  assert.deepEqual(dispatch.contracts[0].depends_on, []);
-  assert.equal(dispatch.contracts[0].parallel_group, "delivery");
-  assert.match(dispatch.contracts[0].expected_handoff_path, /agents\/T1\/handoff\.json$/);
-  assert.match(dispatch.contracts[0].expected_provider_receipt_path, /provider-receipts\/agent-dev-T1\.json$/);
-  assert.deepEqual(parallel.wave_history.map((wave) => wave.status), ["waiting_for_agent_output"]);
-  assert.deepEqual(value.currentRunDispatch.missingCompletedWaveActionIds, ["agent-dev-T1"]);
+  const validation = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "session-validation.json"), "utf8"));
+  assert.equal(validation.status, "blocked");
+  assert.ok(validation.errors.some((error) => error.includes("next_actions.agent-dev-T1 has no matching agent_run")));
+  assert.equal(value.currentRunStatus, "blocked");
+  assert.deepEqual(value.currentRunDispatch.missingCompletedWaveActionIds, []);
 }
 
 {
@@ -631,7 +624,19 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
       dependsOn: [],
       parallelGroup: "delivery"
     }],
-    agent_runs: []
+    agent_runs: [{
+      id: "T1",
+      role: "dev",
+      taskId: "T1",
+      status: "completed",
+      skills: ["implementation"],
+      inputs: [],
+      outputs: [handoff],
+      readScope: ["src/**"],
+      writeScope: ["src/**"],
+      dependsOn: [],
+      parallelGroup: "delivery"
+    }]
   }, null, 2) + "\n");
 
   readStatus(cwd);
@@ -709,12 +714,24 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
       dependsOn: [],
       parallelGroup: "delivery"
     }],
-    agent_runs: []
+    agent_runs: [{
+      id: "T1",
+      role: "dev",
+      taskId: "T1",
+      status: "completed",
+      skills: ["implementation"],
+      inputs: [],
+      outputs: [handoff],
+      readScope: ["src/**"],
+      writeScope: ["src/**"],
+      dependsOn: [],
+      parallelGroup: "delivery"
+    }]
   }, null, 2) + "\n");
 
   readStatus(cwd);
   const agentRuns = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-runs.json"), "utf8"));
-  assert.equal(agentRuns.agents.length, 0);
+  assert.equal(agentRuns.agents.length, 1);
   const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(evidence.handoff_validation.passed, false);
   assert.ok(evidence.handoff_validation.invalid[0].errors.some((error) => error.includes("missing evidence")));
@@ -756,7 +773,19 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
       dependsOn: [],
       parallelGroup: "qa"
     }],
-    agent_runs: []
+    agent_runs: [{
+      id: "qa-T1",
+      role: "qa",
+      taskId: "T1",
+      status: "completed",
+      skills: ["verification"],
+      inputs: [],
+      outputs: [path.join(runDir, "agents", "qa-T1", "handoff.json")],
+      readScope: [".imfine/runs/" + runId + "/**"],
+      writeScope: [".imfine/runs/" + runId + "/agents/qa-T1/**"],
+      dependsOn: [],
+      parallelGroup: "qa"
+    }]
   }, null, 2) + "\n");
 
   const result = reconcileRun(cwd, runId);
@@ -765,7 +794,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   assert.notEqual(gates.true_harness, "pass");
   const evidence = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "true-harness-evidence.json"), "utf8"));
   assert.equal(evidence.handoff_validation.passed, false);
-  assert.equal(evidence.handoff_validation.invalid[0].agent_id, "agent-qa-T1");
+  assert.equal(evidence.handoff_validation.invalid[0].agent_id, "qa-T1");
 }
 
 console.log("demo replay ok");

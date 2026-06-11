@@ -5,6 +5,7 @@ import path from "node:path";
 import { ensureDir, writeText } from "./fs.js";
 import { refreshOrchestrationSnapshot } from "./orchestration-sync.js";
 import { type TaskGraph, type TaskGraphTask } from "./plan.js";
+import { recordActionStatus } from "./reliability.js";
 import { runCommand } from "./shell.js";
 import { assertTransitionAccepted, transitionRunState, transitionTaskState } from "./state-machine.js";
 
@@ -208,6 +209,7 @@ export function prepareWorktrees(cwd: string, runId: string): WorktreePrepareRes
     run_branch: runBranch
   }), `mark implementation prepared for ${runId}`);
   refreshOrchestrationSnapshot(cwd, runId);
+  recordActionStatus(cwd, runId, "runtime-worktree-prepare", "completed", "prepared run and task worktrees", [indexFile(cwd, runId), ...tasks.map((task) => task.agent_input)]);
 
   return {
     runId,

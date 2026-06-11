@@ -12,7 +12,8 @@ export type RuntimeRole =
   | "committer"
   | "risk-reviewer"
   | "technical-writer"
-  | "project-knowledge-updater";
+  | "project-knowledge-updater"
+  | "ux-designer";
 
 export type RoleLevel = "run" | "task" | "both";
 
@@ -196,6 +197,17 @@ const ROLE_CONTRACTS: Record<RuntimeRole, RoleContract> = {
     requiredFields: [...COMMON_REQUIRED_FIELDS, "updated_files"],
     requiredArrayFields: ["commands", "evidence", "updated_files"],
     requiredStringFields: ["run_id", "task_id", "role", "from", "to", "status", "summary", "next_state"]
+  },
+  "ux-designer": {
+    role: "ux-designer",
+    level: "run",
+    handoffSchema: DEFAULT_HANDOFF_SCHEMA,
+    allowedTransitions: ["designed", "needs_design_update", "blocked"],
+    statuses: ["ready", "blocked", "needs_design_update"],
+    requiredEvidence: ["design/ux-design.md"],
+    requiredFields: [...COMMON_REQUIRED_FIELDS, "ux_design", "acceptance", "risks"],
+    requiredArrayFields: ["commands", "evidence", "acceptance", "risks"],
+    requiredStringFields: ["run_id", "task_id", "role", "from", "to", "status", "summary", "next_state", "ux_design"]
   }
 };
 
@@ -262,7 +274,12 @@ const ROLE_ALIASES: Record<string, RuntimeRole> = {
   writer: "technical-writer",
   "project knowledge updater": "project-knowledge-updater",
   project_knowledge_updater: "project-knowledge-updater",
-  knowledge_updater: "project-knowledge-updater"
+  knowledge_updater: "project-knowledge-updater",
+  "ux designer": "ux-designer",
+  ux_designer: "ux-designer",
+  ux: "ux-designer",
+  "ui designer": "ux-designer",
+  ui_designer: "ux-designer"
 };
 
 export function isRuntimeRole(role: string): role is RuntimeRole {

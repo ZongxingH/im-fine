@@ -86,6 +86,11 @@ imfine-archive
 
 `imfine-agent-orchestrator` is the main coordination entry. It routes initialization, delivery, status, observation, and archive requests to the narrower workflow skills.
 
+The installer also exposes the full BMAD-style imfine roster, not only the shortcut entries:
+
+- Agents: `imfine-agent-orchestrator`, `imfine-agent-intake`, `imfine-agent-project-analyzer`, `imfine-agent-product-planner`, `imfine-agent-architect`, `imfine-agent-task-planner`, `imfine-agent-dev`, `imfine-agent-qa`, `imfine-agent-reviewer`, `imfine-agent-risk-reviewer`, `imfine-agent-merge-agent`, `imfine-agent-committer`, `imfine-agent-archive`, `imfine-agent-technical-writer`, `imfine-agent-project-knowledge-updater`, `imfine-agent-harness-auditor`, `imfine-agent-ux-designer`.
+- Workflows: `imfine-brainstorming`, `imfine-product-brief`, `imfine-validate-requirement`, `imfine-implementation-readiness`, `imfine-correct-course`, `imfine-retrospective`, `imfine-clarify`, `imfine-project-analysis`, `imfine-write-delivery-plan`, `imfine-execute-task-plan`, `imfine-tdd`, `imfine-systematic-debugging`, `imfine-parallel-agent-dispatch`, `imfine-code-review`, `imfine-archive-confirmation`, `imfine-harness-audit`.
+
 ## Runtime Evidence And Diagnostics
 
 Every run is evidence-first. In addition to agent handoffs and final reports, imfine records harness-level diagnostics under each run:

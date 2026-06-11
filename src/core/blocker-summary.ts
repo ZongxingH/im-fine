@@ -122,10 +122,10 @@ export function blockerSummary(cwd: string, runId: string): {
         required_evidence: source.id.includes("provider") ? ["orchestration/provider-receipts/"] : [rel(cwd, source.file)],
         suggested_agent: source.id.includes("handoff") ? "current action agent" : "orchestrator",
         diagnostic_doc: source.id.includes("provider")
-          ? "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md#14-runtime-和-agent-边界"
+          ? "docs/IMFINE_IMPLEMENTATION.md#14-runtime-和-agent-边界"
           : source.id.includes("handoff")
-            ? "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md#91-orchestrator-agent"
-            : "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md#15-gate-体系"
+            ? "docs/IMFINE_IMPLEMENTATION.md#91-orchestrator-agent"
+            : "docs/IMFINE_IMPLEMENTATION.md#15-gate-体系"
       }))
     }));
   ensureDir(orchestration);
@@ -135,7 +135,7 @@ export function blockerSummary(cwd: string, runId: string): {
     generated_at: new Date().toISOString(),
     status: summaries.some((summary) => summary.blockers.length > 0) ? "blocked" : "clear",
     diagnostic_docs: [
-      "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md"
+      "docs/IMFINE_IMPLEMENTATION.md"
     ],
     sources: summaries
   };

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = path.resolve(import.meta.dirname, "..");
-const plan = fs.readFileSync(path.join(root, "docs", "IMFINE_PHASED_IMPLEMENTATION_PLAN.md"), "utf8");
+const plan = fs.readFileSync(path.join(root, "docs", "IMFINE_IMPLEMENTATION.md"), "utf8");
 
 const sectionStart = plan.indexOf("### 18.5 Harness Evolution Records");
 assert.ok(sectionStart >= 0, "missing harness evolution section");

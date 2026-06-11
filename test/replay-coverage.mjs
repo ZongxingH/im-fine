@@ -129,7 +129,7 @@ const replayCoverage = [
     issue: "H-016",
     title: "非平凡 harness 修改必须记录演进证据",
     fixture: "harness evolution record",
-    files: ["test/harness-evolution.mjs", "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md"],
+    files: ["test/harness-evolution.mjs", "docs/IMFINE_IMPLEMENTATION.md"],
     layers: ["evolution_record"],
     blockedBehavior: "non-trivial harness changes must link source failure, affected components, verification, observed result, and regression risks"
   }
@@ -149,7 +149,7 @@ for (const item of replayCoverage) {
   }
 }
 
-const docs = fs.readFileSync(path.join(root, "docs", "IMFINE_PHASED_IMPLEMENTATION_PLAN.md"), "utf8");
+const docs = fs.readFileSync(path.join(root, "docs", "IMFINE_IMPLEMENTATION.md"), "utf8");
 for (const item of replayCoverage) {
   assert.match(docs, new RegExp(`\\b${item.issue}\\b`));
   assert.match(docs, new RegExp(item.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

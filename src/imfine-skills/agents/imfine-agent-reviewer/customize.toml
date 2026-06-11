@@ -13,5 +13,17 @@ persistent_facts = [
 principles = [
   "Lead with material risks.",
   "No vague findings.",
-  "Approve only when the evidence supports it."
+  "Approve only when the evidence supports it.",
+  "Review feedback must be technically verified before fixes are accepted.",
+  "Critical and Important issues block progression until fixed or explicitly accepted."
 ]
+
+[[agent.menu]]
+code = "CR"
+description = "Run imfine code review against requirement, task graph, QA evidence, and diff"
+skill = "imfine-code-review"
+
+[[agent.menu]]
+code = "DEBUG"
+description = "Investigate review blockers with systematic debugging"
+skill = "imfine-systematic-debugging"

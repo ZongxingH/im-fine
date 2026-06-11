@@ -4,7 +4,7 @@ import path from "node:path";
 import { harnessComponentIds } from "../dist/core/harness-components.js";
 
 const root = path.resolve(import.meta.dirname, "..");
-const plan = fs.readFileSync(path.join(root, "docs", "IMFINE_PHASED_IMPLEMENTATION_PLAN.md"), "utf8");
+const plan = fs.readFileSync(path.join(root, "docs", "IMFINE_IMPLEMENTATION.md"), "utf8");
 const componentIds = harnessComponentIds();
 
 for (const issueId of Array.from({ length: 16 }, (_, index) => `H-${String(index + 1).padStart(3, "0")}`)) {

@@ -171,18 +171,95 @@ assert.deepEqual(validateAgentSkills("qa", ["imfine-qa"]), []);
 assert.deepEqual(validateAgentSkills("reviewer", ["imfine-review"]), []);
 assert.deepEqual(validateAgentSkills("risk-reviewer", ["harness-audit"]), []);
 assert.deepEqual(validateAgentSkills("qa", ["demo-audit"]), []);
+assert.deepEqual(validateAgentSkills("ux-designer", ["imfine-brainstorming", "imfine-product-brief", "imfine-implementation-readiness"]), []);
+assert.deepEqual(validateAgentSkills("task-planner", ["imfine-validate-requirement"]), []);
+assert.deepEqual(validateAgentSkills("reviewer", ["imfine-correct-course"]), []);
+assert.deepEqual(validateAgentSkills("project-knowledge-updater", ["imfine-retrospective"]), []);
 assert.ok(validateAgentSkills("dev", ["archive"]).some((error) => error.includes("not allowed")));
+assert.ok(validateAgentSkills("dev", ["imfine-product-brief"]).some((error) => error.includes("not allowed")));
 assert.ok(validateAgentSkills("dev", ["missing-skill"]).some((error) => error.includes("unknown skill")));
 
 {
   const agentIds = listLibrary("agents").map((entry) => entry.id);
   const skillIds = listLibrary("skills").map((entry) => entry.id);
-  assert.ok(agentIds.includes("imfine-agent-harness-auditor"));
-  assert.ok(agentIds.includes("imfine-agent-orchestrator"));
-  assert.ok(skillIds.includes("imfine-harness-audit"));
+  const expectedAgents = [
+    "imfine-agent-orchestrator",
+    "imfine-agent-intake",
+    "imfine-agent-project-analyzer",
+    "imfine-agent-product-planner",
+    "imfine-agent-architect",
+    "imfine-agent-task-planner",
+    "imfine-agent-dev",
+    "imfine-agent-qa",
+    "imfine-agent-reviewer",
+    "imfine-agent-risk-reviewer",
+    "imfine-agent-merge-agent",
+    "imfine-agent-committer",
+    "imfine-agent-archive",
+    "imfine-agent-technical-writer",
+    "imfine-agent-project-knowledge-updater",
+    "imfine-agent-harness-auditor",
+    "imfine-agent-ux-designer"
+  ];
+  const expectedWorkflowSkills = [
+    "imfine-brainstorming",
+    "imfine-product-brief",
+    "imfine-validate-requirement",
+    "imfine-implementation-readiness",
+    "imfine-correct-course",
+    "imfine-retrospective",
+    "imfine-clarify",
+    "imfine-project-analysis",
+    "imfine-write-delivery-plan",
+    "imfine-execute-task-plan",
+    "imfine-tdd",
+    "imfine-systematic-debugging",
+    "imfine-parallel-agent-dispatch",
+    "imfine-code-review",
+    "imfine-archive-confirmation",
+    "imfine-harness-audit"
+  ];
+  assert.deepEqual(agentIds.filter((id) => id.startsWith("imfine-agent-")).sort(), expectedAgents.sort());
+  for (const skillId of expectedWorkflowSkills) assert.ok(skillIds.includes(skillId), `missing workflow skill: ${skillId}`);
   assert.ok(skillIds.includes("imfine-run"));
   assert.match(readLibrary("agents", "imfine-agent-harness-auditor"), /misleading_demo/);
   assert.match(readLibrary("skills", "imfine-harness-audit"), /failure evidence/);
+  assert.match(readLibrary("agents", "imfine-agent-task-planner"), /parallel_groups/);
+  assert.match(readLibrary("skills", "imfine-parallel-agent-dispatch"), /provider-origin/);
+  assert.match(readLibrary("skills", "imfine-tdd"), /Red-Green-Refactor/);
+  assert.match(readLibrary("skills", "imfine-write-delivery-plan"), /No Placeholder Rule/);
+  assert.match(readLibrary("skills", "imfine-execute-task-plan"), /Two-Stage Review Per Task/);
+  assert.match(readLibrary("skills", "imfine-code-review"), /review early/);
+  assert.match(readLibrary("skills", "imfine-archive-confirmation"), /No completion claim without fresh verification evidence/);
+  assert.match(readLibrary("agents", "imfine-agent-architect"), /BMAD-Inspired Micro-Step Workflow/);
+  assert.match(readLibrary("skills", "imfine-brainstorming"), /Facilitator|creative_partner|autonomous/);
+  assert.match(readLibrary("skills", "imfine-implementation-readiness"), /Readiness Gates/);
+  assert.match(readLibrary("skills", "imfine-correct-course"), /material change/);
+  assert.match(readLibrary("skills", "imfine-retrospective"), /harness evolution/);
+  assert.match(readLibrary("agents", "imfine-agent-ux-designer"), /UX acceptance/);
+  for (const reference of [
+    "implementer-prompt.md",
+    "spec-reviewer-prompt.md",
+    "code-quality-reviewer-prompt.md"
+  ]) {
+    assert.equal(
+      fs.existsSync(path.join(root, "src", "imfine-skills", "workflows", "imfine-parallel-agent-dispatch", "references", reference)),
+      true,
+      `missing dispatch reference: ${reference}`
+    );
+  }
+  for (const step of [
+    "step-01-context.md",
+    "step-02-decisions.md",
+    "step-03-boundaries.md",
+    "step-04-validation.md"
+  ]) {
+    assert.equal(
+      fs.existsSync(path.join(root, "src", "imfine-skills", "agents", "imfine-agent-architect", "steps", step)),
+      true,
+      `missing architect step: ${step}`
+    );
+  }
 }
 
 let result = validateTaskGraph(validTaskGraph("run-1"), { expectedRunId: "other" });
@@ -331,9 +408,20 @@ try {
 {
   const installed = install("all", "zh", true).written;
   assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-agent-orchestrator"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-agent-intake"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-agent-ux-designer"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-agent-project-knowledge-updater"))));
   assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-observe"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-brainstorming"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-implementation-readiness"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-clarify"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".agents", "skills", "imfine-parallel-agent-dispatch"))));
   assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-agent-orchestrator.md"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-agent-intake.md"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-agent-ux-designer.md"))));
   assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-observe.md"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-brainstorming.md"))));
+  assert.ok(installed.some((item) => item.endsWith(path.join(".claude", "commands", "imfine-parallel-agent-dispatch.md"))));
   assert.equal(installed.some((item) => item.endsWith(path.join(".codex", "skills", "imfine", "SKILL.md"))), false);
   assert.match(readLibrary("skills", "imfine-observe"), /imfine-agent-harness-auditor/);
   assert.match(readLibrary("skills", "imfine-harness-audit"), /true_harness_passed=true/);
@@ -350,7 +438,7 @@ try {
   const value = status(cwd);
   assert.equal(value.currentRunBlockers.status, "blocked");
   assert.equal(value.currentRunBlockers.items, 1);
-  assert.equal(value.currentRunBlockers.diagnosticDoc, "docs/IMFINE_PHASED_IMPLEMENTATION_PLAN.md#14-runtime-和-agent-边界");
+  assert.equal(value.currentRunBlockers.diagnosticDoc, "docs/IMFINE_IMPLEMENTATION.md#14-runtime-和-agent-边界");
 } finally {
   if (previousProvider === undefined) delete process.env.IMFINE_PROVIDER;
   else process.env.IMFINE_PROVIDER = previousProvider;

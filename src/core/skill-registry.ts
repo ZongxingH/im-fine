@@ -23,7 +23,8 @@ const ALL_ROLES: RuntimeRole[] = [
   "committer",
   "risk-reviewer",
   "technical-writer",
-  "project-knowledge-updater"
+  "project-knowledge-updater",
+  "ux-designer"
 ];
 
 const SKILLS: Record<string, SkillContract> = {
@@ -98,6 +99,54 @@ const SKILLS: Record<string, SkillContract> = {
     expectedOutputs: ["archive report"],
     requiredEvidence: ["archive/archive-report.md"],
     failureHandling: "block archive"
+  },
+  brainstorming: {
+    id: "brainstorming",
+    roles: ["intake", "product-planner", "ux-designer"],
+    requiredInputs: ["request", "project context"],
+    expectedOutputs: ["brainstorming direction and decision log"],
+    requiredEvidence: ["analysis/brainstorming.md"],
+    failureHandling: "block planning until direction is explicit"
+  },
+  "product-brief": {
+    id: "product-brief",
+    roles: ["intake", "product-planner", "ux-designer"],
+    requiredInputs: ["normalized requirement", "accepted brainstorming direction"],
+    expectedOutputs: ["product scope, non-goals, acceptance candidates"],
+    requiredEvidence: ["analysis/product-brief.md"],
+    failureHandling: "request requirement clarification or block architecture"
+  },
+  "validate-requirement": {
+    id: "validate-requirement",
+    roles: ["intake", "product-planner", "architect", "task-planner"],
+    requiredInputs: ["requirement", "product brief", "known unknowns"],
+    expectedOutputs: ["validated requirement or blocked clarification list"],
+    requiredEvidence: ["analysis/requirement-validation.md"],
+    failureHandling: "block planning when ambiguity remains"
+  },
+  "implementation-readiness": {
+    id: "implementation-readiness",
+    roles: ["product-planner", "architect", "task-planner", "qa", "risk-reviewer", "ux-designer"],
+    requiredInputs: ["requirement", "architecture", "task graph", "provider capability", "acceptance candidates"],
+    expectedOutputs: ["readiness verdict and required fixes"],
+    requiredEvidence: ["orchestration/implementation-readiness.md"],
+    failureHandling: "block Dev dispatch until readiness is restored"
+  },
+  "correct-course": {
+    id: "correct-course",
+    roles: ["product-planner", "architect", "task-planner", "dev", "qa", "reviewer", "risk-reviewer", "ux-designer"],
+    requiredInputs: ["material change", "current run artifacts", "failed evidence"],
+    expectedOutputs: ["course correction decision and replan requirements"],
+    requiredEvidence: ["orchestration/course-correction.md"],
+    failureHandling: "request replan, revalidation, or block run"
+  },
+  retrospective: {
+    id: "retrospective",
+    roles: ["archive", "technical-writer", "project-knowledge-updater", "risk-reviewer"],
+    requiredInputs: ["final report", "gates", "blockers", "trace evidence"],
+    expectedOutputs: ["lessons, project knowledge, harness evolution candidates"],
+    requiredEvidence: ["archive/retrospective.md"],
+    failureHandling: "record follow-up without changing completed or blocked verdict"
   },
   implementation: {
     id: "implementation",
@@ -187,6 +236,12 @@ const SKILL_ALIASES: Record<string, string> = {
   "imfine-commit": "scope-control",
   "imfine-archive": "archive",
   "imfine-harness-audit": "harness-audit",
+  "imfine-brainstorming": "brainstorming",
+  "imfine-product-brief": "product-brief",
+  "imfine-validate-requirement": "validate-requirement",
+  "imfine-implementation-readiness": "implementation-readiness",
+  "imfine-correct-course": "correct-course",
+  "imfine-retrospective": "retrospective",
   "demo-observability": "harness-audit",
   "demo-audit": "harness-audit"
 };

@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AutoOrchestratorResult } from "./auto-orchestrator.js";
 import type { AgentRun, OrchestratorResult } from "./orchestrator.js";
 
 export interface SessionSummaryEntry {
@@ -23,10 +22,6 @@ export interface SessionSummaryPayload {
 }
 
 export interface SessionSummarizedOrchestratorResult extends OrchestratorResult {
-  sessionSummary: SessionSummaryPayload;
-}
-
-export interface SessionSummarizedAutoOrchestratorResult extends AutoOrchestratorResult {
   sessionSummary: SessionSummaryPayload;
 }
 
@@ -120,23 +115,4 @@ export function summarizeOrchestratorSession(cwd: string, result: OrchestratorRe
     };
   });
   return { ...result, sessionSummary: { orchestrator: orchestratorSummary, agents } };
-}
-
-export function summarizeAutoOrchestratorSession(cwd: string, result: AutoOrchestratorResult): SessionSummarizedAutoOrchestratorResult {
-  const summarized = summarizeOrchestratorSession(cwd, result.lastOrchestration);
-  return {
-    ...result,
-    sessionSummary: {
-      orchestrator: {
-        summary: `Current session completed ${result.steps.filter((step) => step.status === "completed").length} step(s) in ${result.iterations} iteration(s); final status is ${result.status}`,
-        outputs: [result.timeline],
-        details: [
-          `execution mode: ${result.lastOrchestration.executionMode}`,
-          "native subagent dispatch remains current-session owned",
-          ...result.steps.map((step) => `${step.actionId}: ${step.detail}`)
-        ]
-      },
-      agents: summarized.sessionSummary.agents
-    }
-  };
 }

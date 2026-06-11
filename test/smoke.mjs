@@ -110,7 +110,7 @@ function writeOrchestratorSession(runDir, runId) {
 }
 
 const { project } = makeGitProject("imfine-smoke-");
-const created = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"], project));
+const created = JSON.parse(run(["run", "Build a todo app", "--json"], project));
 assert.equal(created.status, "waiting_for_agent_output");
 assert.equal(created.executionMode, "true_harness");
 assert.equal(created.nextActions.length, 0);
@@ -120,7 +120,7 @@ const gitignore = fs.readFileSync(path.join(project, ".gitignore"), "utf8");
 assert.match(gitignore, /^backend\/target\/$/m);
 assert.match(gitignore, /^backend\/db\/\*\.sqlite3$/m);
 
-const duplicate = JSON.parse(run(["run", "Build a todo app", "--plan-only", "--json"], project));
+const duplicate = JSON.parse(run(["run", "Build a todo app", "--json"], project));
 assert.equal(duplicate.runId, created.runId);
 
 writeTaskGraph(created.runDir, created.runId);
@@ -136,9 +136,9 @@ assert.ok(!fs.existsSync(path.join(created.runDir, "orchestration", "parallel-pl
 
 assert.throws(() => run(["orchestrate", created.runId, "--json"], project), /internal runtime action/);
 const orchestrated = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(orchestrated.status, "waiting_for_agent_output");
-assert.ok(orchestrated.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
-assert.ok(orchestrated.steps.some((step) => step.status === "waiting_for_agent_output"));
+assert.equal(orchestrated.status, "planned");
+assert.ok(orchestrated.nextActions.some((action) => action.id === "runtime-worktree-prepare"));
+assert.ok(orchestrated.parallelGroups.some((group) => group.actionIds.includes("agent-dev-T1")));
 
 assert.ok(fs.existsSync(path.join(created.runDir, "orchestration", "parallel-plan.json")));
 assert.ok(fs.existsSync(path.join(created.runDir, "orchestration", "parallel-execution.json")));
@@ -206,7 +206,7 @@ assert.equal(executionArtifact.artifact_type, "execution");
 assert.ok(executionArtifact.wave_history.some((wave) => wave.status === "waiting_for_agent_output" && wave.action_ids.includes("agent-dev-T1")));
 
 const { project: malformedProject } = makeGitProject("imfine-malformed-");
-const malformed = JSON.parse(run(["run", "Malformed session", "--plan-only", "--json"], malformedProject));
+const malformed = JSON.parse(run(["run", "Malformed session", "--json"], malformedProject));
 fs.writeFileSync(path.join(malformed.runDir, "orchestration", "orchestrator-session.json"), `${JSON.stringify({
   schema_version: 1,
   run_id: malformed.runId,
@@ -233,7 +233,7 @@ const validation = JSON.parse(fs.readFileSync(path.join(malformed.runDir, "orche
 assert.ok(validation.errors.some((error) => error.includes("kind must be runtime or agent")));
 
 const { project: dependencyProject } = makeGitProject("imfine-bad-dep-");
-const dependency = JSON.parse(run(["run", "Bad dependency", "--plan-only", "--json"], dependencyProject));
+const dependency = JSON.parse(run(["run", "Bad dependency", "--json"], dependencyProject));
 writeOrchestratorSession(dependency.runDir, dependency.runId);
 const dependencySession = JSON.parse(fs.readFileSync(path.join(dependency.runDir, "orchestration", "orchestrator-session.json"), "utf8"));
 dependencySession.next_actions[1].dependsOn = ["missing-action"];
@@ -244,20 +244,18 @@ const dependencyValidation = JSON.parse(fs.readFileSync(path.join(dependency.run
 assert.ok(dependencyValidation.errors.some((error) => error.includes("references unknown action missing-action")));
 
 const { project: mismatchProject } = makeGitProject("imfine-mismatch-");
-const mismatch = JSON.parse(run(["run", "Mismatched agent", "--plan-only", "--json"], mismatchProject));
+const mismatch = JSON.parse(run(["run", "Mismatched agent", "--json"], mismatchProject));
 writeOrchestratorSession(mismatch.runDir, mismatch.runId);
 const mismatchSession = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "orchestrator-session.json"), "utf8"));
 mismatchSession.agent_runs = [];
 fs.writeFileSync(path.join(mismatch.runDir, "orchestration", "orchestrator-session.json"), `${JSON.stringify(mismatchSession, null, 2)}\n`);
 const mismatchResume = JSON.parse(run(["orchestrate", mismatch.runId, "--json"], mismatchProject, { IMFINE_INTERNAL: "1" }));
 assert.equal(mismatchResume.status, "blocked");
-const mismatchDispatch = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
-assert.ok(mismatchDispatch.contracts.some((contract) => contract.action_id === "agent-dev-T1"));
-const mismatchExecution = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "parallel-execution.json"), "utf8"));
-assert.ok(mismatchExecution.wave_history.some((wave) => wave.status === "waiting_for_agent_output" && wave.action_ids.includes("agent-dev-T1")));
+const mismatchValidation = JSON.parse(fs.readFileSync(path.join(mismatch.runDir, "orchestration", "session-validation.json"), "utf8"));
+assert.ok(mismatchValidation.errors.some((error) => error.includes("next_actions.agent-dev-T1 has no matching agent_run")));
 
 const { project: handoffProject } = makeGitProject("imfine-invalid-handoff-");
-const handoff = JSON.parse(run(["run", "Invalid handoff", "--plan-only", "--json"], handoffProject));
+const handoff = JSON.parse(run(["run", "Invalid handoff", "--json"], handoffProject));
 writeOrchestratorSession(handoff.runDir, handoff.runId);
 fs.mkdirSync(path.join(handoff.runDir, "agents", "T1"), { recursive: true });
 fs.writeFileSync(path.join(handoff.runDir, "agents", "T1", "handoff.json"), JSON.stringify({

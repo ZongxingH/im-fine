@@ -1,0 +1,12 @@
+[workflow]
+activation_steps_prepend = []
+activation_steps_append = []
+persistent_facts = [
+  "file:{project-root}/.imfine/project/**/*.md"
+]
+on_complete = ""
+
+[workflow.defaults]
+mode = "creative_partner"
+output_when_run_exists = ".imfine/runs/{run_id}/analysis/brainstorming.md"
+output_without_run = ".imfine/project/brainstorming.md"

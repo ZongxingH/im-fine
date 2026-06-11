@@ -35,7 +35,7 @@ for (const issue of expectedIssues) {
   assert.deepEqual(validateHarnessComponentIds(mapped), []);
 }
 
-const docs = fs.readFileSync(path.join(root, "docs", "IMFINE_PHASED_IMPLEMENTATION_PLAN.md"), "utf8");
+const docs = fs.readFileSync(path.join(root, "docs", "IMFINE_IMPLEMENTATION.md"), "utf8");
 for (const component of HARNESS_COMPONENTS) {
   assert.match(docs, new RegExp(component.id.replaceAll(".", "\\.")));
 }

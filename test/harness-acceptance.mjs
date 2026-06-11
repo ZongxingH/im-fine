@@ -336,6 +336,27 @@ function writeMergeAgentHandoff(runDir, runId) {
   });
 }
 
+function writeDevHandoff(runDir, runId) {
+  const file = path.join(runDir, "agents", "T1", "handoff.json");
+  writeJson(file, {
+    run_id: runId,
+    task_id: "T1",
+    role: "dev",
+    from: "dev",
+    to: "qa",
+    status: "ready",
+    summary: "implemented requested change",
+    commands: ["git diff --binary HEAD", "npm run test"],
+    files_changed: ["src/index.js", "test/index.test.js"],
+    verification: ["npm run test"],
+    evidence: [
+      path.join(runDir, "agents", "T1", "patch.diff"),
+      path.join(runDir, "tasks", "T1", "evidence.md")
+    ],
+    next_state: "patch_validated"
+  });
+}
+
 function writeTechnicalWriterHandoff(runDir, runId) {
   const file = path.join(runDir, "agents", "technical-writer", "handoff.json");
   writeJson(file, {
@@ -393,44 +414,46 @@ function writeArchiveHandoff(runDir, runId) {
 function exerciseHarness(provider) {
 activeProvider = provider;
 const { project } = makeGitProject(`imfine-harness-${provider}-`);
-const created = JSON.parse(run(["run", "Implement the requested change", "--plan-only", "--json"], project));
+const created = JSON.parse(run(["run", "Implement the requested change", "--json"], project));
 writeTaskGraph(created.runDir, created.runId);
 writeOrchestratorSession(created.runDir, created.runId);
 writeAgentAcceptanceMatrix(created.runDir, created.runId);
 
-let auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "waiting_for_agent_output");
-assert.ok(auto.steps.some((step) => step.actionId === "runtime-worktree-prepare"));
+let orchestration = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(orchestration.executionMode, "true_harness");
+assert.ok(orchestration.nextActions.some((action) => action.id === "runtime-worktree-prepare"));
+run(["worktree", "prepare", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" });
 
 const taskWorktree = readWorktreePath(created.runDir, "T1");
 fs.writeFileSync(path.join(taskWorktree, "src", "index.js"), "export const value = 2;\n");
 fs.writeFileSync(path.join(taskWorktree, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
-
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "waiting_for_agent_output");
+run(["patch", "collect", created.runId, "T1", "--json"], project, { IMFINE_INTERNAL: "1" });
+writeDevHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-dev-T1", "T1");
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "waiting_for_agent_output");
+orchestration = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(orchestration.executionMode, "true_harness");
 writeQaHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-qa-T1", "qa-T1");
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "waiting_for_agent_output");
+orchestration = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(orchestration.executionMode, "true_harness");
 writeReviewerHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-reviewer-T1", "reviewer-T1");
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "waiting_for_agent_output");
+orchestration = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(orchestration.executionMode, "true_harness");
 fs.writeFileSync(path.join(project, "src", "index.js"), "export const value = 2;\n");
 fs.writeFileSync(path.join(project, "test", "index.test.js"), "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { value } from '../src/index.js';\ntest('value', () => assert.equal(value, 2));\n");
 writeMergeAgentHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-merge-agent-T1", "merge-agent-T1");
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "waiting_for_agent_output");
+orchestration = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(orchestration.executionMode, "true_harness");
 writeCommitterHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-committer", "committer");
+run(["commit", "run", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" });
+run(["push", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" });
 writeTechnicalWriterHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-technical-writer", "technical-writer");
 writeProjectKnowledgeHandoff(created.runDir, created.runId);
@@ -438,10 +461,11 @@ completeProviderAgent(project, created.runId, "agent-project-knowledge-updater",
 writeArchiveHandoff(created.runDir, created.runId);
 completeProviderAgent(project, created.runId, "agent-archive", "archive");
 
-auto = JSON.parse(run(["orchestrate", created.runId, "--max-iterations", "30", "--json"], project, { IMFINE_INTERNAL: "1" }));
-assert.equal(auto.status, "completed");
-assert.equal(auto.lastOrchestration.executionMode, "true_harness");
-assert.ok(auto.sessionSummary.orchestrator.summary.includes("completed"));
+run(["archive", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" });
+orchestration = JSON.parse(run(["orchestrate", created.runId, "--json"], project, { IMFINE_INTERNAL: "1" }));
+assert.equal(orchestration.status, "completed");
+assert.equal(orchestration.executionMode, "true_harness");
+assert.ok(orchestration.sessionSummary.orchestrator.summary.includes("completed"));
 
 const runDir = path.join(project, ".imfine", "runs", created.runId);
 const runMetadata = JSON.parse(fs.readFileSync(path.join(runDir, "run.json"), "utf8"));

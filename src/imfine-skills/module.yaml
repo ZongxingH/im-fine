@@ -15,6 +15,31 @@ agents:
     title: Harness Orchestrator
     description: "Coordinates native provider agents and deterministic runtime gates."
 
+  - code: imfine-agent-intake
+    name: Intake
+    title: Intake Analyst Agent
+    description: "Normalizes raw requests into scoped requirement briefs."
+
+  - code: imfine-agent-project-analyzer
+    name: Project Analyzer
+    title: Project Analyzer Agent
+    description: "Extracts evidence-backed project context, architecture, modules, tests, and unknowns."
+
+  - code: imfine-agent-product-planner
+    name: Product Planner
+    title: Product Planner Agent
+    description: "Defines product scope, user workflows, acceptance boundaries, and non-goals."
+
+  - code: imfine-agent-architect
+    name: Architect
+    title: Architecture Agent
+    description: "Designs the technical approach, boundaries, risks, dependencies, and constraints."
+
+  - code: imfine-agent-task-planner
+    name: Task Planner
+    title: Task Planning Agent
+    description: "Converts design into task graphs with safe boundaries, dependencies, and verification."
+
   - code: imfine-agent-dev
     name: Dev
     title: Implementation Agent
@@ -30,7 +55,88 @@ agents:
     title: Code Review Agent
     description: "Reviews implementation quality, scope control, risks, and regressions."
 
+  - code: imfine-agent-risk-reviewer
+    name: Risk Reviewer
+    title: Risk Review Agent
+    description: "Reviews design and task boundaries for material delivery risks."
+
+  - code: imfine-agent-merge-agent
+    name: Merge Agent
+    title: Merge Agent
+    description: "Integrates approved task patches into the project branch without committing."
+
+  - code: imfine-agent-committer
+    name: Committer
+    title: Commit Readiness Agent
+    description: "Reviews commit readiness, commit mode, evidence, and branch strategy."
+
+  - code: imfine-agent-archive
+    name: Archive
+    title: Archive Agent
+    description: "Confirms the delivery evidence chain and archive readiness."
+
+  - code: imfine-agent-technical-writer
+    name: Technical Writer
+    title: Technical Writer Agent
+    description: "Updates truthful user-facing and developer-facing documentation."
+
+  - code: imfine-agent-project-knowledge-updater
+    name: Project Knowledge Updater
+    title: Project Knowledge Updater Agent
+    description: "Updates long-term project knowledge from verified run artifacts."
+
   - code: imfine-agent-harness-auditor
     name: Harness Auditor
     title: Observability Auditor
     description: "Evaluates whether an imfine run is a credible true-harness demonstration."
+
+  - code: imfine-agent-ux-designer
+    name: UX Designer
+    title: UX Designer Agent
+    description: "Defines user journeys, interaction states, UX acceptance, and accessibility risks."
+
+skills:
+  - code: imfine-help
+    path: "0-core/imfine-help"
+  - code: imfine-init
+    path: "1-bootstrap/imfine-init"
+  - code: imfine-run
+    path: "2-run/imfine-run"
+  - code: imfine-status
+    path: "2-run/imfine-status"
+  - code: imfine-observe
+    path: "3-observe/imfine-observe"
+  - code: imfine-archive
+    path: "4-archive/imfine-archive"
+  - code: imfine-brainstorming
+    path: "workflows/imfine-brainstorming"
+  - code: imfine-product-brief
+    path: "workflows/imfine-product-brief"
+  - code: imfine-validate-requirement
+    path: "workflows/imfine-validate-requirement"
+  - code: imfine-implementation-readiness
+    path: "workflows/imfine-implementation-readiness"
+  - code: imfine-correct-course
+    path: "workflows/imfine-correct-course"
+  - code: imfine-retrospective
+    path: "workflows/imfine-retrospective"
+  - code: imfine-clarify
+    path: "workflows/imfine-clarify"
+  - code: imfine-project-analysis
+    path: "workflows/imfine-project-analysis"
+  - code: imfine-write-delivery-plan
+    path: "workflows/imfine-write-delivery-plan"
+  - code: imfine-execute-task-plan
+    path: "workflows/imfine-execute-task-plan"
+  - code: imfine-tdd
+    path: "workflows/imfine-tdd"
+  - code: imfine-systematic-debugging
+    path: "workflows/imfine-systematic-debugging"
+  - code: imfine-parallel-agent-dispatch
+    path: "workflows/imfine-parallel-agent-dispatch"
+  - code: imfine-code-review
+    path: "workflows/imfine-code-review"
+  - code: imfine-archive-confirmation
+    path: "workflows/imfine-archive-confirmation"
+  - code: imfine-harness-audit
+    path: "workflows/imfine-harness-audit"
