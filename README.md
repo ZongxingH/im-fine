@@ -94,6 +94,8 @@ Only these six entries are installed into the Codex/Claude public surface to kee
 - Public skills: `imfine-init`, `imfine-run`, `imfine-status`, `imfine-observe`, `imfine-archive`.
 - Workflow skills: `imfine-brainstorming`, `imfine-product-brief`, `imfine-validate-requirement`, `imfine-implementation-readiness`, `imfine-correct-course`, `imfine-retrospective`, `imfine-clarify`, `imfine-project-analysis`, `imfine-write-delivery-plan`, `imfine-execute-task-plan`, `imfine-tdd`, `imfine-systematic-debugging`, `imfine-parallel-agent-dispatch`, `imfine-code-review`, `imfine-archive-confirmation`, `imfine-harness-audit`.
 
+See [IMFINE_WORKFLOW_AGENT_SKILL_MAP.md](./docs/IMFINE_WORKFLOW_AGENT_SKILL_MAP.md) for the workflow path of each public entry and the internal Agent/Skill map used by Orchestrator.
+
 ## Demo Validation
 
 To validate imfine itself on a demo project, install imfine, restart Codex or Claude, then run these entries from inside the demo project:
@@ -171,4 +173,4 @@ imfine writes run and project evidence under `.imfine/`, including:
 - `.imfine/harness-experiments/<experiment-id>/**`: harness experiment input, patch, verification, and change evaluation.
 - `.imfine/reports/<run-id>.md`: final run report.
 
-The current implementation contract is [IMFINE_IMPLEMENTATION.md](./docs/IMFINE_IMPLEMENTATION.md). The BMAD migration rationale is kept in [IMFINE_BMAD_MIGRATION_PLAN.md](./docs/IMFINE_BMAD_MIGRATION_PLAN.md).
+The current implementation contract is [IMFINE_IMPLEMENTATION.md](./docs/IMFINE_IMPLEMENTATION.md). The public workflow and internal Agent/Skill map is [IMFINE_WORKFLOW_AGENT_SKILL_MAP.md](./docs/IMFINE_WORKFLOW_AGENT_SKILL_MAP.md). The BMAD migration rationale is kept in [IMFINE_BMAD_MIGRATION_PLAN.md](./docs/IMFINE_BMAD_MIGRATION_PLAN.md).
