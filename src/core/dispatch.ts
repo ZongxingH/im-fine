@@ -33,6 +33,7 @@ export interface DispatchContract {
   parallel_group: string;
   ready_reason?: string;
   blocked_reason?: string;
+  candidate_action_ids?: string[];
 }
 
 interface OrchestratorSessionSnapshot {
@@ -55,33 +56,55 @@ function readSessionSnapshot(file: string): OrchestratorSessionSnapshot {
   return JSON.parse(fs.readFileSync(file, "utf8")) as OrchestratorSessionSnapshot;
 }
 
+function agentActionId(agent: AgentRun): string | undefined {
+  const value = agent.action_id || agent.actionId;
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function actionRoleTaskKey(action: OrchestrationAction): string {
+  return `${action.role}::${action.taskId || ""}::${action.parallelGroup}`;
+}
+
 export function buildDispatchContracts(runId: string, runDir: string, orchestratorSessionFile: string): DispatchContract[] {
   const session = readSessionSnapshot(orchestratorSessionFile);
   const actions = Array.isArray(session.next_actions) ? session.next_actions : [];
   const agentRuns = Array.isArray(session.agent_runs) ? session.agent_runs : [];
+  const actionById = new Map<string, OrchestrationAction>();
   const actionByAgentId = new Map<string, OrchestrationAction>();
-  const actionByRoleTask = new Map<string, OrchestrationAction>();
+  const actionByRoleTask = new Map<string, OrchestrationAction[]>();
 
   for (const action of actions.filter((item) => item.kind === "agent")) {
+    actionById.set(action.id, action);
     const derivedId = action.taskId
       ? action.role === "dev" || action.role === "technical-writer"
         ? action.taskId
         : `${action.role}-${action.taskId}`
       : action.role;
     actionByAgentId.set(derivedId, action);
-    actionByRoleTask.set(`${action.role}::${action.taskId || ""}::${action.parallelGroup}`, action);
+    const key = actionRoleTaskKey(action);
+    actionByRoleTask.set(key, [...(actionByRoleTask.get(key) || []), action]);
   }
 
   const agentContracts: DispatchContract[] = agentRuns.map((agent) => {
-    const action = actionByRoleTask.get(`${agent.role}::${agent.taskId || ""}::${agent.parallelGroup}`) || actionByAgentId.get(agent.id);
+    const explicitActionId = agentActionId(agent);
+    const roleTaskCandidates = actionByRoleTask.get(`${agent.role}::${agent.taskId || ""}::${agent.parallelGroup}`) || [];
+    const roleTaskAction = roleTaskCandidates.length === 1 ? roleTaskCandidates[0] : undefined;
+    const action = explicitActionId ? actionById.get(explicitActionId) : actionByAgentId.get(agent.id) || roleTaskAction;
+    const ambiguousCandidates = !explicitActionId && !actionByAgentId.has(agent.id) && roleTaskCandidates.length > 1
+      ? roleTaskCandidates.map((item) => item.id)
+      : [];
+    const actionId = action?.id || explicitActionId || `agent-${agent.id}`;
+    const blockedReason = ambiguousCandidates.length > 0
+      ? `ambiguous action-agent mapping: ${ambiguousCandidates.join(", ")}`
+      : action?.status === "blocked" ? action.reason : undefined;
     return {
       id: agent.id,
       role: agent.role,
       task_id: agent.taskId,
       workflow_state: agent.workflowState,
       run_id: runId,
-      action_id: action?.id || `agent-${agent.id}`,
-      status: action ? normalizeStatus(action.status) : normalizeAgentRunStatus(agent.status),
+      action_id: actionId,
+      status: ambiguousCandidates.length > 0 ? "blocked" : action ? normalizeStatus(action.status) : normalizeAgentRunStatus(agent.status),
       kind: "agent" as const,
       depends_on: action?.dependsOn || agent.dependsOn,
       read_scope: agent.readScope,
@@ -89,7 +112,7 @@ export function buildDispatchContracts(runId: string, runDir: string, orchestrat
       inputs: agent.inputs,
       required_outputs: agent.outputs,
       expected_handoff_path: path.join(runDir, "agents", agent.id, "handoff.json"),
-      expected_provider_receipt_path: path.join(runDir, "orchestration", "provider-receipts", `${(action?.id || `agent-${agent.id}`).replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`),
+      expected_provider_receipt_path: path.join(runDir, "orchestration", "provider-receipts", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`),
       expected_output_paths: Array.from(new Set([
         ...agent.outputs,
         path.join(runDir, "agents", agent.id, "handoff.json")
@@ -111,7 +134,8 @@ export function buildDispatchContracts(runId: string, runDir: string, orchestrat
       },
       parallel_group: agent.parallelGroup,
       ready_reason: action?.status === "ready" ? action.reason : undefined,
-      blocked_reason: action?.status === "blocked" ? action.reason : undefined
+      blocked_reason: blockedReason,
+      candidate_action_ids: ambiguousCandidates.length > 0 ? ambiguousCandidates : undefined
     };
   });
   const agentActionIds = new Set(agentContracts.map((contract) => contract.action_id));

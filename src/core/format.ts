@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { ArchiveResult } from "./archive.js";
 import type { DoctorReport, InitResult } from "./types.js";
 import type { CommitResult, PushResult } from "./gitflow.js";
@@ -75,10 +77,7 @@ function compactGateLines(result: StatusResult): string[] {
   const gates = result.currentRunGates || {};
   const receipts = result.currentRunProviderReceipts;
   const dispatch = result.currentRunDispatch;
-  const handoffCount = Math.max(
-    result.currentRunAgentNameMap?.mappings.filter((item) => item.handoffPath).length || 0,
-    result.currentRunHandoffFiles.length
-  );
+  const handoffCount = result.currentRunHandoffFiles.length;
   const receiptLine = receipts
     ? `${receipts.validReceiptCount}/${Math.max(receipts.validReceiptCount + receipts.missingProviderReceiptActionIds.length, receipts.receiptCount)}`
     : "none";
@@ -128,13 +127,15 @@ function gatePhaseLines(result: StatusResult): string[] {
 }
 
 function agentAuthoredEvidence(result: StatusResult): string[] {
-  const fromMap = result.currentRunAgentNameMap?.mappings
-    .map((item) => item.handoffPath)
-    .filter((item): item is string => Boolean(item)) || [];
   const quality = result.currentRunQualityLineage?.latest
     .map((item) => item.latestHandoff)
-    .filter((item): item is string => Boolean(item)) || [];
-  return Array.from(new Set([...fromMap, ...quality, ...result.currentRunHandoffFiles])).sort();
+    .filter((item): item is string => typeof item === "string" && evidencePathExists(result.cwd, item)) || [];
+  return Array.from(new Set([...quality, ...result.currentRunHandoffFiles])).sort();
+}
+
+function evidencePathExists(cwd: string, file: string): boolean {
+  const resolved = path.isAbsolute(file) ? file : path.join(cwd, file);
+  return fs.existsSync(resolved) && fs.statSync(resolved).isFile();
 }
 
 function runtimeDerivedEvidence(result: StatusResult): string[] {
@@ -377,7 +378,29 @@ export function formatReport(result: ReportResult): string {
 }
 
 export function formatReportDemoSummary(result: ReportResult, statusResult: StatusResult): string {
-  if (!result.exists) return `report not found: ${result.file}\n`;
+  if (!result.exists) {
+    return [
+      "[runtime] report missing for demo",
+      `Run: ${result.runId}`,
+      `Expected report: ${result.file}`,
+      "",
+      "Gate phase:",
+      ...gatePhaseLines(statusResult),
+      "",
+      "Root cause:",
+      ...rootCauseLines(statusResult),
+      "",
+      "Gates:",
+      ...compactGateLines(statusResult),
+      "",
+      "Blocked:",
+      `- ${blockingReason(statusResult)}`,
+      "",
+      "Next:",
+      `- ${nextAction(statusResult)}`,
+      ""
+    ].join("\n");
+  }
   const title = (result.content || "").split("\n").find((line) => line.startsWith("# "))?.replace(/^#\s+/, "") || "Report";
   return [
     `[runtime] report summarized for demo`,

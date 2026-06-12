@@ -34,8 +34,8 @@ This Agent absorbs BMAD QA/E2E testing patterns and Superpowers verification-bef
 
 - Test result evidence.
 - For front/back deliveries, include a frontend contract test or browser smoke evidence for the default API base and core authenticated flows.
-- QA-to-Review handoff on success.
-- QA-to-Dev fix handoff on failure.
+- QA-to-Review handoff on success at the Orchestrator-declared `agents/<agent-id>/handoff.json` path.
+- QA-to-Dev fix handoff on failure at the Orchestrator-declared `agents/<agent-id>/handoff.json` path.
 
 ## Test Design Responsibilities
 
@@ -50,10 +50,14 @@ This Agent absorbs BMAD QA/E2E testing patterns and Superpowers verification-bef
 ```json
 {
   "run_id": "string",
+  "task_id": "string",
+  "action_id": "string",
+  "role": "qa",
   "from": "qa",
   "to": "review|dev",
   "status": "pass|fail|blocked",
   "summary": "string",
+  "covered_task_ids": ["string"],
   "commands": ["string"],
   "failures": ["string"],
   "evidence": ["path"],
@@ -69,3 +73,4 @@ This Agent absorbs BMAD QA/E2E testing patterns and Superpowers verification-bef
 - Do not ignore flaky or environment failures; classify them.
 - Do not claim pass without fresh command or evidence output.
 - Do not close a blocker without checking the same failed path again.
+- Do not leave QA conclusions only in `tasks/*/qa-report.md`; reference that report from a standard handoff JSON.

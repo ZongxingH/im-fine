@@ -329,7 +329,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
     }
 
     if (command === "status") {
-      const result = status(cwd);
+      const result = status(cwd, undefined, { refreshDiagnostics: readBooleanFlag(args, "refresh") });
       print(result, json, () => formatStatus(result, statusView(args)));
       return;
     }
@@ -339,7 +339,7 @@ export async function runCli(program: string, argv: string[]): Promise<void> {
       if (!runId) throw new Error("Missing <run-id>.");
       const result = readReport(cwd, runId);
       print(result, json, () => readBooleanFlag(args, "demoSummary") && !readBooleanFlag(args, "debug")
-        ? formatReportDemoSummary(result, status(cwd, runId))
+        ? formatReportDemoSummary(result, status(cwd, runId, { refreshDiagnostics: readBooleanFlag(args, "refresh") }))
         : formatReport(result));
       return;
     }

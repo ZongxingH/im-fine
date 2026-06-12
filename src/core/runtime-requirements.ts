@@ -58,6 +58,19 @@ function rootFiles(cwd: string, names: string[]): string[] {
   return names.map((name) => path.join(cwd, name)).filter((file) => fs.existsSync(file));
 }
 
+function projectRoots(cwd: string): string[] {
+  const ignored = new Set([".git", ".imfine", "node_modules", "dist", "build", "target", "coverage"]);
+  const roots = [cwd];
+  for (const entry of fs.readdirSync(cwd, { withFileTypes: true })) {
+    if (!entry.isDirectory() || ignored.has(entry.name)) continue;
+    const dir = path.join(cwd, entry.name);
+    const hasManifest = ["package.json", "pom.xml", "build.gradle", "build.gradle.kts", "pyproject.toml", "requirements.txt", "go.mod", "Cargo.toml"]
+      .some((name) => fs.existsSync(path.join(dir, name)));
+    if (hasManifest) roots.push(dir);
+  }
+  return Array.from(new Set(roots));
+}
+
 function findRunbooks(cwd: string): string[] {
   const candidates = [
     ...rootFiles(cwd, ["README.md", "README.txt", "RUNBOOK.md", "RUNBOOK.txt"]),
@@ -67,16 +80,20 @@ function findRunbooks(cwd: string): string[] {
 }
 
 function packageJsonRuntime(cwd: string): { language: string; files: string[] } | null {
-  const file = path.join(cwd, "package.json");
-  if (!fs.existsSync(file)) return null;
-  try {
-    const parsed = readJson<{ engines?: { node?: unknown }; volta?: { node?: unknown } }>(file);
-    const declared = typeof parsed.engines?.node === "string" || typeof parsed.volta?.node === "string";
-    const extra = rootFiles(cwd, [".node-version", ".nvmrc", ".tool-versions"]);
-    return declared || extra.length > 0 ? { language: "node", files: [file, ...extra] } : null;
-  } catch {
-    return null;
+  const files: string[] = [];
+  for (const root of projectRoots(cwd)) {
+    const file = path.join(root, "package.json");
+    if (!fs.existsSync(file)) continue;
+    try {
+      const parsed = readJson<{ engines?: { node?: unknown }; volta?: { node?: unknown } }>(file);
+      const declared = typeof parsed.engines?.node === "string" || typeof parsed.volta?.node === "string";
+      const extra = [".node-version", ".nvmrc", ".tool-versions"].map((name) => path.join(root, name)).filter((item) => fs.existsSync(item));
+      if (declared || extra.length > 0) files.push(file, ...extra);
+    } catch {
+      // Invalid package manifests are handled by task/QA evidence, not this detector.
+    }
   }
+  return files.length > 0 ? { language: "node", files } : null;
 }
 
 function pythonRuntime(cwd: string): { language: string; files: string[] } | null {
@@ -97,11 +114,15 @@ function rustRuntime(cwd: string): { language: string; files: string[] } | null 
 }
 
 function javaRuntime(cwd: string): { language: string; files: string[] } | null {
-  const pom = path.join(cwd, "pom.xml");
-  if (fs.existsSync(pom) && /<(java\.version|maven\.compiler\.(source|target|release))>/.test(readText(pom))) return { language: "java", files: [pom] };
-  const gradle = rootFiles(cwd, ["build.gradle", "build.gradle.kts"]);
+  const poms = projectRoots(cwd)
+    .map((root) => path.join(root, "pom.xml"))
+    .filter((file) => fs.existsSync(file) && /<(java\.version|maven\.compiler\.(source|target|release))>/.test(readText(file)));
+  const gradle = projectRoots(cwd)
+    .flatMap((root) => ["build.gradle", "build.gradle.kts"].map((name) => path.join(root, name)))
+    .filter((file) => fs.existsSync(file));
   const declared = gradle.filter((file) => /(sourceCompatibility|targetCompatibility|JavaVersion)/.test(readText(file)));
-  return declared.length > 0 ? { language: "java", files: declared } : null;
+  const files = [...poms, ...declared];
+  return files.length > 0 ? { language: "java", files } : null;
 }
 
 function declaredRuntime(cwd: string): { languages: string[]; files: string[] } {
@@ -129,7 +150,7 @@ function detectedLanguages(cwd: string): string[] {
     ["java", "build.gradle"],
     ["java", "build.gradle.kts"]
   ];
-  return Array.from(new Set(pairs.filter(([, file]) => fs.existsSync(path.join(cwd, file))).map(([language]) => language))).sort();
+  return Array.from(new Set(projectRoots(cwd).flatMap((root) => pairs.filter(([, file]) => fs.existsSync(path.join(root, file))).map(([language]) => language)))).sort();
 }
 
 function versionCommand(language: string): [string, string[]] {
@@ -179,7 +200,7 @@ export function evaluateRuntimeRequirements(cwd: string, runId: string): Runtime
   const docs = findRunbooks(cwd);
   const detected = detectedLanguages(cwd);
   const declared = declaredRuntime(cwd);
-  const languages = declared.languages.length > 0 ? declared.languages : detected;
+  const languages = Array.from(new Set([...declared.languages, ...detected])).sort();
   const versions = observedVersions(cwd, languages);
   const qaFile = path.join(dir, "evidence", "test-results.md");
   const qa = qaEvidenceStatus(qaFile);
@@ -192,7 +213,7 @@ export function evaluateRuntimeRequirements(cwd: string, runId: string): Runtime
     ),
     check(
       "runtime_version_declaration",
-      declared.files.length > 0,
+      detected.length > 0 && detected.every((language) => declared.languages.includes(language)),
       detected.length > 0
         ? `detected languages: ${detected.join(", ")}; declared files: ${declared.files.join(", ") || "missing"}`
         : "no language manifest detected; runtime declaration still required before archive",

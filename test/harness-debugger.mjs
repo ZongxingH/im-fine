@@ -52,7 +52,7 @@ assert.match(overview, /## 当前结论/);
 assert.match(overview, /## 证据链/);
 assert.match(overview, /## 建议动作/);
 
-const current = readStatus(cwd);
+const current = readStatus(cwd, undefined, { refreshDiagnostics: true });
 assert.ok(current.currentRunHarnessDebugger);
 assert.ok(fs.existsSync(current.currentRunHarnessDebugger.overview));
 assert.ok(fs.existsSync(current.currentRunHarnessDebugger.detail));

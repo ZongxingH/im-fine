@@ -8,7 +8,7 @@ import { ingestOrchestratorSession } from "./orchestrator.js";
 import { providerObservations } from "./provider-observation.js";
 import { providerReceipts, validateProviderReceipt } from "./provider-evidence.js";
 import { readQualityLineage, writeQualityLineage } from "./quality-lineage.js";
-import { writeRuntimeRequirements } from "./runtime-requirements.js";
+import { evaluateRuntimeRequirements, writeRuntimeRequirements, type RuntimeRequirementsResult } from "./runtime-requirements.js";
 import { readSandboxVerification } from "./sandbox-runner.js";
 import { staleTrueHarnessEvidence } from "./true-harness-evidence.js";
 import { appendRuntimeTraceEvent, latestBlockerTrace } from "./trace-events.js";
@@ -182,6 +182,10 @@ export interface ReportResult {
   file: string;
   exists: boolean;
   content?: string;
+}
+
+export interface StatusOptions {
+  refreshDiagnostics?: boolean;
 }
 
 function gatesAreComplete(gates: Record<string, string> | null): boolean {
@@ -363,8 +367,8 @@ function agentNameMapStatus(runRoot: string): StatusResult["currentRunAgentNameM
   };
 }
 
-function qualityLineageStatus(cwd: string, runId: string): StatusResult["currentRunQualityLineage"] {
-  writeQualityLineage(cwd, runId);
+function qualityLineageStatus(cwd: string, runId: string, refreshDiagnostics: boolean): StatusResult["currentRunQualityLineage"] {
+  if (refreshDiagnostics) writeQualityLineage(cwd, runId);
   const lineage = readQualityLineage(cwd, runId);
   if (!lineage) return null;
   const coverage = lineage.summary.coverage || {
@@ -415,9 +419,19 @@ function standardEvidenceStatus(runRoot: string): StatusResult["currentRunStanda
   };
 }
 
-function runtimeRequirementsStatus(cwd: string, runId: string): StatusResult["currentRunRuntimeRequirements"] {
-  const written = writeRuntimeRequirements(cwd, runId);
-  const result = written.result;
+function runtimeRequirementsPayload(cwd: string, runId: string, refreshDiagnostics: boolean): RuntimeRequirementsResult {
+  if (refreshDiagnostics) return writeRuntimeRequirements(cwd, runId).result;
+  const file = path.join(cwd, ".imfine", "runs", runId, "orchestration", "runtime-requirements.json");
+  if (fs.existsSync(file)) {
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) throw new Error(`runtime-requirements artifact is not a file: ${file}`);
+    return readJson<RuntimeRequirementsResult>(file);
+  }
+  return evaluateRuntimeRequirements(cwd, runId);
+}
+
+function runtimeRequirementsStatus(cwd: string, runId: string, refreshDiagnostics: boolean): StatusResult["currentRunRuntimeRequirements"] {
+  const result = runtimeRequirementsPayload(cwd, runId, refreshDiagnostics);
   return {
     status: result.status,
     declaredLanguages: result.declared_runtime.languages,
@@ -458,14 +472,45 @@ function sandboxVerificationStatus(cwd: string, runId: string, runRoot: string):
   };
 }
 
-function harnessComponentsStatus(cwd: string, runId: string): StatusResult["currentRunHarnessComponents"] {
-  const file = writeHarnessComponents(cwd, runId);
+function harnessComponentsStatus(cwd: string, runId: string, refreshDiagnostics: boolean): StatusResult["currentRunHarnessComponents"] {
+  const file = path.join(cwd, ".imfine", "runs", runId, "orchestration", "harness-components.json");
+  if (refreshDiagnostics) writeHarnessComponents(cwd, runId);
+  if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return null;
   const parsed = readJson<{ components?: unknown[]; issue_coverage?: unknown[] }>(file);
   return {
     file,
     componentCount: Array.isArray(parsed.components) ? parsed.components.length : 0,
     issueCoverageCount: Array.isArray(parsed.issue_coverage) ? parsed.issue_coverage.length : 0
   };
+}
+
+function harnessDebuggerStatus(cwd: string, runId: string, refreshDiagnostics: boolean): StatusResult["currentRunHarnessDebugger"] {
+  if (refreshDiagnostics) {
+    const debuggerReport = writeHarnessDebuggerReport(cwd, runId);
+    return {
+      overview: debuggerReport.overview,
+      detail: debuggerReport.detail,
+      primaryBlocker: debuggerReport.primaryBlocker
+    };
+  }
+  const runRoot = path.join(cwd, ".imfine", "runs", runId);
+  const overview = path.join(runRoot, "analysis", "harness-debug-overview.md");
+  const detail = path.join(runRoot, "analysis", "harness-debug-detail.json");
+  if (!fs.existsSync(overview) && !fs.existsSync(detail)) return null;
+  let primaryBlocker: string | null = null;
+  if (fs.existsSync(detail) && fs.statSync(detail).isFile()) {
+    try {
+      const parsed = readJson<{ primary_blocker?: unknown; primaryBlocker?: unknown }>(detail);
+      primaryBlocker = typeof parsed.primary_blocker === "string"
+        ? parsed.primary_blocker
+        : typeof parsed.primaryBlocker === "string"
+          ? parsed.primaryBlocker
+          : null;
+    } catch {
+      primaryBlocker = "invalid harness debugger detail";
+    }
+  }
+  return { overview, detail, primaryBlocker };
 }
 
 function nextOwnerStatus(runRoot: string, runStatus: string | null, gates: Record<string, string> | null, dispatch: StatusResult["currentRunDispatch"], receipts: StatusResult["currentRunProviderReceipts"], freshness: StatusResult["currentRunTrueHarnessFreshness"], quality: StatusResult["currentRunQualityLineage"], standardEvidence: StatusResult["currentRunStandardEvidence"], runtimeRequirements: StatusResult["currentRunRuntimeRequirements"]): StatusResult["currentRunNextOwner"] {
@@ -547,7 +592,8 @@ function runConsistency(runRoot: string, runStatus: string | null, gates: Record
   return "consistent";
 }
 
-export function status(cwd: string, selectedRunId?: string): StatusResult {
+export function status(cwd: string, selectedRunId?: string, options: StatusOptions = {}): StatusResult {
+  const refreshDiagnostics = options.refreshDiagnostics === true;
   const workspace = path.join(cwd, ".imfine");
   const currentFile = path.join(workspace, "state", "current.json");
   let currentRunId: string | null = selectedRunId || null;
@@ -629,25 +675,41 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
   if (currentRunId) {
     const runFile = path.join(workspace, "runs", currentRunId, "run.json");
     if (fs.existsSync(runFile)) {
+      const runRoot = path.join(workspace, "runs", currentRunId);
       try {
-        const sessionFile = path.join(workspace, "runs", currentRunId, "orchestration", "orchestrator-session.json");
-        if (fs.existsSync(sessionFile)) ingestOrchestratorSession(cwd, currentRunId, { writeHarnessEvidence: false });
         const parsed = JSON.parse(fs.readFileSync(runFile, "utf8")) as { status?: unknown; execution_mode?: unknown; run_branch?: unknown };
         currentRunStatus = typeof parsed.status === "string" ? parsed.status : null;
         currentRunExecutionMode = typeof parsed.execution_mode === "string" ? parsed.execution_mode : null;
         currentRunBranch = typeof parsed.run_branch === "string" ? parsed.run_branch : null;
-        const runRoot = path.join(workspace, "runs", currentRunId);
+      } catch (error) {
+        currentRunDemoWarnings.push(`run metadata unreadable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      try {
+        const sessionFile = path.join(runRoot, "orchestration", "orchestrator-session.json");
+        if (refreshDiagnostics && fs.existsSync(sessionFile)) ingestOrchestratorSession(cwd, currentRunId, { writeHarnessEvidence: false });
+        const parsed = JSON.parse(fs.readFileSync(runFile, "utf8")) as { status?: unknown; execution_mode?: unknown; run_branch?: unknown };
+        currentRunStatus = typeof parsed.status === "string" ? parsed.status : null;
+        currentRunExecutionMode = typeof parsed.execution_mode === "string" ? parsed.execution_mode : null;
+        currentRunBranch = typeof parsed.run_branch === "string" ? parsed.run_branch : null;
         currentRunDispatch = dispatchStatus(runRoot);
         currentRunHandoffFiles = handoffFiles(cwd, runRoot);
         currentRunProviderReceipts = providerReceiptStatus(cwd, runRoot, currentRunId);
         currentRunProviderObservations = providerObservationStatus(cwd, runRoot);
         currentRunAgentNameMap = agentNameMapStatus(runRoot);
-        currentRunQualityLineage = qualityLineageStatus(cwd, currentRunId);
+        currentRunQualityLineage = qualityLineageStatus(cwd, currentRunId, refreshDiagnostics);
         currentRunAgentProgress = agentProgress(runRoot, currentRunQualityLineage);
         currentRunStandardEvidence = standardEvidenceStatus(runRoot);
-        currentRunRuntimeRequirements = runtimeRequirementsStatus(cwd, currentRunId);
+        try {
+          currentRunRuntimeRequirements = runtimeRequirementsStatus(cwd, currentRunId, refreshDiagnostics);
+        } catch (error) {
+          currentRunDemoWarnings.push(`runtime-requirements unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
         currentRunSandboxVerification = sandboxVerificationStatus(cwd, currentRunId, runRoot);
-        currentRunHarnessComponents = harnessComponentsStatus(cwd, currentRunId);
+        try {
+          currentRunHarnessComponents = harnessComponentsStatus(cwd, currentRunId, refreshDiagnostics);
+        } catch (error) {
+          currentRunDemoWarnings.push(`harness-components unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
         const trueHarness = path.join(runRoot, "orchestration", "true-harness-evidence.json");
         if (fs.existsSync(trueHarness)) {
           const staleSources = staleTrueHarnessEvidence(trueHarness);
@@ -719,25 +781,26 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
           reason: event.reason,
           outputArtifacts: event.output_artifacts
         }));
-        const debuggerReport = writeHarnessDebuggerReport(cwd, currentRunId);
-        currentRunHarnessDebugger = {
-          overview: debuggerReport.overview,
-          detail: debuggerReport.detail,
-          primaryBlocker: debuggerReport.primaryBlocker
-        };
-        appendRuntimeTraceEvent(cwd, currentRunId, {
-          source: "runtime.status",
-          componentId: "runtime.status-dashboard",
-          actionId: "runtime.status",
-          eventType: "status_checked",
-          status: currentRunConsistency === "inconsistent" || currentRunNextOwner?.reason !== "no blocking next action detected" ? "blocked" : "recorded",
-          reason: currentRunNextOwner?.reason || "status checked",
-          inputArtifacts: [
-            path.join(runRoot, "orchestration", "final-gates.json"),
-            path.join(runRoot, "orchestration", "true-harness-evidence.json"),
-            path.join(runRoot, "orchestration", "runtime-requirements.json")
-          ]
-        });
+        try {
+          currentRunHarnessDebugger = harnessDebuggerStatus(cwd, currentRunId, refreshDiagnostics);
+        } catch (error) {
+          currentRunDemoWarnings.push(`harness-debugger unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (refreshDiagnostics) {
+          appendRuntimeTraceEvent(cwd, currentRunId, {
+            source: "runtime.status",
+            componentId: "runtime.status-dashboard",
+            actionId: "runtime.status",
+            eventType: "status_checked",
+            status: currentRunConsistency === "inconsistent" || currentRunNextOwner?.reason !== "no blocking next action detected" ? "blocked" : "recorded",
+            reason: currentRunNextOwner?.reason || "status checked",
+            inputArtifacts: [
+              path.join(runRoot, "orchestration", "final-gates.json"),
+              path.join(runRoot, "orchestration", "true-harness-evidence.json"),
+              path.join(runRoot, "orchestration", "runtime-requirements.json")
+            ]
+          });
+        }
         const queue = path.join(runRoot, "orchestration", "queue.json");
         if (fs.existsSync(queue)) {
           const parsedQueue = readJson<{ actions?: Array<{ status?: string; parallelGroup?: string }> }>(queue);
@@ -789,9 +852,8 @@ export function status(cwd: string, selectedRunId?: string): StatusResult {
             recordedAt: typeof checkpoint.recorded_at === "string" ? checkpoint.recorded_at : "unknown"
           };
         }
-      } catch {
-        currentRunStatus = null;
-        currentRunExecutionMode = null;
+      } catch (error) {
+        currentRunDemoWarnings.push(`status diagnostics incomplete: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   }

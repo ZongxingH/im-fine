@@ -36,10 +36,18 @@ A task is dispatchable only when:
 1. Select tasks whose dependencies are satisfied.
 2. Group tasks by non-overlapping write scopes.
 3. Prefer the largest ready batch that preserves boundary safety.
-4. Assign agents with explicit inputs, outputs, and boundaries from dispatch contracts.
+4. Assign agents with explicit `action_id`, inputs, outputs, and boundaries from dispatch contracts.
 5. Launch each assigned role as an independent native subagent from the current provider session.
 6. Record the provider-origin agent id, session id, task handle, and output path.
 7. Collect handoffs, write provider-origin completion receipts, and release locks.
+
+## Action Mapping Contract
+
+- Every native subagent assignment must carry the exact `action_id` from `next_actions[].id`.
+- Do not dispatch two same-role agents in the same `parallelGroup` without distinct `action_id` values.
+- If a task has no `taskId`, the `action_id` is mandatory.
+- Do not let runtime infer backend/frontend, QA/review, or implementation/readiness intent from display names.
+- Expected handoff path and provider receipt path must be unique per action.
 
 ## Outputs
 
@@ -75,6 +83,7 @@ If boundaries overlap, do not serialize by default. First isolate the conflictin
 ## Prohibited
 
 - Do not dispatch agents without write boundaries.
+- Do not dispatch agents without an explicit `action_id`.
 - Do not collapse a ready batch into serial execution when write scopes are independent.
 - Do not accept a task graph that marks everything serial without explicit dependency evidence.
 - Do not ask the user to coordinate agents.

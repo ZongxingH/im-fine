@@ -33,3 +33,39 @@ You are the imfine Harness Orchestrator. You coordinate model-led Agent/Skill wo
 - Use runtime only for deterministic state, schema, evidence, gate, and archive actions.
 - Do not accept runtime-only receipts as native provider-agent proof.
 - Do not mark completion unless runtime evidence closes required gates.
+- Every `agent_runs[]` item in `orchestrator-session.json` must include an `action_id` that exactly matches one `next_actions[].id`.
+- When two actions share the same role or parallel group, provide distinct `id`, `action_id`, and task context; never rely on runtime guessing.
+- After each native subagent finishes, record provider-origin completion through runtime `agent complete` with provider agent id, session id, task handle or trace id, and the handoff output path.
+- If native provider metadata is unavailable, mark the run blocked or explicitly disclose single-session fallback; do not present the run as true-harness complete.
+- Keep current blockers fresh: once session validation passes, do not keep citing old schema blockers; identify the current missing evidence and next owner.
+
+## Required Runtime Session Shape
+
+Agent actions must be unambiguous:
+
+```json
+{
+  "next_actions": [
+    {
+      "id": "backend-implementation",
+      "kind": "agent",
+      "role": "dev",
+      "status": "waiting",
+      "parallelGroup": "dev",
+      "dependsOn": ["implementation-readiness"]
+    }
+  ],
+  "agent_runs": [
+    {
+      "id": "backend-dev-1",
+      "action_id": "backend-implementation",
+      "role": "dev",
+      "status": "planned",
+      "skills": ["execute-task-plan"],
+      "parallelGroup": "dev"
+    }
+  ]
+}
+```
+
+The runtime may reject ambiguous mappings; the Orchestrator owns producing the explicit mapping.

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { formatStatus } from "../dist/core/format.js";
+import { formatReportDemoSummary, formatStatus } from "../dist/core/format.js";
 import { reconcileRun } from "../dist/core/reconcile.js";
-import { status as readStatus } from "../dist/core/status.js";
+import { readReport, status as readStatus } from "../dist/core/status.js";
 import { writeTrueHarnessEvidence } from "../dist/core/true-harness-evidence.js";
 
 const demoRoots = {
@@ -34,6 +34,170 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   const file = path.join(cwd, ".imfine", "runs", runId, "orchestration", "agent-acceptance-matrix.json");
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify({ schema_version: 1, required_coverage_declared_complete: true, items }, null, 2) + "\n");
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-status-readonly-preserves-run-"));
+  const runId = "readonly-status";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(path.join(runDir, "orchestration", "runtime-requirements.json"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "blocked",
+    execution_mode: "true_harness",
+    project_kind: "new_project",
+    source: { type: "text", value: "readonly status fixture" }
+  }, null, 2) + "\n");
+
+  const value = readStatus(cwd);
+  assert.equal(value.currentRunStatus, "blocked");
+  assert.equal(value.currentRunExecutionMode, "true_harness");
+  assert.ok(value.currentRunDemoWarnings.some((warning) => warning.includes("runtime-requirements")));
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-missing-report-summary-"));
+  const runId = "missing-report-summary";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "blocked",
+    execution_mode: "true_harness",
+    blocked_reason: "provider-origin receipts missing",
+    project_kind: "new_project",
+    source: { type: "text", value: "missing report summary" }
+  }, null, 2) + "\n");
+
+  const text = formatReportDemoSummary(readReport(cwd, runId), readStatus(cwd));
+  assert.match(text, /^\[runtime\] report missing for demo/);
+  assert.match(text, /Root cause:/);
+  assert.match(text, /Blocked:/);
+  assert.match(text, /Next:/);
+  assert.doesNotMatch(text, /^report not found:/);
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-expected-handoffs-not-evidence-"));
+  const runId = "expected-handoffs-not-evidence";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(path.join(runDir, "orchestration"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "blocked",
+    execution_mode: "true_harness",
+    project_kind: "new_project",
+    source: { type: "text", value: "expected handoffs are not evidence" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "agent-name-map.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    mappings: [{
+      provider_display_name: "dev-1",
+      action_id: "implementation",
+      dispatch_contract_id: "dev-1",
+      role: "dev",
+      parallel_group: "dev",
+      handoff_path: path.join(".imfine", "runs", runId, "agents", "dev-1", "handoff.json"),
+      provider_receipt_path: path.join(".imfine", "runs", runId, "orchestration", "provider-receipts", "implementation.json"),
+      gate_ids: ["dispatch", "true_harness"]
+    }]
+  }, null, 2) + "\n");
+
+  const value = readStatus(cwd);
+  const text = formatStatus(value);
+  assert.deepEqual(value.currentRunHandoffFiles, []);
+  assert.match(text, /\[gate:handoffs\] handoffs: 0/);
+  assert.match(text, /Agent-authored:\n- none/);
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-dispatch-action-id-match-"));
+  const runId = "dispatch-action-id-match";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(path.join(runDir, "orchestration"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "waiting_for_agent_output",
+    execution_mode: "true_harness",
+    project_kind: "new_project",
+    source: { type: "text", value: "dispatch action id match" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    decision_source: "orchestrator_agent",
+    execution_mode: "true_harness",
+    harness_classification: "true_harness",
+    status: "waiting_for_agent_output",
+    next_actions: [
+      { id: "backend-implementation", kind: "agent", status: "waiting", role: "dev", reason: "backend", inputs: [], outputs: [], dependsOn: [], parallelGroup: "dev" },
+      { id: "frontend-implementation", kind: "agent", status: "waiting", role: "dev", reason: "frontend", inputs: [], outputs: [], dependsOn: [], parallelGroup: "dev" }
+    ],
+    agent_runs: [
+      { id: "backend-dev-1", action_id: "backend-implementation", role: "dev", status: "planned", skills: ["execute-task-plan"], inputs: [], outputs: [], readScope: [], writeScope: [], dependsOn: [], parallelGroup: "dev" },
+      { id: "frontend-dev-1", action_id: "frontend-implementation", role: "dev", status: "planned", skills: ["execute-task-plan"], inputs: [], outputs: [], readScope: [], writeScope: [], dependsOn: [], parallelGroup: "dev" }
+    ]
+  }, null, 2) + "\n");
+
+  const value = readStatus(cwd, undefined, { refreshDiagnostics: true });
+  const dispatch = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
+  const byId = Object.fromEntries(dispatch.contracts.map((contract) => [contract.id, contract]));
+  assert.equal(byId["backend-dev-1"].action_id, "backend-implementation");
+  assert.equal(byId["frontend-dev-1"].action_id, "frontend-implementation");
+  assert.notEqual(byId["backend-dev-1"].expected_provider_receipt_path, byId["frontend-dev-1"].expected_provider_receipt_path);
+  assert.ok(value.currentRunDispatch.missingCompletedWaveActionIds.includes("backend-implementation"));
+  assert.ok(value.currentRunDispatch.missingCompletedWaveActionIds.includes("frontend-implementation"));
+}
+
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "imfine-consistency-duplicate-action-"));
+  const runId = "consistency-duplicate-action";
+  const runDir = path.join(cwd, ".imfine", "runs", runId);
+  fs.mkdirSync(path.join(runDir, "orchestration"), { recursive: true });
+  fs.mkdirSync(path.join(cwd, ".imfine", "state"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, ".imfine", "state", "current.json"), JSON.stringify({ current_run_id: runId }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "run.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    status: "waiting_for_agent_output",
+    execution_mode: "true_harness",
+    project_kind: "new_project",
+    source: { type: "text", value: "duplicate action consistency" }
+  }, null, 2) + "\n");
+  fs.writeFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), JSON.stringify({
+    schema_version: 1,
+    run_id: runId,
+    decision_source: "orchestrator_agent",
+    execution_mode: "true_harness",
+    harness_classification: "true_harness",
+    status: "waiting_for_agent_output",
+    next_actions: [
+      { id: "implementation", kind: "agent", status: "waiting", role: "dev", reason: "implementation", inputs: [], outputs: [], dependsOn: [], parallelGroup: "dev" }
+    ],
+    agent_runs: [
+      { id: "dev-a", action_id: "implementation", role: "dev", status: "planned", skills: ["execute-task-plan"], inputs: [], outputs: [], readScope: [], writeScope: [], dependsOn: [], parallelGroup: "dev" },
+      { id: "dev-b", action_id: "implementation", role: "dev", status: "planned", skills: ["execute-task-plan"], inputs: [], outputs: [], readScope: [], writeScope: [], dependsOn: [], parallelGroup: "dev" }
+    ]
+  }, null, 2) + "\n");
+
+  readStatus(cwd, undefined, { refreshDiagnostics: true });
+  const consistency = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-runtime-consistency.json"), "utf8"));
+  assert.equal(consistency.status, "blocked");
+  assert.ok(consistency.blockers.some((item) => item.includes("duplicate_dispatch_action_id")));
+  assert.ok(consistency.blockers.some((item) => item.includes("duplicate_provider_receipt_path")));
 }
 
 {
@@ -123,29 +287,27 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
     ]
   }, null, 2) + "\n");
 
-  const status = readStatus(cwd);
+  const status = readStatus(cwd, undefined, { refreshDiagnostics: true });
   assert.equal(status.currentRunDispatch.contractCount, 0);
   assert.equal(status.currentRunHandoffFiles.length, 1);
   assert.ok(status.currentRunBlockers.firstReason.includes("unknown skill"));
   assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("dispatch not materialized")));
-  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level acceptance-matrix")));
-  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level final-gates")));
+  assert.equal(status.currentRunId, runId);
   assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-runtime-consistency.json"), "utf8")).status, "blocked");
   assert.match(formatStatus(status), /Root cause:\n- root cause: agent_runs\[0\]\.unknown skill/);
 }
 
 {
   const cwd = copyDemo(demoRoots.early, "imfine-latest-demo-skill-alias-");
-  const runId = runIds(cwd)[0];
+  const status = readStatus(cwd, undefined, { refreshDiagnostics: true });
+  const runId = status.currentRunId || runIds(cwd)[0];
   assert.ok(runId);
-  const status = readStatus(cwd);
   const validation = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "orchestration", "session-validation.json"), "utf8"));
   const dispatch = JSON.parse(fs.readFileSync(path.join(cwd, ".imfine", "runs", runId, "orchestration", "dispatch-contracts.json"), "utf8"));
   assert.equal(validation.status, "pass");
   assert.deepEqual(validation.errors, []);
   assert.ok(dispatch.contracts.length > 0);
-  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level acceptance-matrix")));
-  assert.ok(status.currentRunDemoWarnings.some((warning) => warning.includes("root-level final-gates")));
+  assert.equal(status.currentRunId, runId);
 }
 
 {
@@ -252,7 +414,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   fs.writeFileSync(path.join(runDir, "orchestration", "agent-runs.json"), JSON.stringify({ schema_version: 1, run_id: runId, agents: [] }, null, 2) + "\n");
   fs.writeFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), JSON.stringify({ schema_version: 1, run_id: runId, contracts: [] }, null, 2) + "\n");
   fs.writeFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), JSON.stringify({ schema_version: 1, run_id: runId, wave_history: [] }, null, 2) + "\n");
-  const before = readStatus(cwd);
+  const before = readStatus(cwd, undefined, { refreshDiagnostics: true });
   assert.equal(before.currentRunConsistency, "inconsistent");
   assert.equal(before.currentRunGates.status_consistency, "orchestrator_session_unadopted");
   const result = reconcileRun(cwd, runId);
@@ -312,7 +474,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   fs.writeFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), JSON.stringify({ schema_version: 1, run_id: runId, contracts: [] }, null, 2) + "\n");
   fs.writeFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), JSON.stringify({ schema_version: 1, run_id: runId, wave_history: [] }, null, 2) + "\n");
 
-  const value = readStatus(cwd);
+  const value = readStatus(cwd, undefined, { refreshDiagnostics: true });
   assert.equal(value.currentRunStatus, "waiting_for_agent_output");
   const dispatch = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "dispatch-contracts.json"), "utf8"));
   const agentRuns = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-runs.json"), "utf8"));
@@ -400,7 +562,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   }, null, 2) + "\n");
   fs.writeFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), JSON.stringify({ schema_version: 1, run_id: runId, wave_history: [] }, null, 2) + "\n");
 
-  const value = readStatus(cwd);
+  const value = readStatus(cwd, undefined, { refreshDiagnostics: true });
   assert.deepEqual(value.currentRunDispatch.missingCompletedWaveActionIds, []);
   const parallel = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8"));
   assert.equal(parallel.wave_history.length, 2);
@@ -505,7 +667,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
     ]
   }, null, 2) + "\n");
 
-  readStatus(cwd);
+  readStatus(cwd, undefined, { refreshDiagnostics: true });
   const session = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "orchestrator-session.json"), "utf8"));
   assert.equal(session.status, "waiting_for_agent_output");
   assert.deepEqual(session.next_actions.map((action) => action.role), ["dev", "dev", "qa", "reviewer"]);
@@ -564,7 +726,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
     agent_runs: []
   }, null, 2) + "\n");
 
-  const value = readStatus(cwd);
+  const value = readStatus(cwd, undefined, { refreshDiagnostics: true });
   const validation = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "session-validation.json"), "utf8"));
   assert.equal(validation.status, "blocked");
   assert.ok(validation.errors.some((error) => error.includes("next_actions.agent-dev-T1 has no matching agent_run")));
@@ -639,7 +801,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
     }]
   }, null, 2) + "\n");
 
-  readStatus(cwd);
+  readStatus(cwd, undefined, { refreshDiagnostics: true });
   const agentRuns = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-runs.json"), "utf8"));
   assert.equal(agentRuns.agents.length, 1);
   assert.equal(agentRuns.agents[0].id, "T1");
@@ -656,7 +818,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
   assert.equal(consistency.session_action_count, 1);
   const parallel = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "parallel-execution.json"), "utf8"));
   assert.ok(parallel.wave_history.some((wave) => wave.status === "completed" && wave.action_ids.includes("agent-dev-T1")));
-  const value = readStatus(cwd);
+  const value = readStatus(cwd, undefined, { refreshDiagnostics: true });
   assert.equal(value.currentRunActions.ready, 0);
   const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));
   assert.equal(evidence.handoff_validation.passed, true);
@@ -729,7 +891,7 @@ function ensureAgentAcceptanceMatrix(cwd, runId, items) {
     }]
   }, null, 2) + "\n");
 
-  readStatus(cwd);
+  readStatus(cwd, undefined, { refreshDiagnostics: true });
   const agentRuns = JSON.parse(fs.readFileSync(path.join(runDir, "orchestration", "agent-runs.json"), "utf8"));
   assert.equal(agentRuns.agents.length, 1);
   const evidence = JSON.parse(fs.readFileSync(writeTrueHarnessEvidence(cwd, runId).json, "utf8"));

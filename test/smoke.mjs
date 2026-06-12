@@ -195,7 +195,9 @@ assert.match(debugStatusText, /current run harness debugger:/);
 assert.match(debugStatusText, /current run standard evidence:/);
 assert.throws(() => run(["report", created.runId], project), /internal runtime action/);
 const demoReportText = run(["report", created.runId, "--demo-summary"], project);
-assert.match(demoReportText, /report not found:/);
+assert.match(demoReportText, /^\[runtime\] report missing for demo/);
+assert.match(demoReportText, /Root cause:/);
+assert.match(demoReportText, /Next:/);
 
 const planArtifact = JSON.parse(fs.readFileSync(path.join(created.runDir, "orchestration", "parallel-plan.json"), "utf8"));
 assert.equal(planArtifact.artifact_type, "planning");

@@ -26,6 +26,7 @@ export interface TaskGraph {
   strategy: "parallel" | "serial" | "conflict_resolution";
   artifact_type?: "planning";
   execution_status?: "not_executed";
+  edges?: unknown[];
   tasks: TaskGraphTask[];
 }
 
@@ -163,6 +164,43 @@ function validateSessionAlignment(tasks: Array<{ id: string; type: string }>, op
   }
 }
 
+function edgeIdPair(edge: unknown): [string, string] | null {
+  if (Array.isArray(edge) && edge.length >= 2 && typeof edge[0] === "string" && typeof edge[1] === "string") {
+    return [edge[0], edge[1]];
+  }
+  if (!edge || typeof edge !== "object") return null;
+  const record = edge as Record<string, unknown>;
+  const from = record.from || record.source || record.depends_on;
+  const to = record.to || record.target || record.task_id || record.taskId;
+  return typeof from === "string" && typeof to === "string" ? [from, to] : null;
+}
+
+function validateDependencyEdges(tasks: Array<{ id: string; depends_on: string[] }>, graph: TaskGraph, errors: string[]): void {
+  if (!Object.prototype.hasOwnProperty.call(graph, "edges")) return;
+  if (!Array.isArray(graph.edges)) {
+    errors.push("Task graph edges must be an array when present");
+    return;
+  }
+  const edgePairs: Array<[string, string]> = [];
+  for (const [index, edge] of graph.edges.entries()) {
+    const pair = edgeIdPair(edge);
+    if (!pair) {
+      errors.push(`Task graph edges[${index}] must declare from/to task ids`);
+    } else {
+      edgePairs.push(pair);
+    }
+  }
+  const dependencyPairs = tasks.flatMap((task) => task.depends_on.map((dep) => [dep, task.id] as [string, string]));
+  const dependencyKeys = new Set(dependencyPairs.map(([from, to]) => `${from}->${to}`));
+  const edgeKeys = new Set(edgePairs.map(([from, to]) => `${from}->${to}`));
+  for (const [from, to] of edgePairs) {
+    if (!dependencyKeys.has(`${from}->${to}`)) errors.push(`Task graph edge ${from} -> ${to} is not mirrored in tasks[].depends_on`);
+  }
+  for (const [from, to] of dependencyPairs) {
+    if (!edgeKeys.has(`${from}->${to}`)) errors.push(`Task dependency ${from} -> ${to} is missing from task graph edges`);
+  }
+}
+
 export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidationOptions = {}): TaskGraphValidation {
   const errors: string[] = [];
   const ids = new Set<string>();
@@ -237,6 +275,7 @@ export function validateTaskGraph(graph: TaskGraph, options: TaskGraphValidation
       if (!ids.has(dep)) errors.push(`Task ${task.id} depends on unknown task ${dep}`);
     }
   }
+  validateDependencyEdges(normalizedTasks.filter((task) => task.id), graph, errors);
   errors.push(...detectCycles(normalizedTasks.filter((task) => task.id)));
   validateSessionAlignment(normalizedTasks.filter((task) => task.id), options, errors);
 

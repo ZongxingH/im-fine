@@ -90,6 +90,7 @@ function sourceErrors(cwd: string, runId: string, source: SummarySource): string
 
 export function writeBlockerSummary(cwd: string, runId: string): string {
   const file = path.join(runDir(cwd, runId), "orchestration", "blocker-summary.json");
+  ensureDir(path.dirname(file));
   writeText(file, `${JSON.stringify(blockerSummary(cwd, runId), null, 2)}\n`);
   return file;
 }
@@ -128,7 +129,6 @@ export function blockerSummary(cwd: string, runId: string): {
             : "docs/IMFINE_IMPLEMENTATION.md#15-gate-体系"
       }))
     }));
-  ensureDir(orchestration);
   return {
     schema_version: 1,
     run_id: runId,

@@ -33,6 +33,7 @@ export interface OrchestrationAction {
 export interface AgentRun {
   id: string;
   actionId?: string;
+  action_id?: string;
   dispatchContractId?: string;
   instanceId?: string;
   role: string;
@@ -252,6 +253,8 @@ function validateAgentRun(value: unknown, index: number, ids: Set<string>, error
 }
 
 function actionMatchesAgent(action: OrchestrationAction, agent: AgentRun): boolean {
+  const explicitActionId = agent.action_id || agent.actionId;
+  if (explicitActionId) return action.id === explicitActionId;
   const derivedId = action.taskId
     ? action.role === "dev" || action.role === "technical-writer"
       ? action.taskId
@@ -335,6 +338,11 @@ function normalizeAgentRun(value: unknown): unknown {
   return {
     ...value,
     id,
+    action_id: typeof value.action_id === "string" && value.action_id.trim()
+      ? value.action_id
+      : typeof value.actionId === "string" && value.actionId.trim()
+        ? value.actionId
+        : undefined,
     role,
     status: normalizeAgentStatus(value.status),
     skills: normalizeSkillIds(normalizeArray(value.skills)),
@@ -586,7 +594,7 @@ function writeAgentNameMap(cwd: string, runId: string, runDirPath: string, agent
   const mappings = agents.map((agent) => {
     const action = actions.find((item) => item.kind === "agent" && actionMatchesAgent(item, agent));
     const contract = dispatchContracts.find((item) => item.kind === "agent" && agentRunMatchesContract(agent, item));
-    const actionId = agent.actionId || contract?.action_id || action?.id || `agent-${agent.id}`;
+    const actionId = agent.action_id || agent.actionId || contract?.action_id || action?.id || `agent-${agent.id}`;
     const handoffPath = relativeToCwd(cwd, agent.handoffFile || contract?.expected_handoff_path || path.join(runDirPath, "agents", agent.id, "handoff.json"));
     const expectedOutput = relativeToCwd(cwd, contract?.expected_handoff_path || agent.outputs[0] || agent.handoffFile || path.join(runDirPath, "agents", agent.id, "handoff.json"));
     const receiptPath = relativeToCwd(cwd, contract?.expected_provider_receipt_path || path.join(runDirPath, "orchestration", "provider-receipts", `${actionId.replace(/[^a-zA-Z0-9_.-]+/g, "-")}.json`));
@@ -618,6 +626,23 @@ function writeOrchestratorRuntimeConsistency(file: string, runId: string, result
   const blockers: string[] = [];
   if (result.nextActions.length > 0 && dispatchContracts.length === 0) blockers.push("session_actions_not_materialized");
   if (result.agentRuns.length > 0 && dispatchContracts.filter((contract) => contract.kind === "agent").length === 0) blockers.push("agent_runs_not_materialized");
+  const agentContracts = dispatchContracts.filter((contract) => contract.kind === "agent");
+  if (result.agentRuns.length > 0 && agentContracts.length !== result.agentRuns.length) {
+    blockers.push(`agent_dispatch_contract_count_mismatch: agent_runs=${result.agentRuns.length}, contracts=${agentContracts.length}`);
+  }
+  const duplicateContractIds = duplicateValues(dispatchContracts.map((contract) => contract.id));
+  const duplicateActionIds = duplicateValues(agentContracts.map((contract) => contract.action_id));
+  const duplicateReceiptPaths = duplicateValues(agentContracts.map((contract) => contract.expected_provider_receipt_path));
+  for (const id of duplicateContractIds) blockers.push(`duplicate_dispatch_contract_id: ${id}`);
+  for (const id of duplicateActionIds) blockers.push(`duplicate_dispatch_action_id: ${id}`);
+  for (const receipt of duplicateReceiptPaths) blockers.push(`duplicate_provider_receipt_path: ${receipt}`);
+  const contractActionIds = new Set(agentContracts.map((contract) => contract.action_id));
+  for (const agent of result.agentRuns) {
+    const expectedActionId = agent.action_id || agent.actionId;
+    if (expectedActionId && !contractActionIds.has(expectedActionId)) {
+      blockers.push(`agent_run_action_not_materialized: ${agent.id} -> ${expectedActionId}`);
+    }
+  }
   writeText(file, `${JSON.stringify({
     schema_version: 1,
     run_id: runId,
@@ -630,6 +655,17 @@ function writeOrchestratorRuntimeConsistency(file: string, runId: string, result
     runtime_dispatch_contract_count: dispatchContracts.filter((contract) => contract.kind === "runtime").length,
     blockers
   }, null, 2)}\n`);
+}
+
+function duplicateValues(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const value of values) {
+    if (!value) continue;
+    if (seen.has(value)) duplicates.add(value);
+    seen.add(value);
+  }
+  return Array.from(duplicates).sort();
 }
 
 function actionIdsForContract(contract: DispatchContract): string[] {
@@ -703,6 +739,8 @@ function materializeWaveHistory(existingExecution: { wave_history?: unknown[]; e
 }
 
 function agentRunMatchesContract(agent: AgentRun, contract: DispatchContract): boolean {
+  const explicitActionId = agent.action_id || agent.actionId;
+  if (explicitActionId) return explicitActionId === contract.action_id;
   return agent.id === contract.id
     || agent.actionId === contract.action_id
     || (agent.role === contract.role && (agent.taskId || "") === (contract.task_id || ""));
